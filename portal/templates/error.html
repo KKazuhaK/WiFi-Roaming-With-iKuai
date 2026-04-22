@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="{{ .Lang }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{{ .S.ErrorTitle }} · {{ .Brand.Name }}</title>
+  <style>
+    :root {
+      --brand-color: {{ .Brand.Color }};
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --text: #111827;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+      --danger: #dc2626;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b0f19;
+        --surface: #111827;
+        --text: #f3f4f6;
+        --text-muted: #9ca3af;
+        --border: #1f2937;
+        --danger: #f87171;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                   "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      min-height: 100vh;
+    }
+    .card {
+      background: var(--surface);
+      border-radius: 16px;
+      padding: 32px 28px;
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.06);
+      border: 1px solid var(--border);
+    }
+    .icon {
+      width: 56px;
+      height: 56px;
+      margin: 0 auto 20px;
+      border-radius: 50%;
+      background: rgba(220, 38, 38, 0.1);
+      color: var(--danger);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 32px;
+      font-weight: 700;
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0 0 12px;
+      text-align: center;
+      font-weight: 600;
+    }
+    .msg {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 14px;
+      margin: 0 0 24px;
+      line-height: 1.6;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 12px 20px;
+      background: transparent;
+      color: var(--brand-color);
+      border: 1px solid var(--brand-color);
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 500;
+      text-decoration: none;
+      text-align: center;
+    }
+    .footer {
+      margin-top: 24px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="icon">!</div>
+    <h1>{{ .S.ErrorTitle }}</h1>
+    <p class="msg">{{ .Message }}</p>
+    <a href="/login" class="btn">{{ .S.SignInButton }}</a>
+    <div class="footer">{{ printf .S.Footer .Brand.Name }} · {{ .NowYear }}</div>
+  </main>
+</body>
+</html>

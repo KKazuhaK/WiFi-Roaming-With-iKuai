@@ -1,0 +1,47 @@
+# docker-compose.yml
+# 放在 VPS 的 /opt/wifi-portal/ 下, 和 portal/ 源码目录同级:
+#
+#   /opt/wifi-portal/
+#   ├── docker-compose.yml      <- 本文件
+#   ├── .env                    <- 从 portal/.env.example 拷贝, 填真实值
+#   └── portal/                 <- 源码目录 (git clone 或 scp 上传)
+#
+# 常用命令:
+#   docker compose up -d --build    首次启动 / 代码更新后
+#   docker compose logs -f portal   看日志
+#   docker compose restart portal   只改了 .env 时用
+#   docker compose down             停掉
+
+services:
+  portal:
+    build:
+      context: ./portal
+      dockerfile: Dockerfile
+    image: kazuha/wifi-portal:latest
+    container_name: wifi-portal
+    restart: unless-stopped
+
+    # 只从 .env 文件读环境变量, 不从当前 shell 继承, 避免意外泄漏.
+    env_file:
+      - .env
+
+    # 端口映射: 容器里 28080 → 宿主机 127.0.0.1:28080
+    # 绑 127.0.0.1 关键! 不要写成 28080:28080 或 0.0.0.0:28080:28080,
+    # 那样会让 Portal 直接暴露到公网, 绕过 Nginx 和 TLS.
+    ports:
+      - "127.0.0.1:28080:28080"
+
+    # 日志限制: 每文件 10MB * 最多 3 个 = 30MB 上限, 防小 VPS 爆磁盘.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Healthcheck 通过容器内 wget 打 /healthz. Alpine 默认有 wget.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:28080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
