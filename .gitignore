@@ -1,0 +1,39 @@
+# ===== 敏感文件 (绝对不能进 git) =====
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+secrets/
+
+# ===== Go 构建产物 =====
+/portal/portal
+/portal/dist/
+*.exe
+*.test
+*.out
+coverage.out
+vendor/
+
+# ===== 本地 IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== Docker =====
+# compose 启动后产生的本地覆盖文件
+docker-compose.override.yml
+# 本地构建临时
+.dockerignore.local
+
+# ===== 日志 / 运行时 =====
+*.log
+logs/
+tmp/
+
+# ===== Claude / Cowork 会话元数据 (如果工作目录恰好被 git 管理) =====
+.claude/
+.cowork/
