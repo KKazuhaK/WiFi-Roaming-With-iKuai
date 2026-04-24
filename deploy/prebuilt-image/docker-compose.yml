@@ -19,6 +19,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # 强制监听 0.0.0.0, 让 Caddy 容器从 compose 网络能连到.
+      # Portal 默认是 127.0.0.1:28080 只让自己 loopback 访问 —
+      # healthcheck 是 wget 127.0.0.1 所以还能过, 但 Caddy 会 502.
+      # 这里写死覆盖 .env, 避免被漏填或手抖注释掉.
+      - LISTEN_ADDR=0.0.0.0:28080
     # 访客码持久化. 想跨重建保住数据就保留这行.
     # 数据落在项目目录的 ./data/guest-codes.json, 直接 File Station 能看 / 备份.
     volumes:
