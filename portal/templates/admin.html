@@ -519,6 +519,7 @@
               <button type="button" class="btn btn-mini"
                       data-code="{{ .Code }}"
                       data-expires="{{ .ExpiresAtInput }}"
+                      data-duration-min="{{ .DurationMin }}"
                       data-max-uses="{{ .MaxUses }}"
                       data-note="{{ .Note }}"
                       onclick="openEditCode(this)"><svg class="icon"><use href="#i-square-pen"/></svg>{{ T $.Lang "admin.codes.btn.edit" }}</button>
@@ -725,6 +726,13 @@
           <input type="datetime-local" name="expires_at">
         </div>
         <div class="form-field">
+          <label>{{ T .Lang "admin.modal.add.duration.label" }}</label>
+          <div class="form-inline">
+            <input type="number" name="duration_h" value="2" min="0"> <span>{{ T .Lang "admin.modal.add.unitH" }}</span>
+            <input type="number" name="duration_m" value="0" min="0" max="59"> <span>{{ T .Lang "admin.modal.add.unitM" }}</span>
+          </div>
+        </div>
+        <div class="form-field">
           <label>{{ T .Lang "admin.modal.add.maxUses.label" }}</label>
           <input type="number" name="max_uses" value="1" min="0">
         </div>
@@ -768,6 +776,13 @@
           <input type="datetime-local" name="expires_at">
         </div>
         <div class="form-field">
+          <label>{{ T .Lang "admin.modal.add.duration.label" }}</label>
+          <div class="form-inline">
+            <input type="number" name="duration_h" value="2" min="0"> <span>{{ T .Lang "admin.modal.add.unitH" }}</span>
+            <input type="number" name="duration_m" value="0" min="0" max="59"> <span>{{ T .Lang "admin.modal.add.unitM" }}</span>
+          </div>
+        </div>
+        <div class="form-field">
           <label>{{ T .Lang "admin.modal.batch.eachMaxUses.label" }}</label>
           <input type="number" name="max_uses" value="1" min="0">
         </div>
@@ -792,6 +807,13 @@
         <div class="form-field">
           <label>{{ T .Lang "admin.modal.add.expires.label" }}</label>
           <input type="datetime-local" name="expires_at" id="edit-expires-at">
+        </div>
+        <div class="form-field">
+          <label>{{ T .Lang "admin.modal.add.duration.label" }}</label>
+          <div class="form-inline">
+            <input type="number" name="duration_h" id="edit-duration-h" min="0"> <span>{{ T .Lang "admin.modal.add.unitH" }}</span>
+            <input type="number" name="duration_m" id="edit-duration-m" min="0" max="59"> <span>{{ T .Lang "admin.modal.add.unitM" }}</span>
+          </div>
         </div>
         <div class="form-field">
           <label>{{ T .Lang "admin.modal.add.maxUses.label" }}</label>
@@ -938,6 +960,9 @@
       if (code) fd.append('code', code);
       var exp = f.expires_at.value;
       if (exp) fd.append('expires_at', exp);
+      var h = parseInt(f.duration_h.value) || 0;
+      var m = parseInt(f.duration_m.value) || 0;
+      fd.append('duration_min', (h * 60 + m).toString());
       fd.append('max_uses', (parseInt(f.max_uses.value) || 0).toString());
       fd.append('note', f.note.value);
 
@@ -967,6 +992,9 @@
       fd.append('length', f.length.value);
       var exp = f.expires_at.value;
       if (exp) fd.append('expires_at', exp);
+      var h = parseInt(f.duration_h.value) || 0;
+      var m = parseInt(f.duration_m.value) || 0;
+      fd.append('duration_min', (h * 60 + m).toString());
       fd.append('max_uses', (parseInt(f.max_uses.value) || 0).toString());
       fd.append('note', f.note.value);
 
@@ -1078,6 +1106,10 @@
       $('edit-code').value = d.code;
       $('edit-code-display').textContent = d.code;
       $('edit-expires-at').value = d.expires;       // 已经是 datetime-local 格式
+      var durationMin = parseInt(d.durationMin || '120', 10);
+      if (durationMin < 0) durationMin = 0;
+      $('edit-duration-h').value = Math.floor(durationMin / 60);
+      $('edit-duration-m').value = durationMin % 60;
       $('edit-max-uses').value = d.maxUses;          // dataset 自动 camelCase
       $('edit-note').value = d.note || '';
       openModal('modal-edit');
@@ -1089,6 +1121,9 @@
       var fd = new FormData();
       fd.append('code', f.code.value);
       fd.append('expires_at', f.expires_at.value);
+      var h = parseInt(f.duration_h.value) || 0;
+      var m = parseInt(f.duration_m.value) || 0;
+      fd.append('duration_min', (h * 60 + m).toString());
       fd.append('max_uses', (parseInt(f.max_uses.value) || 0).toString());
       fd.append('note', f.note.value);
       fetch('/admin/codes/edit', { method: 'POST', body: fd, credentials: 'same-origin' })

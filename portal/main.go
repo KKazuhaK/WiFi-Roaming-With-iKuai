@@ -828,22 +828,11 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	// 成功 → 清理同一设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess)
 	policy := a.ikuaiPolicies.Get(IKuaiProfileGuest)
-	policy.Timeout = guestPolicyTimeout(c.ExpiresAt)
+	policy.Timeout = c.DurationMin
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, upn,
 		policy)
 	clearSessionCookie(w, true)
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": ikuaiURL})
-}
-
-func guestPolicyTimeout(expiresAt time.Time) int {
-	if expiresAt.IsZero() {
-		return 0
-	}
-	remaining := int(time.Until(expiresAt).Seconds() / 60)
-	if remaining < 1 {
-		return 1
-	}
-	return remaining
 }
 
 // --- admin ---
@@ -955,10 +944,11 @@ func (a *App) handleCodeCreate(w http.ResponseWriter, r *http.Request) {
 		code = g
 	}
 	gc := &GuestCode{
-		Code:      code,
-		CreatedAt: time.Now(),
-		MaxUses:   parseMaxUses(r.FormValue("max_uses")),
-		Note:      strings.TrimSpace(r.FormValue("note")),
+		Code:        code,
+		CreatedAt:   time.Now(),
+		DurationMin: parseDurationMin(r),
+		MaxUses:     parseMaxUses(r.FormValue("max_uses")),
+		Note:        strings.TrimSpace(r.FormValue("note")),
 	}
 	if err := parseExpiry(r, gc); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1004,6 +994,7 @@ func (a *App) handleCodeBatch(w http.ResponseWriter, r *http.Request) {
 		length = 32
 	}
 	note := strings.TrimSpace(r.FormValue("note"))
+	durationMin := parseDurationMin(r)
 	maxUses := parseMaxUses(r.FormValue("max_uses"))
 	// baseProbe 只用来复用 parseExpiry 的过期计算. 每个码的 CreatedAt 用各自
 	// 的 time.Now(), 保证 List 排序时不会因时间戳相同而顺序抖动.
@@ -1021,11 +1012,12 @@ func (a *App) handleCodeBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		createdAt := time.Now()
 		gc := &GuestCode{
-			Code:      raw,
-			CreatedAt: createdAt,
-			ExpiresAt: baseProbe.ExpiresAt,
-			MaxUses:   maxUses,
-			Note:      note,
+			Code:        raw,
+			CreatedAt:   createdAt,
+			ExpiresAt:   baseProbe.ExpiresAt,
+			DurationMin: durationMin,
+			MaxUses:     maxUses,
+			Note:        note,
 		}
 		if !a.guestCodes.Add(gc) {
 			i-- // 撞码了, 重试
@@ -1114,8 +1106,8 @@ func (a *App) handleCodeDeleteBulk(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCodeEdit: POST /admin/codes/edit
-// form: code=<existing>, expires_at, max_uses, note
-// 改一个已存在码的 ExpiresAt / MaxUses / Note. Code 本身不能改 (要改就删了重建).
+// form: code=<existing>, expires_at, duration_min, max_uses, note
+// 改一个已存在码的 ExpiresAt / DurationMin / MaxUses / Note. Code 本身不能改 (要改就删了重建).
 // 已经使用过的码也允许编辑, 但已经在线的设备的 iKuai timeout 改不了 — 仅影响后续放行.
 func (a *App) handleCodeEdit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1137,9 +1129,10 @@ func (a *App) handleCodeEdit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	durationMin := parseDurationMin(r)
 	maxUses := parseMaxUses(r.FormValue("max_uses"))
 	note := strings.TrimSpace(r.FormValue("note"))
-	if !a.guestCodes.Edit(code, probe.ExpiresAt, maxUses, note) {
+	if !a.guestCodes.Edit(code, probe.ExpiresAt, durationMin, maxUses, note) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 		return
 	}
@@ -1586,6 +1579,22 @@ func parseExpiry(r *http.Request, gc *GuestCode) error {
 	return nil
 }
 
+func parseDurationMin(r *http.Request) int {
+	mins := parseIntDefault(r.FormValue("duration_min"), -1)
+	if mins >= 0 {
+		return mins
+	}
+	h := parseIntDefault(r.FormValue("duration_h"), 2)
+	m := parseIntDefault(r.FormValue("duration_m"), 0)
+	if h < 0 {
+		h = 0
+	}
+	if m < 0 {
+		m = 0
+	}
+	return h*60 + m
+}
+
 // --- 渲染 ---
 
 type pageData struct {
@@ -1688,6 +1697,7 @@ type adminCodeRow struct {
 	ExpiresAt      string // 显示用 "2006-01-02 15:04"
 	ExpiresAtInput string // datetime-local input 用 "2006-01-02T15:04"
 	Duration       string
+	DurationMin    int
 	Status         string
 	UseCount       int
 	MaxUses        int // 0 = 不限
@@ -1715,19 +1725,16 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 			CreatedAt: c.CreatedAt.Local().Format("2006-01-02 15:04"),
 			Status:    c.Status(),
 			UseCount:  c.UseCount(),
+			DurationMin: c.DurationMin,
 			MaxUses:   c.MaxUses,
 			Note:      c.Note,
 		}
+		row.Duration = formatDurationMin(c.DurationMin, lang)
 		if c.ExpiresAt.IsZero() {
 			row.ExpiresAt = T(lang, "admin.codes.neverExpires")
-			row.Duration = T(lang, "admin.codes.neverExpires")
 		} else {
 			row.ExpiresAt = c.ExpiresAt.Local().Format("2006-01-02 15:04")
 			row.ExpiresAtInput = c.ExpiresAt.Local().Format("2006-01-02T15:04")
-			d := c.ExpiresAt.Sub(c.CreatedAt)
-			hours := int(d.Hours())
-			mins := int(d.Minutes()) - hours*60
-			row.Duration = formatDuration(hours, mins)
 		}
 		if len(c.Uses) > 0 {
 			u := c.Uses[len(c.Uses)-1]
@@ -1899,4 +1906,13 @@ func formatDuration(hours, mins int) string {
 	default:
 		return "-"
 	}
+}
+
+func formatDurationMin(totalMin int, lang Lang) string {
+	if totalMin <= 0 {
+		return T(lang, "admin.codes.noSessionLimit")
+	}
+	hours := totalMin / 60
+	mins := totalMin % 60
+	return formatDuration(hours, mins)
 }

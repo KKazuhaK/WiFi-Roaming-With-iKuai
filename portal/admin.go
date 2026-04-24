@@ -33,15 +33,17 @@ const (
 // GuestCode 是一条访客码记录.
 // 设计备注:
 //   - ExpiresAt 是绝对过期时间. 零值表示永不过期.
+//   - DurationMin 是每次成功使用后在 iKuai 侧放行多久. 0 = 不限时.
 //   - MaxUses 限制同一个码最多可成功使用多少次. 0 = 不限.
 //   - Note 是 admin 的备注, 只用于后台显示.
 type GuestCode struct {
-	Code      string    `json:"code"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	MaxUses   int       `json:"max_uses,omitempty"`
-	Note      string    `json:"note,omitempty"`
-	Uses      []CodeUse `json:"uses,omitempty"`
+	Code        string    `json:"code"`
+	CreatedAt   time.Time `json:"created_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	DurationMin int       `json:"duration_min"`
+	MaxUses     int       `json:"max_uses,omitempty"`
+	Note        string    `json:"note,omitempty"`
+	Uses        []CodeUse `json:"uses,omitempty"`
 }
 
 type CodeUse struct {
@@ -115,16 +117,30 @@ func (s *GuestCodeStore) loadFromDisk() error {
 	if len(data) == 0 {
 		return nil
 	}
-	var codes []*GuestCode
-	if err := json.Unmarshal(data, &codes); err != nil {
+	var rawCodes []json.RawMessage
+	if err := json.Unmarshal(data, &rawCodes); err != nil {
 		return fmt.Errorf("parse %s: %w", s.persistPath, err)
 	}
-	for _, c := range codes {
+	for _, raw := range rawCodes {
+		var c GuestCode
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return fmt.Errorf("parse %s: %w", s.persistPath, err)
+		}
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(raw, &fields)
+		if _, ok := fields["duration_min"]; !ok && !c.ExpiresAt.IsZero() {
+			mins := int(c.ExpiresAt.Sub(c.CreatedAt).Minutes())
+			if mins < 1 {
+				mins = 1
+			}
+			c.DurationMin = mins
+		}
 		k := strings.ToLower(strings.TrimSpace(c.Code))
 		if k == "" {
 			continue
 		}
-		s.codes[k] = c
+		copied := c
+		s.codes[k] = &copied
 	}
 	log.Printf("guest codes: loaded %d entries from %s", len(s.codes), s.persistPath)
 	return nil
@@ -206,11 +222,11 @@ func (s *GuestCodeStore) Delete(code string) bool {
 	return true
 }
 
-// Edit 修改一个码的可变元数据 (过期时间 / MaxUses / 备注). 不允许改 Code
+// Edit 修改一个码的可变元数据 (过期时间 / 限时 / MaxUses / 备注). 不允许改 Code
 // 本身 (那等于删了重建). 不存在 → 返回 false. 已经使用过的码也允许编辑 —
-// 改 ExpiresAt 影响后续放行的 iKuai timeout, 已经在线的设备的 timeout 不
-// 受影响 (那是 iKuai 侧的 token, portal 改不了).
-func (s *GuestCodeStore) Edit(code string, expiresAt time.Time, maxUses int, note string) bool {
+// 改 DurationMin 只影响后续放行, 已经在线的设备的 timeout 不受影响
+// (那是 iKuai 侧的 token, portal 改不了).
+func (s *GuestCodeStore) Edit(code string, expiresAt time.Time, durationMin, maxUses int, note string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := strings.ToLower(strings.TrimSpace(code))
@@ -219,6 +235,7 @@ func (s *GuestCodeStore) Edit(code string, expiresAt time.Time, maxUses int, not
 		return false
 	}
 	c.ExpiresAt = expiresAt
+	c.DurationMin = durationMin
 	c.MaxUses = maxUses
 	c.Note = note
 	s.saveLocked()
