@@ -108,14 +108,14 @@ func (s *GuestCodeStore) loadFromDisk() error {
 		if os.IsNotExist(err) {
 			return nil // 首次启动, 文件还没建
 		}
-		return fmt.Errorf("读取 %s: %w", s.persistPath, err)
+		return fmt.Errorf("read %s: %w", s.persistPath, err)
 	}
 	if len(data) == 0 {
 		return nil
 	}
 	var codes []*GuestCode
 	if err := json.Unmarshal(data, &codes); err != nil {
-		return fmt.Errorf("解析 %s: %w", s.persistPath, err)
+		return fmt.Errorf("parse %s: %w", s.persistPath, err)
 	}
 	for _, c := range codes {
 		k := strings.ToLower(strings.TrimSpace(c.Code))
@@ -124,7 +124,7 @@ func (s *GuestCodeStore) loadFromDisk() error {
 		}
 		s.codes[k] = c
 	}
-	log.Printf("访客码持久化: 从 %s 加载 %d 条", s.persistPath, len(s.codes))
+	log.Printf("guest codes: loaded %d entries from %s", s.persistPath, len(s.codes))
 	return nil
 }
 
@@ -140,21 +140,21 @@ func (s *GuestCodeStore) saveLocked() {
 	}
 	data, err := json.MarshalIndent(codes, "", "  ")
 	if err != nil {
-		log.Printf("访客码序列化失败: %v", err)
+		log.Printf("guest codes: marshal failed: %v", err)
 		return
 	}
 	dir := filepath.Dir(s.persistPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("访客码 mkdir %s 失败: %v", dir, err)
+		log.Printf("guest codes: mkdir %s failed: %v", dir, err)
 		return
 	}
 	tmp := s.persistPath + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		log.Printf("访客码写 %s 失败: %v", tmp, err)
+		log.Printf("guest codes: write %s failed: %v", tmp, err)
 		return
 	}
 	if err := os.Rename(tmp, s.persistPath); err != nil {
-		log.Printf("访客码 rename %s → %s 失败: %v", tmp, s.persistPath, err)
+		log.Printf("guest codes: rename %s -> %s failed: %v", tmp, s.persistPath, err)
 	}
 }
 

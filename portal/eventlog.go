@@ -94,7 +94,7 @@ func (e *EventLog) loadFromDisk() error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("打开 %s: %w", e.persistPath, err)
+		return fmt.Errorf("open %s: %w", e.persistPath, err)
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
@@ -119,12 +119,12 @@ func (e *EventLog) loadFromDisk() error {
 		loaded++
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("读取 %s: %w", e.persistPath, err)
+		return fmt.Errorf("read %s: %w", e.persistPath, err)
 	}
 	sort.SliceStable(e.events, func(i, j int) bool {
 		return e.events[i].Time.Before(e.events[j].Time)
 	})
-	log.Printf("事件日志: 从 %s 加载 %d 条 (跳过 %d 条损坏)", e.persistPath, loaded, broken)
+	log.Printf("event log: loaded %d entries from %s (skipped %d malformed)", e.persistPath, loaded, broken)
 	return nil
 }
 
@@ -147,7 +147,7 @@ func (e *EventLog) Append(ev Event) {
 		return
 	}
 	if err := e.appendToDisk(ev); err != nil {
-		log.Printf("事件日志写盘失败: %v", err)
+		log.Printf("event log: write failed: %v", err)
 	}
 }
 
@@ -251,7 +251,7 @@ func (e *EventLog) Prune() int {
 
 	if needsRewrite {
 		if err := e.rewriteFile(eventsCopy); err != nil {
-			log.Printf("事件日志 Prune 重写失败: %v", err)
+			log.Printf("event log: prune rewrite failed: %v", err)
 		}
 	}
 	return removed
@@ -327,7 +327,7 @@ func WriteEventsCSV(w http.ResponseWriter, events []Event) error {
 	}
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
-	if err := cw.Write([]string{"时间", "类型", "对象", "方法", "结果", "MAC", "IP", "详情"}); err != nil {
+	if err := cw.Write([]string{"Time", "Kind", "Subject", "Method", "Result", "MAC", "IP", "Detail"}); err != nil {
 		return err
 	}
 	for _, ev := range events {
@@ -350,9 +350,9 @@ func WriteEventsCSV(w http.ResponseWriter, events []Event) error {
 func eventKindLabel(k string) string {
 	switch k {
 	case KindLogin:
-		return "登录"
+		return "login"
 	case KindAdminAction:
-		return "管理"
+		return "admin"
 	default:
 		return k
 	}
@@ -365,9 +365,9 @@ func eventMethodLabel(m string) string {
 	case MethodDuo:
 		return "Duo"
 	case MethodGuestCode:
-		return "访客码"
+		return "guest_code"
 	case MethodAdmin:
-		return "后台"
+		return "admin_console"
 	default:
 		return m
 	}
@@ -376,13 +376,13 @@ func eventMethodLabel(m string) string {
 func eventResultLabel(r string) string {
 	switch r {
 	case ResultSuccess:
-		return "成功"
+		return "success"
 	case ResultDenied:
-		return "拒绝"
+		return "denied"
 	case ResultRateLimited:
-		return "限流"
+		return "rate_limited"
 	case ResultError:
-		return "错误"
+		return "error"
 	default:
 		return r
 	}
@@ -405,7 +405,9 @@ func (a *App) logLogin(subject, result, method, mac, ip, detail string) {
 }
 
 // logAdminAction admin 操作事件便捷 Append.
-func (a *App) logAdminAction(adminUPN, result, detail string) {
+// ip 是 admin 当下操作所在的 client IP — 留下"管理员从哪里改的"审计痕迹.
+// 调用点都能拿到 *http.Request, 直接 clientIP(r) 传进来.
+func (a *App) logAdminAction(adminUPN, ip, result, detail string) {
 	if a.eventLog == nil {
 		return
 	}
@@ -414,6 +416,7 @@ func (a *App) logAdminAction(adminUPN, result, detail string) {
 		Subject: adminUPN,
 		Result:  result,
 		Method:  MethodAdmin,
+		IP:      ip,
 		Detail:  detail,
 	})
 }

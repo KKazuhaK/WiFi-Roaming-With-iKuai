@@ -48,18 +48,18 @@ func loadTranslations() {
 		path := fmt.Sprintf("i18n/%s.json", l)
 		data, err := i18nFS.ReadFile(path)
 		if err != nil {
-			log.Fatalf("i18n: 读取 %s 失败: %v", path, err)
+			log.Fatalf("i18n: read %s failed: %v", path, err)
 		}
 		var m map[string]string
 		if err := json.Unmarshal(data, &m); err != nil {
-			log.Fatalf("i18n: 解析 %s 失败: %v", path, err)
+			log.Fatalf("i18n: parse %s failed: %v", path, err)
 		}
 		translations[l] = m
 	}
 	// 校验: 以 EN 为 source-of-truth, 其它 lang 必须有所有 key.
 	base := translations[LangEN]
 	if base == nil {
-		log.Fatalf("i18n: en.json 加载失败")
+		log.Fatalf("i18n: en.json failed to load")
 	}
 	missing := map[Lang][]string{}
 	for _, l := range supportedLangs {
@@ -75,11 +75,11 @@ func loadTranslations() {
 	if len(missing) > 0 {
 		for l, keys := range missing {
 			sort.Strings(keys)
-			log.Printf("i18n: lang %s 缺 %d 个 key: %v", l, len(keys), keys)
+			log.Printf("i18n: lang %s missing %d keys: %v", l, len(keys), keys)
 		}
-		log.Fatalf("i18n: 翻译不完整, 见上面 缺失列表")
+		log.Fatalf("i18n: translations incomplete, see missing keys above")
 	}
-	log.Printf("i18n: 已加载 %d 种语言, 每种 %d 条", len(supportedLangs), len(base))
+	log.Printf("i18n: loaded %d langs, %d keys each", len(supportedLangs), len(base))
 }
 
 // T: 按 lang 查 key. 找不到 → fallback 到 EN. 还找不到 → 返回 key 字面量

@@ -110,7 +110,7 @@ func (a *App) handleAuthProceed(w http.ResponseWriter, r *http.Request) {
 		lang = Lang(sess.Lang)
 	}
 	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
-		log.Printf("拒绝已封禁 MAC auth/proceed: mac=%s ip=%s", sess.MAC, sess.UserIP)
+		log.Printf("deny banned MAC at /auth/proceed: mac=%s ip=%s", sess.MAC, sess.UserIP)
 		a.logLogin("(unknown)", ResultDenied, "", sess.MAC, sess.UserIP, "mac_denylist")
 		a.renderError(w, r, lang, T(lang, "errors.rateLimitedPermanent"), http.StatusForbidden)
 		return
@@ -126,7 +126,7 @@ func (a *App) handleAuthProceed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if entry.SessionState != sess.State {
-		log.Printf("/auth/proceed state 不匹配 (token=%s)", token[:8])
+		log.Printf("/auth/proceed state mismatch (token=%s)", token[:8])
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}

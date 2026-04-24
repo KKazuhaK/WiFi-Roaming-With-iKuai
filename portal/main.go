@@ -94,7 +94,7 @@ func main() {
 
 	oidcClient, err := newOIDCClient(ctx, cfg)
 	if err != nil {
-		log.Fatalf("OIDC 初始化失败: %v", err)
+		log.Fatalf("OIDC init failed: %v", err)
 	}
 
 	var duoClient *DuoClient
@@ -102,31 +102,31 @@ func main() {
 	if cfg.IsDuoEnabled() {
 		duoClient = newDuoClient(cfg)
 		duoUni = newDuoUniversalClient(cfg)
-		log.Printf("Duo: 已启用 (Auth API + Universal Prompt), host=%s, 允许域名=%v",
+		log.Printf("Duo: enabled (Auth API + Universal Prompt), host=%s, allowed_domains=%v",
 			cfg.DuoAPIHost, cfg.AllowedEmailDomains)
 	} else {
-		log.Printf("Duo: 未启用")
+		log.Printf("Duo: disabled")
 	}
 
 	if cfg.IsAdminEnabled() {
-		log.Printf("访客码 admin 后台: 已启用, admin=%v", cfg.AdminEmails)
+		log.Printf("admin console: enabled, admin=%v", cfg.AdminEmails)
 	} else {
-		log.Printf("访客码 admin 后台: 未启用")
+		log.Printf("admin console: disabled")
 	}
 
 	guestStore, err := newGuestCodeStore(guestCodesPath)
 	if err != nil {
-		log.Fatalf("访客码存储初始化失败: %v", err)
+		log.Fatalf("guest codes store init failed: %v", err)
 	}
 
 	denylistStore, err := newDenylistStore(denylistPath)
 	if err != nil {
-		log.Fatalf("MAC 封禁列表初始化失败: %v", err)
+		log.Fatalf("MAC denylist init failed: %v", err)
 	}
 
 	ikuaiPolicyStore, err := newIKuaiPolicyStore(cfg.IKuaiPolicyDefaults, ikuaiPolicyPath)
 	if err != nil {
-		log.Fatalf("iKuai 放行策略初始化失败: %v", err)
+		log.Fatalf("iKuai policy init failed: %v", err)
 	}
 
 	tmpl, err := template.New("").Funcs(template.FuncMap{
@@ -134,19 +134,19 @@ func main() {
 		"jsonI18N": jsonI18N,
 	}).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
-		log.Fatalf("模板加载失败: %v", err)
+		log.Fatalf("template load failed: %v", err)
 	}
 
 	banHist, err := newBanHistory(banHistoryPath)
 	if err != nil {
-		log.Fatalf("ban history 初始化失败: %v", err)
+		log.Fatalf("ban history init failed: %v", err)
 	}
 
 	eventLog, err := newEventLog(eventLogPath, cfg.EventLogRetention)
 	if err != nil {
-		log.Fatalf("事件日志初始化失败: %v", err)
+		log.Fatalf("event log init failed: %v", err)
 	}
-	log.Printf("持久化目录: %s (访客码 / MAC 封禁 / iKuai 策略 / 限流历史 / 事件日志, 事件保留 %s)",
+	log.Printf("data dir: %s (guest codes, MAC denylist, iKuai policy, ban history, event log; event retention %s)",
 		dataDir, cfg.EventLogRetention)
 
 	app := &App{
@@ -173,13 +173,13 @@ func main() {
 	go app.proceedStore.gcLoop()
 	go app.eventLog.gcLoop()
 	if cfg.IPBanEscalateAt >= 999999 {
-		log.Printf("限流: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s → 冷却 %s, 不升级永久",
+		log.Printf("ratelimit: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s -> cooldown %s, no permanent escalation",
 			cfg.AuthEmailFailsShort, cfg.AuthEmailWindowShort,
 			cfg.AuthEmailFailsLong, cfg.AuthEmailWindowLong,
 			cfg.GuestCodeMacFails, cfg.GuestCodeMacWindow,
 			cfg.IPFailsLimit, cfg.IPFailsWindow, cfg.IPBanDuration)
 	} else {
-		log.Printf("限流: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s → 首次封禁 %s, 第 %d 次起永久",
+		log.Printf("ratelimit: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s -> first ban %s, permanent at attempt %d",
 			cfg.AuthEmailFailsShort, cfg.AuthEmailWindowShort,
 			cfg.AuthEmailFailsLong, cfg.AuthEmailWindowLong,
 			cfg.GuestCodeMacFails, cfg.GuestCodeMacWindow,
@@ -188,7 +188,7 @@ func main() {
 
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
-		log.Fatalf("静态目录加载失败: %v", err)
+		log.Fatalf("static dir load failed: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -230,7 +230,7 @@ func main() {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	log.Printf("Portal 启动, 监听 %s, public URL: %s", cfg.ListenAddr, cfg.PublicURL)
+	log.Printf("Portal started, listening on %s, public URL: %s", cfg.ListenAddr, cfg.PublicURL)
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -312,18 +312,18 @@ func (a *App) handlePortal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, denied := a.denylist.IsMACDenied(dev.MAC); denied {
-		log.Printf("拒绝已封禁 MAC 访问 portal: mac=%s ip=%s", dev.MAC, dev.IP)
+		log.Printf("deny banned MAC at /portal: mac=%s ip=%s", dev.MAC, dev.IP)
 		a.renderError(w, r, lang, T(lang, "errors.rateLimitedPermanent"), http.StatusForbidden)
 		return
 	}
 	sess, err := newSession(dev.IP, dev.MAC, string(lang))
 	if err != nil {
-		log.Printf("newSession 失败: %v", err)
+		log.Printf("newSession failed: %v", err)
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
 	if err := writeSessionCookie(w, a.cfg.SessionSecret, sess, true); err != nil {
-		log.Printf("写 cookie 失败: %v", err)
+		log.Printf("write cookie failed: %v", err)
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
@@ -362,7 +362,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
-		log.Printf("拒绝已封禁 MAC auth/start: mac=%s ip=%s", sess.MAC, ip)
+		log.Printf("deny banned MAC at /auth/start: mac=%s ip=%s", sess.MAC, ip)
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error":     "rate_limited",
 			"permanent": true,
@@ -378,7 +378,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	// 只有启用 Duo 时才强制域名白名单;
 	// 不用 Duo 的场景, Entra 自己会做域名 / 租户过滤.
 	if a.cfg.IsDuoEnabled() && !isAllowedDomain(email, a.cfg.AllowedEmailDomains) {
-		log.Printf("拒绝域名不在白名单: %s", email)
+		log.Printf("deny domain not in allowlist: %s", email)
 		a.recordRequestFailure(r, &sess, "invalid_domain")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_domain"})
 		return
@@ -388,7 +388,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	shortN := a.authEmailFails.countIn(email, a.cfg.AuthEmailWindowShort)
 	longN := a.authEmailFails.countIn(email, a.cfg.AuthEmailWindowLong)
 	if shortN >= a.cfg.AuthEmailFailsShort || longN >= a.cfg.AuthEmailFailsLong {
-		log.Printf("auth/start 邮箱限流: %s short=%d long=%d ip=%s",
+		log.Printf("/auth/start email ratelimit: %s short=%d long=%d ip=%s",
 			email, shortN, longN, ip)
 		a.recordRequestFailure(r, &sess, "rate_limited_email")
 		// 哪个窗口先满选哪个的 retry_after
@@ -424,7 +424,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	} else {
 		pre, perr := a.duo.Preauth(email)
 		if perr != nil {
-			log.Printf("Duo preauth 失败 for %s: %v, fallback 到 SSO", email, perr)
+			log.Printf("Duo preauth failed for %s: %v, falling back to SSO", email, perr)
 			realURL, kind = ssoURL, proceedEntra
 		} else {
 			log.Printf("Duo preauth for %s: result=%s devices=%d",
@@ -434,24 +434,24 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 				if pre.HasUniversalPromptCapable() {
 					duoURL, derr := a.duoUniversal.AuthURL(email, sess.State)
 					if derr != nil {
-						log.Printf("Duo AuthURL 构造失败: %v, fallback SSO", derr)
+						log.Printf("Duo AuthURL build failed: %v, falling back to SSO", derr)
 						realURL, kind = ssoURL, proceedEntra
 					} else {
 						realURL, kind = duoURL, proceedDuo
 					}
 				} else {
-					log.Printf("%s 无任何 Duo 设备, fallback SSO", email)
+					log.Printf("%s has no Duo devices, falling back to SSO", email)
 					realURL, kind = ssoURL, proceedEntra
 				}
 			case "enroll", "allow":
 				realURL, kind = ssoURL, proceedEntra
 			case "deny":
 				// 不在响应里告诉攻击者 "被拒" — 一律丢给 Entra, Entra 自己拒.
-				log.Printf("Duo 拒绝账号: %s (%s), 仍走 Entra 不暴露 deny 信号",
+				log.Printf("Duo denied account: %s (%s), routing to Entra anyway to hide deny signal",
 					email, pre.StatusMsg)
 				realURL, kind = ssoURL, proceedDeny
 			default:
-				log.Printf("未知 Duo preauth result: %s, fallback SSO", pre.Result)
+				log.Printf("unknown Duo preauth result: %s, falling back to SSO", pre.Result)
 				realURL, kind = ssoURL, proceedEntra
 			}
 		}
@@ -462,7 +462,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	token, err := a.proceedStore.put(realURL, sess.State, email, kind)
 	if err != nil {
-		log.Printf("proceedStore.put 失败: %v", err)
+		log.Printf("proceedStore.put failed: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 		return
 	}
@@ -574,12 +574,12 @@ func (a *App) recordIPFailure(ip, reason string) {
 	if banCount >= a.cfg.IPBanEscalateAt {
 		duration = time.Until(PermanentBanUntil) // 算出到"永久"标记点的时长
 		a.ipBans.ban(ip, duration)
-		log.Printf("IP 失败超限, **永久封禁** (第 %d 次): %s (累计=%d 窗口=%s 原因=%s)",
+		log.Printf("IP fail-limit reached, **permanent ban** (attempt %d): %s (count=%d window=%s reason=%s)",
 			banCount, ip, n, a.cfg.IPFailsWindow, reason)
 	} else {
 		duration = a.cfg.IPBanDuration
 		a.ipBans.ban(ip, duration)
-		log.Printf("IP 失败超限, 冷却 %s (第 %d 次): %s (累计=%d 窗口=%s 原因=%s)",
+		log.Printf("IP fail-limit reached, cooldown %s (attempt %d): %s (count=%d window=%s reason=%s)",
 			duration, banCount, ip, n, a.cfg.IPFailsWindow, reason)
 	}
 }
@@ -612,12 +612,12 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 		lang = Lang(sess.Lang)
 	}
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		log.Printf("Entra 返回错误: %s - %s", errParam, r.URL.Query().Get("error_description"))
+		log.Printf("Entra returned error: %s - %s", errParam, r.URL.Query().Get("error_description"))
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
 	if got := r.URL.Query().Get("state"); got != sess.State {
-		log.Printf("Entra state 不匹配")
+		log.Printf("Entra state mismatch")
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
@@ -630,7 +630,7 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	user, err := a.oidc.Exchange(ctx, a.cfg, code, sess.Nonce)
 	if err != nil {
-		log.Printf("OIDC Exchange 失败: %v", err)
+		log.Printf("OIDC Exchange failed: %v", err)
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusUnauthorized)
 		return
 	}
@@ -639,18 +639,18 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user.IsGuest() {
-		log.Printf("拒绝 Guest: %s", user.UPN)
+		log.Printf("deny Guest: %s", user.UPN)
 		a.logLogin(user.UPN, ResultDenied, MethodSSO, sess.MAC, sess.UserIP, "guest_blocked")
 		a.renderError(w, r, lang, T(lang, "errors.guestBlocked"), http.StatusForbidden)
 		return
 	}
 	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
-		log.Printf("拒绝已封禁 MAC SSO 放行: upn=%s mac=%s ip=%s", user.UPN, sess.MAC, sess.UserIP)
+		log.Printf("deny banned MAC at SSO grant: upn=%s mac=%s ip=%s", user.UPN, sess.MAC, sess.UserIP)
 		a.logLogin(user.UPN, ResultDenied, MethodSSO, sess.MAC, sess.UserIP, "mac_denylist")
 		a.renderError(w, r, lang, T(lang, "errors.rateLimitedPermanent"), http.StatusForbidden)
 		return
 	}
-	log.Printf("放行成员(SSO): upn=%s name=%q client_ip=%s user_ip=%s mac=%s",
+	log.Printf("grant member (SSO): upn=%s name=%q client_ip=%s user_ip=%s mac=%s",
 		user.UPN, user.Name, clientIP(r), sess.UserIP, sess.MAC)
 	a.logLogin(user.UPN, ResultSuccess, MethodSSO, sess.MAC, sess.UserIP, "")
 	// 成功认证后清理同一邮箱 / 设备 / IP 的临时失败状态.
@@ -678,12 +678,12 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 		lang = Lang(sess.Lang)
 	}
 	if got := r.URL.Query().Get("state"); got != sess.State {
-		log.Printf("Duo state 不匹配")
+		log.Printf("Duo state mismatch")
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		log.Printf("Duo 返回错误: %s", errParam)
+		log.Printf("Duo returned error: %s", errParam)
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
@@ -694,28 +694,28 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 		duoCode = r.URL.Query().Get("code")
 	}
 	if duoCode == "" {
-		log.Printf("Duo callback 缺 code/duo_code 参数, query=%q", r.URL.RawQuery)
+		log.Printf("Duo callback missing code/duo_code param, query=%q", r.URL.RawQuery)
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
 	if sess.Email == "" {
-		log.Printf("Duo callback: session 里没 email")
+		log.Printf("Duo callback: no email in session")
 		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
 	}
 	username, err := a.duoUniversal.Exchange(duoCode, sess.Email)
 	if err != nil {
-		log.Printf("Duo Exchange 失败 for %s: %v", sess.Email, err)
+		log.Printf("Duo Exchange failed for %s: %v", sess.Email, err)
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusUnauthorized)
 		return
 	}
 	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
-		log.Printf("拒绝已封禁 MAC Duo 放行: upn=%s mac=%s ip=%s", username, sess.MAC, sess.UserIP)
+		log.Printf("deny banned MAC at Duo grant: upn=%s mac=%s ip=%s", username, sess.MAC, sess.UserIP)
 		a.logLogin(username, ResultDenied, MethodDuo, sess.MAC, sess.UserIP, "mac_denylist")
 		a.renderError(w, r, lang, T(lang, "errors.rateLimitedPermanent"), http.StatusForbidden)
 		return
 	}
-	log.Printf("放行成员(Duo快捷): upn=%s client_ip=%s user_ip=%s mac=%s",
+	log.Printf("grant member (Duo): upn=%s client_ip=%s user_ip=%s mac=%s",
 		username, clientIP(r), sess.UserIP, sess.MAC)
 	a.logLogin(username, ResultSuccess, MethodDuo, sess.MAC, sess.UserIP, "")
 	// 成功认证后清理同一邮箱 / 设备 / IP 的临时失败状态.
@@ -753,7 +753,7 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
-		log.Printf("拒绝已封禁 MAC guest-code: mac=%s ip=%s", sess.MAC, ip)
+		log.Printf("deny banned MAC at guest-code: mac=%s ip=%s", sess.MAC, ip)
 		a.logLogin("(guest)", ResultDenied, MethodGuestCode, sess.MAC, ip, "mac_denylist")
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error":     "rate_limited",
@@ -764,7 +764,7 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	// 规则 5: 按 session 里的 MAC 查失败计数. MAC 是从 /portal 签进 cookie 的,
 	// 攻击者改不了, 所以比按 IP 更稳.
 	if a.guestCodeFails.countIn(sess.MAC, a.cfg.GuestCodeMacWindow) >= a.cfg.GuestCodeMacFails {
-		log.Printf("guest-code 按 MAC 限流: mac=%s ip=%s", sess.MAC, ip)
+		log.Printf("guest-code ratelimited by MAC: mac=%s ip=%s", sess.MAC, ip)
 		a.recordRequestFailure(r, &sess, "rate_limited_mac")
 		a.logLogin("(guest)", ResultRateLimited, MethodGuestCode, sess.MAC, ip, "mac")
 		rule := "mac"
@@ -784,17 +784,17 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	upn := "guest-" + guestID
 	c := a.guestCodes.Validate(code, sess.MAC, sess.UserIP, upn)
 	if c == nil {
-		log.Printf("拒绝访客码 ip=%s mac=%s", sess.UserIP, sess.MAC)
+		log.Printf("deny guest code ip=%s mac=%s", sess.UserIP, sess.MAC)
 		a.guestCodeFails.record(sess.MAC)
 		a.recordRequestFailure(r, &sess, "invalid_guest_code")
 		a.logLogin("(guest)", ResultDenied, MethodGuestCode, sess.MAC, sess.UserIP, "invalid_code")
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_code"})
 		return
 	}
-	log.Printf("放行访客: upn=%s code-suffix=%s client_ip=%s user_ip=%s mac=%s",
+	log.Printf("grant guest: upn=%s code-suffix=%s client_ip=%s user_ip=%s mac=%s",
 		upn, tailN(c.Code, 4), clientIP(r), sess.UserIP, sess.MAC)
 	a.logLogin(upn, ResultSuccess, MethodGuestCode, sess.MAC, sess.UserIP,
-		"code=…"+tailN(c.Code, 4))
+		"code=..."+tailN(c.Code, 4))
 	// 成功 → 清理同一设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess)
 	policy := a.ikuaiPolicies.Get(IKuaiProfileGuest)
@@ -836,8 +836,8 @@ func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) finishAdminLogin(w http.ResponseWriter, r *http.Request, lang Lang, user *UserInfo) {
 	if user.IsGuest() || !user.IsAdmin(a.cfg) {
-		log.Printf("admin 登录被拒: upn=%s groups=%v", user.UPN, user.Groups)
-		a.logAdminAction(user.UPN, ResultDenied, "admin login rejected (not in allow-list)")
+		log.Printf("admin login denied: upn=%s groups=%v", user.UPN, user.Groups)
+		a.logAdminAction(user.UPN, clientIP(r), ResultDenied, "admin login rejected (not in allow-list)")
 		a.renderError(w, r, lang, T(lang, "errors.notAdminMember"), http.StatusForbidden)
 		return
 	}
@@ -850,8 +850,8 @@ func (a *App) finishAdminLogin(w http.ResponseWriter, r *http.Request, lang Lang
 		return
 	}
 	clearSessionCookie(w, true)
-	log.Printf("admin 登录成功: upn=%s via=%s", user.UPN, adminGrantReason(a.cfg, user))
-	a.logAdminAction(user.UPN, ResultSuccess, "admin login via="+adminGrantReason(a.cfg, user))
+	log.Printf("admin login success: upn=%s via=%s", user.UPN, adminGrantReason(a.cfg, user))
+	a.logAdminAction(user.UPN, clientIP(r), ResultSuccess, "admin login via="+adminGrantReason(a.cfg, user))
 	http.Redirect(w, r, "/admin", http.StatusFound)
 }
 
@@ -873,7 +873,7 @@ func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request, apiMode bool)
 		if apiMode {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "admin_disabled"})
 		} else {
-			http.Error(w, "Admin 后台未配置", http.StatusNotFound)
+			http.Error(w, "Admin console not configured", http.StatusNotFound)
 		}
 		return AdminSession{}, false
 	}
@@ -935,11 +935,11 @@ func (a *App) handleCodeCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "duplicate_code"})
 		return
 	}
-	detail := "add auto-gen code=…" + tailN(gc.Code, 4)
+	detail := "add auto-gen code=..." + tailN(gc.Code, 4)
 	if userProvidedCode {
-		detail = "add code=…" + tailN(gc.Code, 4)
+		detail = "add code=..." + tailN(gc.Code, 4)
 	}
-	a.logAdminAction(admin.UPN, ResultSuccess, detail)
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, detail)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "code": gc.Code})
 }
 
@@ -1007,7 +1007,7 @@ func (a *App) handleCodeBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		generated = append(generated, raw)
 	}
-	a.logAdminAction(admin.UPN, ResultSuccess,
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess,
 		fmt.Sprintf("batch count=%d type=%s len=%d", len(generated), codeType, length))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "count": len(generated), "codes": generated,
@@ -1030,7 +1030,7 @@ func (a *App) handleCodeDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted := a.guestCodes.Delete(code)
 	if deleted {
-		a.logAdminAction(admin.UPN, ResultSuccess, "delete code=…"+tailN(code, 4))
+		a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, "delete code=..."+tailN(code, 4))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": deleted})
 }
@@ -1045,7 +1045,7 @@ func (a *App) handleCodeDeleteExpired(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := a.guestCodes.DeleteExpired()
-	a.logAdminAction(admin.UPN, ResultSuccess, fmt.Sprintf("delete-expired deleted=%d", n))
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, fmt.Sprintf("delete-expired deleted=%d", n))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": n})
 }
 
@@ -1080,7 +1080,7 @@ func (a *App) handleCodeDeleteBulk(w http.ResponseWriter, r *http.Request) {
 			skipped++
 		}
 	}
-	a.logAdminAction(admin.UPN, ResultSuccess,
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess,
 		fmt.Sprintf("delete-bulk deleted=%d skipped=%d", deleted, skipped))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "deleted": deleted, "skipped": skipped,
@@ -1169,8 +1169,8 @@ func (a *App) handleRateLimitReset(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_type"})
 		return
 	}
-	log.Printf("admin %s 清除限流: type=%s key=%s", admin.UPN, t, key)
-	a.logAdminAction(admin.UPN, ResultSuccess, fmt.Sprintf("reset type=%s key=%s", t, key))
+	log.Printf("admin %s reset ratelimit: type=%s key=%s", admin.UPN, t, key)
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, fmt.Sprintf("reset type=%s key=%s", t, key))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -1193,8 +1193,8 @@ func (a *App) handleRateLimitResetAll(w http.ResponseWriter, r *http.Request) {
 		"guest_mac_fails": a.guestCodeFails.resetAll(),
 		"ip_fails":        a.ipFails.resetAll(),
 	}
-	log.Printf("admin %s 一键清除所有限流状态: %+v", admin.UPN, cleared)
-	a.logAdminAction(admin.UPN, ResultSuccess, fmt.Sprintf("reset-all %+v", cleared))
+	log.Printf("admin %s reset-all ratelimit state: %+v", admin.UPN, cleared)
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, fmt.Sprintf("reset-all %+v", cleared))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
 }
 
@@ -1215,9 +1215,9 @@ func (a *App) handleDenyMACCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.guestCodeFails.reset(item.MAC)
-	log.Printf("admin %s 封禁 MAC: mac=%s created=%v reason=%q", admin.UPN, item.MAC, created, item.Reason)
+	log.Printf("admin %s ban MAC: mac=%s created=%v reason=%q", admin.UPN, item.MAC, created, item.Reason)
 	if created {
-		a.logAdminAction(admin.UPN, ResultSuccess, "mac="+item.MAC+" ban reason="+item.Reason)
+		a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, "mac="+item.MAC+" ban reason="+item.Reason)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
@@ -1242,9 +1242,9 @@ func (a *App) handleDenyMACDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	norm := normalizeMAC(mac)
 	deleted := a.denylist.DeleteMAC(norm)
-	log.Printf("admin %s 解除 MAC 封禁: mac=%s deleted=%v", admin.UPN, norm, deleted)
+	log.Printf("admin %s unban MAC: mac=%s deleted=%v", admin.UPN, norm, deleted)
 	if deleted {
-		a.logAdminAction(admin.UPN, ResultSuccess, "mac="+norm+" unban")
+		a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, "mac="+norm+" unban")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
 }
@@ -1261,8 +1261,8 @@ func (a *App) handleDenyMACDeleteAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := a.denylist.DeleteAllMACs()
-	log.Printf("admin %s 一键解除全部 MAC 封禁: cleared=%d", admin.UPN, n)
-	a.logAdminAction(admin.UPN, ResultSuccess, fmt.Sprintf("mac unban-all cleared=%d", n))
+	log.Printf("admin %s unban-all MAC: cleared=%d", admin.UPN, n)
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, fmt.Sprintf("mac unban-all cleared=%d", n))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": n})
 }
 
@@ -1294,9 +1294,9 @@ func (a *App) handleIKuaiPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	log.Printf("admin %s 更新 iKuai 放行策略: profile=%s upload=%d download=%d timeout=%d comment=%q",
+	log.Printf("admin %s update iKuai policy: profile=%s upload=%d download=%d timeout=%d comment=%q",
 		admin.UPN, profile, policy.Upload, policy.Download, policy.Timeout, policy.Comment)
-	a.logAdminAction(admin.UPN, ResultSuccess, ikuaiPolicyDiff(profile, old, policy))
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, ikuaiPolicyDiff(profile, old, policy))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -1305,16 +1305,16 @@ func (a *App) handleIKuaiPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 func ikuaiPolicyDiff(profile IKuaiAuthProfile, old, cur IKuaiPolicy) string {
 	parts := []string{}
 	if old.Upload != cur.Upload {
-		parts = append(parts, fmt.Sprintf("upload %d→%d", old.Upload, cur.Upload))
+		parts = append(parts, fmt.Sprintf("upload %d->%d", old.Upload, cur.Upload))
 	}
 	if old.Download != cur.Download {
-		parts = append(parts, fmt.Sprintf("download %d→%d", old.Download, cur.Download))
+		parts = append(parts, fmt.Sprintf("download %d->%d", old.Download, cur.Download))
 	}
 	if old.Timeout != cur.Timeout {
-		parts = append(parts, fmt.Sprintf("timeout %d→%d", old.Timeout, cur.Timeout))
+		parts = append(parts, fmt.Sprintf("timeout %d->%d", old.Timeout, cur.Timeout))
 	}
 	if old.Comment != cur.Comment {
-		parts = append(parts, fmt.Sprintf("comment %q→%q", old.Comment, cur.Comment))
+		parts = append(parts, fmt.Sprintf("comment %q->%q", old.Comment, cur.Comment))
 	}
 	if len(parts) == 0 {
 		return fmt.Sprintf("policy %s: (unchanged)", profile)
@@ -1404,7 +1404,7 @@ func (a *App) handleEventsExportCSV(w http.ResponseWriter, r *http.Request) {
 	}
 	events := a.eventLog.Query(f)
 	if err := WriteEventsCSV(w, events); err != nil {
-		log.Printf("事件日志 CSV 导出失败: %v", err)
+		log.Printf("event log CSV export failed: %v", err)
 	}
 }
 
@@ -1494,7 +1494,7 @@ func (a *App) handleDenylistImportCSV(w http.ResponseWriter, r *http.Request) {
 		}
 		imported++
 	}
-	a.logAdminAction(admin.UPN, ResultSuccess,
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess,
 		fmt.Sprintf("denylist import imported=%d skipped=%d", imported, skipped))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
@@ -1511,12 +1511,12 @@ func parseExpiry(r *http.Request, gc *GuestCode) error {
 		if err != nil {
 			t2, err2 := time.ParseInLocation("2006-01-02T15:04", exp, time.Local)
 			if err2 != nil {
-				return fmt.Errorf("expires_at 格式错误: %v", err)
+				return fmt.Errorf("expires_at format error: %v", err)
 			}
 			t = t2
 		}
 		if t.Before(time.Now()) {
-			return fmt.Errorf("expires_at 不能是过去时间")
+			return fmt.Errorf("expires_at must not be in the past")
 		}
 		gc.ExpiresAt = t
 		return nil
@@ -1580,7 +1580,7 @@ func (a *App) renderLogin(w http.ResponseWriter, r *http.Request, lang Lang, dev
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := a.templates.ExecuteTemplate(w, "login.html", data); err != nil {
-		log.Printf("模板渲染失败: %v", err)
+		log.Printf("template render failed: %v", err)
 	}
 }
 
@@ -1595,7 +1595,7 @@ func (a *App) renderError(w http.ResponseWriter, r *http.Request, lang Lang, msg
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	if err := a.templates.ExecuteTemplate(w, "error.html", data); err != nil {
-		log.Printf("模板渲染失败: %v", err)
+		log.Printf("template render failed: %v", err)
 	}
 }
 
@@ -1697,7 +1697,7 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := a.templates.ExecuteTemplate(w, "admin.html", data); err != nil {
-		log.Printf("admin 模板渲染失败: %v", err)
+		log.Printf("admin template render failed: %v", err)
 	}
 }
 
@@ -1827,9 +1827,9 @@ func formatDuration(hours, mins int) string {
 	case hours > 0 && mins > 0:
 		return strconv.Itoa(hours) + "h" + strconv.Itoa(mins) + "m"
 	case hours > 0:
-		return strconv.Itoa(hours) + " 小时"
+		return strconv.Itoa(hours) + " h"
 	case mins > 0:
-		return strconv.Itoa(mins) + " 分钟"
+		return strconv.Itoa(mins) + " min"
 	default:
 		return "-"
 	}

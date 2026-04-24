@@ -62,7 +62,7 @@ func (u UserInfo) IsAdmin(cfg Config) bool {
 func newOIDCClient(ctx context.Context, cfg Config) (*OIDCClient, error) {
 	provider, err := oidc.NewProvider(ctx, cfg.Issuer())
 	if err != nil {
-		return nil, fmt.Errorf("oidc discovery 失败 (检查 TENANT_ID / 网络): %w", err)
+		return nil, fmt.Errorf("oidc discovery failed (check TENANT_ID / network): %w", err)
 	}
 	oauth := &oauth2.Config{
 		ClientID:     cfg.ClientID,
@@ -93,18 +93,18 @@ func (c *OIDCClient) AuthURL(state, nonce, loginHint string) string {
 func (c *OIDCClient) Exchange(ctx context.Context, cfg Config, code, expectedNonce string) (*UserInfo, error) {
 	token, err := c.oauth.Exchange(ctx, code)
 	if err != nil {
-		return nil, fmt.Errorf("code 换 token 失败: %w", err)
+		return nil, fmt.Errorf("code-to-token exchange failed: %w", err)
 	}
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok || rawIDToken == "" {
-		return nil, errors.New("响应里没有 id_token")
+		return nil, errors.New("response missing id_token")
 	}
 	idToken, err := c.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return nil, fmt.Errorf("id_token 验证失败: %w", err)
+		return nil, fmt.Errorf("id_token verification failed: %w", err)
 	}
 	if idToken.Nonce != expectedNonce {
-		return nil, errors.New("nonce 不匹配 (可能被重放)")
+		return nil, errors.New("nonce mismatch (possible replay)")
 	}
 	var claims struct {
 		Sub               string   `json:"sub"`
@@ -119,17 +119,17 @@ func (c *OIDCClient) Exchange(ctx context.Context, cfg Config, code, expectedNon
 		ClaimNames map[string]string `json:"_claim_names"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
-		return nil, fmt.Errorf("claims 解析失败: %w", err)
+		return nil, fmt.Errorf("claims parse failed: %w", err)
 	}
 	if claims.TID != cfg.TenantID {
-		return nil, fmt.Errorf("tenant 不匹配: 期待 %s, 实际 %s", cfg.TenantID, claims.TID)
+		return nil, fmt.Errorf("tenant mismatch: expected %s, got %s", cfg.TenantID, claims.TID)
 	}
 	if _, overage := claims.ClaimNames["groups"]; overage && len(claims.Groups) == 0 {
 		// 用户组太多触发 overage, Entra 只发 _claim_names 指向 Graph API,
 		// 没把真实的组 ID 放 id_token 里. 我们不调 Graph, 所以这种用户靠组
 		// 准入 admin 会失败; 靠 UPN 白名单的 admin 不受影响.
 		// 打一行日志, 排查 "明明在 admin 组里为什么拒我" 时有迹可循.
-		log.Printf("OIDC: user %q groups claim overage, admin-via-group 不可用; 改用 ADMIN_EMAILS 或接 Graph API", claims.UPN)
+		log.Printf("OIDC: user %q has groups overage; admin-via-group unavailable, use ADMIN_EMAILS or wire Graph API", claims.UPN)
 	}
 	upn := claims.UPN
 	if upn == "" {

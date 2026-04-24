@@ -48,7 +48,7 @@ func newDuoUniversalClient(cfg Config) *DuoUniversalClient {
 // state 必须非空, 用于 CSRF 校验 (我们存 session 里比对).
 func (d *DuoUniversalClient) AuthURL(username, state string) (string, error) {
 	if username == "" || state == "" {
-		return "", errors.New("username/state 不能为空")
+		return "", errors.New("username/state must not be empty")
 	}
 	now := time.Now().Unix()
 	claims := map[string]any{
@@ -130,7 +130,7 @@ func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string,
 		return "", fmt.Errorf("duo token json: %w", err)
 	}
 	if tr.IDToken == "" {
-		return "", errors.New("duo: 响应里没有 id_token")
+		return "", errors.New("duo: response missing id_token")
 	}
 
 	claims, err := verifyJWTHS512(tr.IDToken, d.clientSecret)
@@ -141,11 +141,11 @@ func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string,
 	// 早先这里按 "https://{apiHost}" 校验, 被 Duo 实际返回的
 	// "https://{apiHost}/oauth/v1/token" 给挂了.
 	if iss, _ := claims["iss"].(string); iss != tokenEndpoint {
-		return "", fmt.Errorf("duo id_token iss 不匹配: %s", iss)
+		return "", fmt.Errorf("duo id_token iss mismatch: %s", iss)
 	}
 	// aud = client_id
 	if aud, _ := claims["aud"].(string); aud != d.clientID {
-		return "", fmt.Errorf("duo id_token aud 不匹配: %s", aud)
+		return "", fmt.Errorf("duo id_token aud mismatch: %s", aud)
 	}
 	// 提取用户身份: Duo 用 preferred_username 传 duo_uname
 	var username string
@@ -155,11 +155,11 @@ func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string,
 		username = sub
 	}
 	if username == "" {
-		return "", errors.New("duo id_token 里没有 username")
+		return "", errors.New("duo id_token missing username")
 	}
 	// defense in depth: 要求和我们提交时的 username 对得上
 	if expectedUsername != "" && !strings.EqualFold(username, expectedUsername) {
-		return "", fmt.Errorf("duo username 不匹配: 期望 %s, 实际 %s", expectedUsername, username)
+		return "", fmt.Errorf("duo username mismatch: expected %s, got %s", expectedUsername, username)
 	}
 	return username, nil
 }
@@ -188,35 +188,35 @@ func signJWTHS512(claims map[string]any, secret string) (string, error) {
 func verifyJWTHS512(token, secret string) (map[string]any, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return nil, errors.New("jwt 格式错")
+		return nil, errors.New("jwt format invalid")
 	}
 	enc := base64.RawURLEncoding
 	signingInput := parts[0] + "." + parts[1]
 	gotSig, err := enc.DecodeString(parts[2])
 	if err != nil {
-		return nil, errors.New("jwt sig base64 解码失败")
+		return nil, errors.New("jwt sig base64 decode failed")
 	}
 	mac := hmac.New(sha512.New, []byte(secret))
 	mac.Write([]byte(signingInput))
 	if !hmac.Equal(mac.Sum(nil), gotSig) {
-		return nil, errors.New("jwt 签名不匹配")
+		return nil, errors.New("jwt signature mismatch")
 	}
 	// 解 header 验 alg (防降级攻击)
 	headerBytes, err := enc.DecodeString(parts[0])
 	if err != nil {
-		return nil, errors.New("jwt header 解码失败")
+		return nil, errors.New("jwt header decode failed")
 	}
 	var header struct{ Alg string }
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
 		return nil, err
 	}
 	if header.Alg != "HS512" {
-		return nil, fmt.Errorf("jwt alg 非 HS512: %s", header.Alg)
+		return nil, fmt.Errorf("jwt alg is not HS512: %s", header.Alg)
 	}
 	// 解 payload
 	payload, err := enc.DecodeString(parts[1])
 	if err != nil {
-		return nil, errors.New("jwt payload 解码失败")
+		return nil, errors.New("jwt payload decode failed")
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(payload, &claims); err != nil {
@@ -225,7 +225,7 @@ func verifyJWTHS512(token, secret string) (map[string]any, error) {
 	// exp 检查
 	if exp, ok := claims["exp"].(float64); ok {
 		if time.Now().Unix() > int64(exp)+30 { // 30 秒容错
-			return nil, errors.New("jwt 已过期")
+			return nil, errors.New("jwt expired")
 		}
 	}
 	return claims, nil
