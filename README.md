@@ -106,7 +106,8 @@ vim .env               # 或 nano
 | `DUO_CLIENT_ID` / `DUO_CLIENT_SECRET` | **Duo Web SDK** application (Universal Prompt) |
 | `DUO_API_HOST` | 两个 Duo application 共用, 形如 `api-XXXXXXXX.duosecurity.com` |
 | `ALLOWED_EMAIL_DOMAINS` | 启用 Duo 时必填, 逗号分隔 (`kazuha.org,kazuhahub.com,kazuhahub.cn`) |
-| `ADMIN_EMAILS` | 访客码管理后台 (`/admin`) 准入白名单, 逗号分隔 |
+| `ADMIN_EMAILS` | 访客码管理后台 (`/admin`) 准入白名单, 逗号分隔, 可留空走组模式 |
+| `ADMIN_GROUP_IDS` | Entra Security Group Object ID 列表 (可选), 组成员自动 admin |
 
 ### Duo 两种 Application 怎么建
 
@@ -123,7 +124,37 @@ vim .env               # 或 nano
 
 ### 访客码 Admin
 
-`ADMIN_EMAILS` 列出的那些账号, 用 Entra SSO 登录 `/admin` 可以:
+Admin 准入有两种方式, 任一成立即通过, 可共存:
+
+1. **`ADMIN_EMAILS`** — UPN 白名单, CSV 格式直接列人, 改动要重启容器
+2. **`ADMIN_GROUP_IDS`** — Entra Security Group 的 Object ID (GUID), 组成员
+   自动有 admin 权限。**推荐**: 人员变动只改 AAD, 不用改 env 不用重启
+
+#### 启用 Group 方式 (一次性配置)
+
+**A. App Registration 加 `groups` claim**
+
+Entra Admin Center → App registrations → 找到 `Kazuha Hub WiFi Portal` →
+**Token configuration** → **Add optional claim** → 选 **ID** → 勾 `groups` →
+下一步选 **Security groups** (如果你的 admin 组是 Security Group)。
+
+**B. 创建 / 选一个 Security Group**
+
+Groups → New group → Type = Security, 加成员 = 几位 admin → 创建好后去
+Overview 复制 **Object ID** (GUID 格式).
+
+**C. 填进 `.env`**
+
+```
+ADMIN_GROUP_IDS=<刚才复制的 Object ID>
+```
+
+可以多个逗号分隔。`ADMIN_EMAILS` 也可以保留 (两种方式并行), 或改成空走纯 group
+模式。重启容器生效。
+
+#### Admin 能做什么
+
+`/admin` 页面:
 - 单条添加 (自动生成 10 位数字, 或自定义)
 - 批量生成 (纯数字 / 纯字母 / 数字+字母, 任意长度)
 - 设置过期时间 (绝对) 或限时 (相对)
