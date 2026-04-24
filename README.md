@@ -134,9 +134,15 @@ Admin 准入有两种方式, 任一成立即通过, 可共存:
 
 **A. App Registration 加 `groups` claim**
 
-Entra Admin Center → App registrations → 找到 `Kazuha Hub WiFi Portal` →
-**Token configuration** → **Add optional claim** → 选 **ID** → 勾 `groups` →
-下一步选 **Security groups** (如果你的 admin 组是 Security Group)。
+Entra Admin Center → App registrations → `Kazuha Hub WiFi Portal` →
+**Token configuration** → **Add groups claim** (**不是** `Add optional claim` —
+`groups` 不在 optional claims 列表里, 有独立的按钮)。弹出对话框里:
+
+- **Select group types**: 勾 `Security groups` (匹配下面 B 步要建的组类型)
+- **Customize token properties by type**: 保持默认 (Group ID 格式)
+- **Save**
+
+保存完列表里会出现一条 `groups` claim, 下次 id_token 就会带 `"groups": [...]` 数组.
 
 **B. 创建 / 选一个 Security Group**
 
