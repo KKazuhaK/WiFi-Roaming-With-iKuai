@@ -25,6 +25,8 @@ type Config struct {
 	IKuaiAppKey     string // iKuai 云面板 "生成" 出的 appkey，敏感
 	IKuaiWebAuthURL string // iKuai 放行接口，默认按官方文档 https://portal.ikuai8-wifi.com/Action/webauth-up
 	//                        开成 env 是因为不同固件/部署可能要换 host (走路由器 LAN IP) 或换 scheme
+	IKuaiCustomName string // 放行 URL 里 custom_name 参数, iKuai 用它在审计日志区分多个对接的 portal
+	IKuaiReleaseType string // 放行 URL 里 release_type 参数, 默认 "1" (正常放行)
 
 	// --- Portal 自身 ---
 	SessionSecret []byte // HMAC 签 cookie 用的随机密钥，32 字节，敏感
@@ -52,6 +54,8 @@ func loadConfig() Config {
 
 		IKuaiWebAuthURL: envOr("IKUAI_WEBAUTH_URL",
 			"https://portal.ikuai8-wifi.com/Action/webauth-up"),
+		IKuaiCustomName:  envOr("IKUAI_CUSTOM_NAME", "kazuha-hub"),
+		IKuaiReleaseType: envOr("IKUAI_RELEASE_TYPE", "1"),
 
 		ListenAddr:   envOr("LISTEN_ADDR", "127.0.0.1:28080"),
 		BrandName:    envOr("BRAND_NAME", "Kazuha Hub"),
@@ -113,11 +117,4 @@ func envOr(key, fallback string) string {
 
 func splitCSV(s string) []string {
 	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
+	out := make([]string, 0, len(parts)

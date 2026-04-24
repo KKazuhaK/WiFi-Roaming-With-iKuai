@@ -251,7 +251,8 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 		user.UPN, user.Name, sess.UserIP, sess.MAC)
 
 	// 6. 生成 iKuai 放行 URL, 302
-	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC})
+	//    user.UPN 传作 user_id, 方便 iKuai 审计日志里看到具体是谁
+	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, user.UPN)
 
 	// 清 session cookie, 用完就扔
 	clearSessionCookie(w, true)
