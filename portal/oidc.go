@@ -26,10 +26,36 @@ type UserInfo struct {
 	Name     string
 	Email    string
 	TenantID string
+	Groups   []string // Entra Security Group 的 Object ID 列表, 用于 admin 准入
 }
 
 func (u UserInfo) IsGuest() bool {
 	return strings.Contains(u.UPN, "#EXT#")
+}
+
+// IsAdmin 判定是否有 /admin 后台权限. 两种路径任一成立即通过:
+//   1. UPN 在 ADMIN_EMAILS 列表里
+//   2. 任意一个用户所属组 ID 出现在 ADMIN_GROUP_IDS 里
+// 只在登录回调时调用 — 之后 /admin 请求靠 cookie 信任.
+// 注意: Entra 对超过 ~200 个组的用户会改发 _claim_names overage 指示,
+// id_token 里不再直接列出 groups. 小团队不会碰到.
+func (u UserInfo) IsAdmin(cfg Config) bool {
+	if cfg.IsAdminEmail(u.UPN) {
+		return true
+	}
+	if len(cfg.AdminGroupIDs) == 0 || len(u.Groups) == 0 {
+		return false
+	}
+	allow := make(map[string]struct{}, len(cfg.AdminGroupIDs))
+	for _, g := range cfg.AdminGroupIDs {
+		allow[strings.ToLower(strings.TrimSpace(g))] = struct{}{}
+	}
+	for _, g := range u.Groups {
+		if _, ok := allow[strings.ToLower(strings.TrimSpace(g))]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func newOIDCClient(ctx context.Context, cfg Config) (*OIDCClient, error) {
@@ -80,18 +106,29 @@ func (c *OIDCClient) Exchange(ctx context.Context, cfg Config, code, expectedNon
 		return nil, errors.New("nonce 不匹配 (可能被重放)")
 	}
 	var claims struct {
-		Sub               string `json:"sub"`
-		UPN               string `json:"upn"`
-		Name              string `json:"name"`
-		Email             string `json:"email"`
-		PreferredUsername string `json:"preferred_username"`
-		TID               string `json:"tid"`
+		Sub               string   `json:"sub"`
+		UPN               string   `json:"upn"`
+		Name              string   `json:"name"`
+		Email             string   `json:"email"`
+		PreferredUsername string   `json:"preferred_username"`
+		TID               string   `json:"tid"`
+		Groups            []string `json:"groups"`
+		// 如果用户所属组太多超出 id_token 限制, Entra 只发 _claim_names + _claim_sources,
+		// 用户需要去 Graph API 拉. 我们不处理这种情况, 有需要再加 Graph 调用.
+		ClaimNames map[string]string `json:"_claim_names"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, fmt.Errorf("claims 解析失败: %w", err)
 	}
 	if claims.TID != cfg.TenantID {
 		return nil, fmt.Errorf("tenant 不匹配: 期待 %s, 实际 %s", cfg.TenantID, claims.TID)
+	}
+	if _, overage := claims.ClaimNames["groups"]; overage && len(claims.Groups) == 0 {
+		// 用户组太多触发 overage. admin 准入如果靠 group, 这种用户会被拒.
+		// 如果 admin 是靠 UPN 白名单, 那跟 groups 无关, 不影响.
+		// 打印一行日志方便排查 "明明在 admin 组里为什么拒我".
+		// (没用 log.Printf 是为了不把 oidc.go 跟 log 耦合 — 留给上层)
+		_ = overage
 	}
 	upn := claims.UPN
 	if upn == "" {
@@ -107,5 +144,6 @@ func (c *OIDCClient) Exchange(ctx context.Context, cfg Config, code, expectedNon
 		Name:     claims.Name,
 		Email:    email,
 		TenantID: claims.TID,
+		Groups:   claims.Groups,
 	}, nil
 }

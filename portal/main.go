@@ -587,8 +587,8 @@ func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) finishAdminLogin(w http.ResponseWriter, r *http.Request, lang Lang, user *UserInfo) {
-	if user.IsGuest() || !a.cfg.IsAdminEmail(user.UPN) {
-		log.Printf("admin 登录被拒: upn=%s", user.UPN)
+	if user.IsGuest() || !user.IsAdmin(a.cfg) {
+		log.Printf("admin 登录被拒: upn=%s groups=%v", user.UPN, user.Groups)
 		a.renderError(w, r, lang, "你的账号不在 admin 列表, 请联系管理员。", http.StatusForbidden)
 		return
 	}
@@ -601,8 +601,16 @@ func (a *App) finishAdminLogin(w http.ResponseWriter, r *http.Request, lang Lang
 		return
 	}
 	clearSessionCookie(w, true)
-	log.Printf("admin 登录成功: upn=%s", user.UPN)
+	log.Printf("admin 登录成功: upn=%s via=%s", user.UPN, adminGrantReason(a.cfg, user))
 	http.Redirect(w, r, "/admin", http.StatusFound)
+}
+
+// adminGrantReason 只给日志用, 说明这次 admin 通过靠的是 UPN 白名单还是组成员.
+func adminGrantReason(cfg Config, u *UserInfo) string {
+	if cfg.IsAdminEmail(u.UPN) {
+		return "email_list"
+	}
+	return "group"
 }
 
 func (a *App) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
@@ -628,15 +636,11 @@ func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request, apiMode bool)
 		}
 		return AdminSession{}, false
 	}
-	if !a.cfg.IsAdminEmail(sess.UPN) {
-		clearAdminCookie(w, true)
-		if apiMode {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "not_admin"})
-		} else {
-			http.Redirect(w, r, "/admin/login", http.StatusFound)
-		}
-		return AdminSession{}, false
-	}
+	// 签名 cookie 说明这个用户登录时通过了 IsAdmin 检查 (UPN 白名单 或 Entra 组).
+	// 这里不再每次请求都 re-check UPN 是否在 ADMIN_EMAILS — 否则靠组准入的 admin
+	// 会被立刻踢出, 且组变更无法在请求期检查 (id_token 在登录时一次性签). 撤销 admin
+	// 的生效周期 = cookie TTL (4h); 要立刻踢就清了这人的 cookie, 或改 SessionSecret
+	// 让所有 cookie 失效.
 	return sess, true
 }
 

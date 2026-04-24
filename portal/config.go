@@ -55,7 +55,13 @@ type Config struct {
 	AllowedEmailDomains []string // 做邮箱域名白名单, 防外人触发 Duo 推送
 
 	// --- 访客码管理 Admin (可选) ---
-	AdminEmails []string
+	// /admin 准入两种方式, 任一成立即通过, 可单独用也可共用:
+	//   AdminEmails    UPN 白名单 (历史方式, 小团队直接列人)
+	//   AdminGroupIDs  Entra Security Group 的 Object ID (GUID) 列表,
+	//                  组员即有 admin 权限, 无需改 env
+	// 两个都为空 = admin 后台完全禁用.
+	AdminEmails   []string
+	AdminGroupIDs []string
 	// 访客码持久化文件路径. 空 = 纯内存 (重启数据丢).
 	// 非空则启动加载 + 每次变更原子写盘, 配合 docker volume 挂出来即可.
 	GuestCodesPath string
@@ -107,6 +113,7 @@ func loadConfig() Config {
 		AllowedEmailDomains: splitCSV(envOr("ALLOWED_EMAIL_DOMAINS", "")),
 
 		AdminEmails:    splitCSV(envOr("ADMIN_EMAILS", "")),
+		AdminGroupIDs:  splitCSV(envOr("ADMIN_GROUP_IDS", "")),
 		GuestCodesPath: strings.TrimSpace(envOr("GUEST_CODES_PATH", "")),
 
 		AuthEmailFailsShort:  envOrInt("AUTH_EMAIL_FAILS_SHORT", 3),
@@ -170,8 +177,9 @@ func (c Config) IsDuoEnabled() bool {
 }
 
 // IsAdminEnabled 是否开放 admin 后台 + 访客码流程.
+// UPN 白名单和组准入任一配置即视为启用.
 func (c Config) IsAdminEnabled() bool {
-	return len(c.AdminEmails) > 0
+	return len(c.AdminEmails) > 0 || len(c.AdminGroupIDs) > 0
 }
 
 func (c Config) IsAdminEmail(upn string) bool {
