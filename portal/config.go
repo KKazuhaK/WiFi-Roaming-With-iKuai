@@ -1,9 +1,7 @@
 package main
 
 // config.go
-// 读取环境变量并装进 Config struct。
-// 把所有配置的"入口"集中在这里，其它文件只读这个 struct。
-// 缺必填项时直接 panic，让容器起不来，总比带病上线好。
+// 读取环境变量并装进 Config struct.
 
 import (
 	"encoding/hex"
@@ -14,7 +12,7 @@ import (
 	"strings"
 )
 
-// Config 是 Portal 运行需要的所有配置。
+// Config 是 Portal 运行需要的所有配置.
 type Config struct {
 	// --- Entra (Azure AD) OIDC ---
 	TenantID     string
@@ -42,15 +40,20 @@ type Config struct {
 	IKuaiIPKeys  []string
 	IKuaiMACKeys []string
 
-	// --- Duo 免密推送 (可选, 全空则禁用) ---
+	// --- Duo 集成 (可选) ---
+	// 需要 Duo Admin Panel 里两种 application:
+	//   1. "Auth API"     → DUO_IKEY + DUO_SKEY     (仅用于 preauth 探测用户是否在 Duo)
+	//   2. "Web SDK"      → DUO_CLIENT_ID + DUO_CLIENT_SECRET (Universal Prompt 的 OIDC 流程)
+	// DUO_API_HOST 两种 application 共享 (同一个 Duo 租户).
+	// 任一组密钥缺失就视为 Duo 未启用.
 	DuoIKey             string
 	DuoSKey             string // 敏感
+	DuoClientID         string
+	DuoClientSecret     string // 敏感
 	DuoAPIHost          string
-	DuoPushTimeoutSec   int
-	AllowedEmailDomains []string
+	AllowedEmailDomains []string // 做邮箱域名白名单, 防外人触发 Duo 推送
 
-	// --- 访客码管理 Admin (可选, 空则禁用整个访客码流程) ---
-	// 启用 = ADMIN_EMAILS 至少有一个邮箱. 这些邮箱的人 Entra 登录 /admin 后可以管理访客码.
+	// --- 访客码管理 Admin (可选) ---
 	AdminEmails []string
 }
 
@@ -78,8 +81,9 @@ func loadConfig() Config {
 
 		DuoIKey:             envOr("DUO_IKEY", ""),
 		DuoSKey:             envOr("DUO_SKEY", ""),
+		DuoClientID:         envOr("DUO_CLIENT_ID", ""),
+		DuoClientSecret:     envOr("DUO_CLIENT_SECRET", ""),
 		DuoAPIHost:          envOr("DUO_API_HOST", ""),
-		DuoPushTimeoutSec:   envOrInt("DUO_PUSH_TIMEOUT", 60),
 		AllowedEmailDomains: splitCSV(envOr("ALLOWED_EMAIL_DOMAINS", "")),
 
 		AdminEmails: splitCSV(envOr("ADMIN_EMAILS", "")),
@@ -100,19 +104,37 @@ func loadConfig() Config {
 	}
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
 
-	if (cfg.DuoIKey != "" || cfg.DuoSKey != "" || cfg.DuoAPIHost != "") &&
-		!(cfg.DuoIKey != "" && cfg.DuoSKey != "" && cfg.DuoAPIHost != "") {
-		log.Fatalf("DUO_IKEY / DUO_SKEY / DUO_API_HOST 必须全部设置或全部留空")
+	// Duo: 5 个字段要么全填 要么全空, 给一半就报错
+	duoFields := map[string]string{
+		"DUO_IKEY":          cfg.DuoIKey,
+		"DUO_SKEY":          cfg.DuoSKey,
+		"DUO_CLIENT_ID":     cfg.DuoClientID,
+		"DUO_CLIENT_SECRET": cfg.DuoClientSecret,
+		"DUO_API_HOST":      cfg.DuoAPIHost,
+	}
+	filled, empty := 0, 0
+	for _, v := range duoFields {
+		if v == "" {
+			empty++
+		} else {
+			filled++
+		}
+	}
+	if filled > 0 && empty > 0 {
+		log.Fatalf("Duo 配置不完整: 以下 5 个字段必须同时设置或同时留空 — %v", duoFields)
 	}
 	if cfg.IsDuoEnabled() && len(cfg.AllowedEmailDomains) == 0 {
-		log.Fatalf("启用 Duo 免密流程必须同时设置 ALLOWED_EMAIL_DOMAINS")
+		log.Fatalf("启用 Duo 必须同时设置 ALLOWED_EMAIL_DOMAINS")
 	}
 
 	return cfg
 }
 
+// IsDuoEnabled: 5 个 Duo 字段都填了才算启用.
 func (c Config) IsDuoEnabled() bool {
-	return c.DuoIKey != "" && c.DuoSKey != "" && c.DuoAPIHost != ""
+	return c.DuoIKey != "" && c.DuoSKey != "" &&
+		c.DuoClientID != "" && c.DuoClientSecret != "" &&
+		c.DuoAPIHost != ""
 }
 
 // IsAdminEnabled 是否开放 admin 后台 + 访客码流程.
@@ -120,7 +142,6 @@ func (c Config) IsAdminEnabled() bool {
 	return len(c.AdminEmails) > 0
 }
 
-// IsAdminEmail 判断某个 UPN 是否 admin.
 func (c Config) IsAdminEmail(upn string) bool {
 	u := strings.ToLower(strings.TrimSpace(upn))
 	for _, a := range c.AdminEmails {
