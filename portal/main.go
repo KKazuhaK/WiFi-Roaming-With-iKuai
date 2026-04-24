@@ -50,6 +50,7 @@ type App struct {
 	duo          *DuoClient          // Duo Auth API, 仅 preauth 用
 	duoUniversal *DuoUniversalClient // Duo Universal Prompt (OIDC)
 	guestCodes   *GuestCodeStore
+	denylist     *DenylistStore
 	templates    *template.Template
 
 	// --- 限流 / 防滥用 ---
@@ -57,10 +58,10 @@ type App struct {
 	authEmailFails *failCounter
 	// 规则 5: /auth/guest-code 按 MAC 失败计数, 成功清零. 防暴力猜码.
 	guestCodeFails *failCounter
-	// 规则 6: 单 IP 跨端点累计失败, 超限封禁. 防同 IP 广撒网.
+	// 规则 6: 单 IP 跨端点累计失败, 超限短时冷却. 防同 IP 广撒网.
 	ipFails    *failCounter
 	ipBans     *ipBanList
-	banHistory *banHistory // IP 被封过几次 (持久化), 用于升级到永久封禁
+	banHistory *banHistory // IP 被冷却过几次; 默认不持久化, 不升级永久
 
 	// 账号枚举防护: /auth/start 返回 opaque token, /auth/proceed 才 302.
 	proceedStore *proceedTokenStore
@@ -104,6 +105,16 @@ func main() {
 		log.Printf("访客码持久化: 未启用 (纯内存, 容器重启数据丢)")
 	}
 
+	denylistStore, err := newDenylistStore(cfg.DenylistPath)
+	if err != nil {
+		log.Fatalf("MAC 封禁列表初始化失败: %v", err)
+	}
+	if cfg.DenylistPath != "" {
+		log.Printf("MAC 封禁列表持久化: 已启用, path=%s", cfg.DenylistPath)
+	} else {
+		log.Printf("MAC 封禁列表持久化: 未启用 (纯内存)")
+	}
+
 	tmpl, err := template.ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		log.Fatalf("模板加载失败: %v", err)
@@ -120,6 +131,7 @@ func main() {
 		duo:            duoClient,
 		duoUniversal:   duoUni,
 		guestCodes:     guestStore,
+		denylist:       denylistStore,
 		templates:      tmpl,
 		authEmailFails: newFailCounter(cfg.AuthEmailWindowLong),
 		guestCodeFails: newFailCounter(cfg.GuestCodeMacWindow),
@@ -133,11 +145,19 @@ func main() {
 	go app.ipFails.gcLoop()
 	go app.ipBans.gcLoop()
 	go app.proceedStore.gcLoop()
-	log.Printf("限流: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s → 首次封禁 %s, 第 %d 次起永久",
-		cfg.AuthEmailFailsShort, cfg.AuthEmailWindowShort,
-		cfg.AuthEmailFailsLong, cfg.AuthEmailWindowLong,
-		cfg.GuestCodeMacFails, cfg.GuestCodeMacWindow,
-		cfg.IPFailsLimit, cfg.IPFailsWindow, cfg.IPBanDuration, cfg.IPBanEscalateAt)
+	if cfg.IPBanEscalateAt >= 999999 {
+		log.Printf("限流: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s → 冷却 %s, 不升级永久",
+			cfg.AuthEmailFailsShort, cfg.AuthEmailWindowShort,
+			cfg.AuthEmailFailsLong, cfg.AuthEmailWindowLong,
+			cfg.GuestCodeMacFails, cfg.GuestCodeMacWindow,
+			cfg.IPFailsLimit, cfg.IPFailsWindow, cfg.IPBanDuration)
+	} else {
+		log.Printf("限流: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s → 首次封禁 %s, 第 %d 次起永久",
+			cfg.AuthEmailFailsShort, cfg.AuthEmailWindowShort,
+			cfg.AuthEmailFailsLong, cfg.AuthEmailWindowLong,
+			cfg.GuestCodeMacFails, cfg.GuestCodeMacWindow,
+			cfg.IPFailsLimit, cfg.IPFailsWindow, cfg.IPBanDuration, cfg.IPBanEscalateAt)
+	}
 	if cfg.RatelimitStatePath != "" {
 		log.Printf("ban history 持久化: 已启用, path=%s", cfg.RatelimitStatePath)
 	}
@@ -167,11 +187,13 @@ func main() {
 	mux.HandleFunc("/admin/ratelimit/status", app.handleRateLimitStatus)
 	mux.HandleFunc("/admin/ratelimit/reset", app.handleRateLimitReset)
 	mux.HandleFunc("/admin/ratelimit/reset-all", app.handleRateLimitResetAll)
+	mux.HandleFunc("/admin/denylist/macs/create", app.handleDenyMACCreate)
+	mux.HandleFunc("/admin/denylist/macs/delete", app.handleDenyMACDelete)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           securityHeaders(logRequests(mux)),
+		Handler:           securityHeaders(app.logRequests(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -194,13 +216,23 @@ func securityHeaders(h http.Handler) http.Handler {
 	})
 }
 
-func logRequests(h http.Handler) http.Handler {
+func (a *App) logRequests(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		lrw := &logRespWriter{ResponseWriter: w, status: 200}
 		h.ServeHTTP(lrw, r)
-		log.Printf("%s %s -> %d (%s) ua=%q",
-			r.Method, r.URL.Path, lrw.status, time.Since(start), r.UserAgent())
+		client := clientIP(r)
+		userIP, mac := "-", "-"
+		if sess, err := readSessionCookie(r, a.cfg.SessionSecret); err == nil {
+			if sess.UserIP != "" {
+				userIP = sess.UserIP
+			}
+			if sess.MAC != "" {
+				mac = sess.MAC
+			}
+		}
+		log.Printf("%s %s -> %d (%s) client_ip=%s user_ip=%s mac=%s ua=%q",
+			r.Method, r.URL.Path, lrw.status, time.Since(start), client, userIP, mac, r.UserAgent())
 	})
 }
 
@@ -248,6 +280,11 @@ func (a *App) handlePortal(w http.ResponseWriter, r *http.Request) {
 		a.renderError(w, r, lang, lang.s().SessionLostMsg, http.StatusBadRequest)
 		return
 	}
+	if _, denied := a.denylist.IsMACDenied(dev.MAC); denied {
+		log.Printf("拒绝已封禁 MAC 访问 portal: mac=%s ip=%s", dev.MAC, dev.IP)
+		a.renderError(w, r, lang, lang.s().RateLimitedPermanent, http.StatusForbidden)
+		return
+	}
 	sess, err := newSession(dev.IP, dev.MAC, string(lang))
 	if err != nil {
 		log.Printf("newSession 失败: %v", err)
@@ -265,7 +302,7 @@ func (a *App) handlePortal(w http.ResponseWriter, r *http.Request) {
 // handleAuthStart: 邮箱输入后的分流入口.
 //
 // 关键安全设计:
-//  1. 入口先查 IP 封禁 (规则 6) 和邮箱失败计数 (规则 1), 都过了再走真实分流.
+//  1. 入口先查 IP 冷却 (规则 6) 和邮箱失败计数 (规则 1), 都过了再走真实分流.
 //  2. 分流决定 (Duo vs Entra vs deny) 不直接暴露在响应里 — 放进 proceedStore
 //     生成 opaque token, 浏览器访问 /auth/proceed?token=X 时才 302 到真正 URL.
 //     这样所有有效邮箱的 /auth/start 响应看起来一模一样, 攻击者没法靠响应差异
@@ -278,22 +315,32 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 规则 6 入口: IP 是否在封禁期.
-	ip := clientIP(r)
-	if a.ipBans.isBanned(ip) {
-		a.writeRateLimited(w, "ip_ban", ip)
-		return
-	}
-
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
 	if err != nil {
-		a.recordIPFailure(ip, "session_lost")
+		if bannedIP, ok := a.bannedIPForRequest(r, nil); ok {
+			a.writeRateLimited(w, "ip_ban", bannedIP)
+			return
+		}
+		a.recordRequestFailure(r, nil, "session_lost")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_lost"})
+		return
+	}
+	ip := clientIP(r)
+	if bannedIP, ok := a.bannedIPForRequest(r, &sess); ok {
+		a.writeRateLimited(w, "ip_ban", bannedIP)
+		return
+	}
+	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
+		log.Printf("拒绝已封禁 MAC auth/start: mac=%s ip=%s", sess.MAC, ip)
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error":     "rate_limited",
+			"permanent": true,
+		})
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
 	if !isValidEmail(email) {
-		a.recordIPFailure(ip, "invalid_email")
+		a.recordRequestFailure(r, &sess, "invalid_email")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_email"})
 		return
 	}
@@ -301,7 +348,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	// 不用 Duo 的场景, Entra 自己会做域名 / 租户过滤.
 	if a.cfg.IsDuoEnabled() && !isAllowedDomain(email, a.cfg.AllowedEmailDomains) {
 		log.Printf("拒绝域名不在白名单: %s", email)
-		a.recordIPFailure(ip, "invalid_domain")
+		a.recordRequestFailure(r, &sess, "invalid_domain")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_domain"})
 		return
 	}
@@ -312,15 +359,16 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	if shortN >= a.cfg.AuthEmailFailsShort || longN >= a.cfg.AuthEmailFailsLong {
 		log.Printf("auth/start 邮箱限流: %s short=%d long=%d ip=%s",
 			email, shortN, longN, ip)
-		a.recordIPFailure(ip, "rate_limited_email")
+		a.recordRequestFailure(r, &sess, "rate_limited_email")
 		// 哪个窗口先满选哪个的 retry_after
 		rule := "email_long"
 		if shortN >= a.cfg.AuthEmailFailsShort {
 			rule = "email_short"
 		}
-		// 如果 recordIPFailure 这次刚好触发了 IP 封禁, 优先告诉客户端那个 (更严重).
-		if a.ipBans.isBanned(ip) {
+		// 如果 recordIPFailure 这次刚好触发了 IP 冷却, 优先告诉客户端那个.
+		if bannedIP, ok := a.bannedIPForRequest(r, &sess); ok {
 			rule = "ip_ban"
+			ip = bannedIP
 		}
 		a.writeRateLimited(w, rule, ip)
 		return
@@ -389,15 +437,14 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": "/auth/proceed?token=" + token})
 }
 
-// writeRateLimited 发 429 响应, 带足以让前端渲染"稍后再试"/"联系管理员"的信息:
-//   - rule: ip_ban / email_short / email_long / mac
+// writeRateLimited 发 429 响应, 带足以让前端渲染"稍后再试"/"联系管理员"的信息.
+// 具体命中的内部规则不返回给前端, 避免向用户暴露封禁类型:
 //   - retry_after_seconds: 建议重试等待秒数
 //   - permanent: true 时前端显示联系管理员, 不显示倒计时
 //   - unban_at_unix: 解封 unix 时间 (仅 ip_ban 用)
 func (a *App) writeRateLimited(w http.ResponseWriter, rule, ip string) {
 	body := map[string]any{
 		"error": "rate_limited",
-		"rule":  rule,
 	}
 	switch rule {
 	case "ip_ban":
@@ -419,8 +466,65 @@ func (a *App) writeRateLimited(w http.ResponseWriter, rule, ip string) {
 	writeJSON(w, http.StatusTooManyRequests, body)
 }
 
-// recordIPFailure 累加 IP 失败计数, 触发阈值就封禁.
-// 升级模型: 第 1 次到 (IPBanEscalateAt-1) 次封禁 → IPBanDuration 时长;
+func uniqueNonEmpty(values ...string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+func requestIPKeys(r *http.Request, sess *Session) []string {
+	if sess == nil {
+		return uniqueNonEmpty(clientIP(r))
+	}
+	return uniqueNonEmpty(clientIP(r), sess.UserIP)
+}
+
+func (a *App) bannedIPForRequest(r *http.Request, sess *Session) (string, bool) {
+	for _, ip := range requestIPKeys(r, sess) {
+		if a.ipBans.isBanned(ip) {
+			return ip, true
+		}
+	}
+	return "", false
+}
+
+func (a *App) recordRequestFailure(r *http.Request, sess *Session, reason string) {
+	for _, ip := range requestIPKeys(r, sess) {
+		a.recordIPFailure(ip, reason)
+	}
+}
+
+func (a *App) clearSuccessfulAuthState(r *http.Request, sess Session, emails ...string) {
+	emailKeys := make([]string, 0, len(emails)+1)
+	if sess.Email != "" {
+		emailKeys = append(emailKeys, sess.Email)
+	}
+	emailKeys = append(emailKeys, emails...)
+	for _, email := range uniqueNonEmpty(emailKeys...) {
+		a.authEmailFails.reset(strings.ToLower(email))
+	}
+
+	if sess.MAC != "" {
+		a.guestCodeFails.reset(sess.MAC)
+	}
+
+	for _, ip := range requestIPKeys(r, &sess) {
+		a.ipFails.reset(ip)
+		a.ipBans.unban(ip)
+		a.banHistory.reset(ip)
+	}
+}
+
+// recordIPFailure 累加 IP 失败计数, 触发阈值就短时冷却.
+// 升级模型仍保留为可配置兜底: 第 1 次到 (IPBanEscalateAt-1) 次 → IPBanDuration 时长;
 // 第 IPBanEscalateAt 次及以上 → 永久封禁 (要 admin 手动解).
 // reason 只进日志, 便于排查.
 func (a *App) recordIPFailure(ip, reason string) {
@@ -443,7 +547,7 @@ func (a *App) recordIPFailure(ip, reason string) {
 	} else {
 		duration = a.cfg.IPBanDuration
 		a.ipBans.ban(ip, duration)
-		log.Printf("IP 失败超限, 封禁 %s (第 %d 次): %s (累计=%d 窗口=%s 原因=%s)",
+		log.Printf("IP 失败超限, 冷却 %s (第 %d 次): %s (累计=%d 窗口=%s 原因=%s)",
 			duration, banCount, ip, n, a.cfg.IPFailsWindow, reason)
 	}
 }
@@ -507,15 +611,15 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 		a.renderError(w, r, lang, lang.s().GuestBlockedMsg, http.StatusForbidden)
 		return
 	}
-	log.Printf("放行成员(SSO): upn=%s name=%q ip=%s mac=%s",
-		user.UPN, user.Name, sess.UserIP, sess.MAC)
-	// 规则 1 清零: 走完 Entra 成功 = 这个邮箱是真人, 把 pending 失败抹掉.
-	// 同时清 session.Email (用户输入的) 和 user.UPN (Entra 返回的) 两个 key,
-	// 兜底 case-sensitivity 和 UPN != email 的边界情况.
-	if sess.Email != "" {
-		a.authEmailFails.reset(strings.ToLower(sess.Email))
+	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
+		log.Printf("拒绝已封禁 MAC SSO 放行: upn=%s mac=%s ip=%s", user.UPN, sess.MAC, sess.UserIP)
+		a.renderError(w, r, lang, lang.s().RateLimitedPermanent, http.StatusForbidden)
+		return
 	}
-	a.authEmailFails.reset(strings.ToLower(user.UPN))
+	log.Printf("放行成员(SSO): upn=%s name=%q client_ip=%s user_ip=%s mac=%s",
+		user.UPN, user.Name, clientIP(r), sess.UserIP, sess.MAC)
+	// 成功认证后清理同一邮箱 / 设备 / IP 的临时失败状态.
+	a.clearSuccessfulAuthState(r, sess, user.UPN)
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, user.UPN)
 	clearSessionCookie(w, true)
 	http.Redirect(w, r, ikuaiURL, http.StatusFound)
@@ -569,12 +673,15 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusUnauthorized)
 		return
 	}
-	log.Printf("放行成员(Duo快捷): upn=%s ip=%s mac=%s", username, sess.UserIP, sess.MAC)
-	// 规则 1 清零: Duo 2FA 过 = 这个邮箱是真人, 把 pending 失败抹掉.
-	if sess.Email != "" {
-		a.authEmailFails.reset(strings.ToLower(sess.Email))
+	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
+		log.Printf("拒绝已封禁 MAC Duo 放行: upn=%s mac=%s ip=%s", username, sess.MAC, sess.UserIP)
+		a.renderError(w, r, lang, lang.s().RateLimitedPermanent, http.StatusForbidden)
+		return
 	}
-	a.authEmailFails.reset(strings.ToLower(username))
+	log.Printf("放行成员(Duo快捷): upn=%s client_ip=%s user_ip=%s mac=%s",
+		username, clientIP(r), sess.UserIP, sess.MAC)
+	// 成功认证后清理同一邮箱 / 设备 / IP 的临时失败状态.
+	a.clearSuccessfulAuthState(r, sess, username)
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, username)
 	clearSessionCookie(w, true)
 	http.Redirect(w, r, ikuaiURL, http.StatusFound)
@@ -591,25 +698,38 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "guest_disabled"})
 		return
 	}
-	ip := clientIP(r)
-	if a.ipBans.isBanned(ip) {
-		a.writeRateLimited(w, "ip_ban", ip)
-		return
-	}
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
 	if err != nil {
-		a.recordIPFailure(ip, "session_lost")
+		if bannedIP, ok := a.bannedIPForRequest(r, nil); ok {
+			a.writeRateLimited(w, "ip_ban", bannedIP)
+			return
+		}
+		a.recordRequestFailure(r, nil, "session_lost")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_lost"})
+		return
+	}
+	ip := clientIP(r)
+	if bannedIP, ok := a.bannedIPForRequest(r, &sess); ok {
+		a.writeRateLimited(w, "ip_ban", bannedIP)
+		return
+	}
+	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
+		log.Printf("拒绝已封禁 MAC guest-code: mac=%s ip=%s", sess.MAC, ip)
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error":     "rate_limited",
+			"permanent": true,
+		})
 		return
 	}
 	// 规则 5: 按 session 里的 MAC 查失败计数. MAC 是从 /portal 签进 cookie 的,
 	// 攻击者改不了, 所以比按 IP 更稳.
 	if a.guestCodeFails.countIn(sess.MAC, a.cfg.GuestCodeMacWindow) >= a.cfg.GuestCodeMacFails {
 		log.Printf("guest-code 按 MAC 限流: mac=%s ip=%s", sess.MAC, ip)
-		a.recordIPFailure(ip, "rate_limited_mac")
+		a.recordRequestFailure(r, &sess, "rate_limited_mac")
 		rule := "mac"
-		if a.ipBans.isBanned(ip) {
+		if bannedIP, ok := a.bannedIPForRequest(r, &sess); ok {
 			rule = "ip_ban"
+			ip = bannedIP
 		}
 		a.writeRateLimited(w, rule, ip)
 		return
@@ -625,14 +745,14 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	if c == nil {
 		log.Printf("拒绝访客码 ip=%s mac=%s", sess.UserIP, sess.MAC)
 		a.guestCodeFails.record(sess.MAC)
-		a.recordIPFailure(ip, "invalid_guest_code")
+		a.recordRequestFailure(r, &sess, "invalid_guest_code")
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_code"})
 		return
 	}
-	log.Printf("放行访客: upn=%s code-suffix=%s ip=%s mac=%s",
-		upn, tailN(c.Code, 4), sess.UserIP, sess.MAC)
-	// 成功 → MAC 失败计数清零.
-	a.guestCodeFails.reset(sess.MAC)
+	log.Printf("放行访客: upn=%s code-suffix=%s client_ip=%s user_ip=%s mac=%s",
+		upn, tailN(c.Code, 4), clientIP(r), sess.UserIP, sess.MAC)
+	// 成功 → 清理同一设备 / IP 的临时失败状态.
+	a.clearSuccessfulAuthState(r, sess)
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, upn)
 	clearSessionCookie(w, true)
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": ikuaiURL})
@@ -905,7 +1025,7 @@ func (a *App) handleRateLimitStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleRateLimitReset POST /admin/ratelimit/reset
 // form: type=ip_ban|ip_fails|email|mac, key=<value>
-// 对应清除 / 解封该 key 的限流状态.
+// 对应清除 / 解封该 key 的限流状态. ip_ban 在默认配置下表示 IP 短时冷却.
 func (a *App) handleRateLimitReset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
@@ -941,7 +1061,7 @@ func (a *App) handleRateLimitReset(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRateLimitResetAll POST /admin/ratelimit/reset-all
-// 一键清空所有限流状态: 所有 IP 封禁 + 所有邮箱 / MAC / IP 失败计数 + 封禁历史.
+// 一键清空所有限流状态: 所有 IP 冷却 + 所有邮箱 / MAC / IP 失败计数 + 冷却历史.
 // 用于大面积误伤时快速救场, 或攻击消退后整体归零. 操作进日志.
 func (a *App) handleRateLimitResetAll(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -961,6 +1081,51 @@ func (a *App) handleRateLimitResetAll(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("admin %s 一键清除所有限流状态: %+v", admin.UPN, cleared)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
+}
+
+func (a *App) handleDenyMACCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	admin, ok := a.requireAdmin(w, r, true)
+	if !ok {
+		return
+	}
+	mac := strings.TrimSpace(r.FormValue("mac"))
+	reason := strings.TrimSpace(r.FormValue("reason"))
+	item, created, err := a.denylist.AddMAC(mac, reason, admin.UPN)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	a.guestCodeFails.reset(item.MAC)
+	log.Printf("admin %s 封禁 MAC: mac=%s created=%v reason=%q", admin.UPN, item.MAC, created, item.Reason)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"created": created,
+		"mac":     item.MAC,
+	})
+}
+
+func (a *App) handleDenyMACDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	admin, ok := a.requireAdmin(w, r, true)
+	if !ok {
+		return
+	}
+	mac := strings.TrimSpace(r.FormValue("mac"))
+	if mac == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_mac"})
+		return
+	}
+	norm := normalizeMAC(mac)
+	deleted := a.denylist.DeleteMAC(norm)
+	log.Printf("admin %s 解除 MAC 封禁: mac=%s deleted=%v", admin.UPN, norm, deleted)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
 }
 
 func parseExpiry(r *http.Request, gc *GuestCode) error {
@@ -1062,14 +1227,15 @@ func (a *App) renderError(w http.ResponseWriter, r *http.Request, lang Lang, msg
 }
 
 type adminPageData struct {
-	Brand    brandData
-	AdminUPN string
-	NowYear  int
-	Codes    []adminCodeRow
-	Total    int
-	Used     int
-	Unused   int
-	Expired  int
+	Brand      brandData
+	AdminUPN   string
+	NowYear    int
+	Codes      []adminCodeRow
+	DeniedMACs []adminDeniedMACRow
+	Total      int
+	Used       int
+	Unused     int
+	Expired    int
 }
 
 type adminCodeRow struct {
@@ -1084,6 +1250,13 @@ type adminCodeRow struct {
 	LastUsedMAC string
 	LastUsedIP  string
 	Note        string
+}
+
+type adminDeniedMACRow struct {
+	MAC       string
+	Reason    string
+	CreatedAt string
+	CreatedBy string
 }
 
 func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSession) {
@@ -1112,15 +1285,26 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 		}
 		rows = append(rows, row)
 	}
+	denied := a.denylist.ListMACs()
+	deniedRows := make([]adminDeniedMACRow, 0, len(denied))
+	for _, item := range denied {
+		deniedRows = append(deniedRows, adminDeniedMACRow{
+			MAC:       item.MAC,
+			Reason:    item.Reason,
+			CreatedAt: item.CreatedAt.Local().Format("2006-01-02 15:04"),
+			CreatedBy: item.CreatedBy,
+		})
+	}
 	data := adminPageData{
-		Brand:    a.makeBrand(),
-		AdminUPN: admin.UPN,
-		NowYear:  time.Now().Year(),
-		Codes:    rows,
-		Total:    total,
-		Used:     used,
-		Unused:   unused,
-		Expired:  expired,
+		Brand:      a.makeBrand(),
+		AdminUPN:   admin.UPN,
+		NowYear:    time.Now().Year(),
+		Codes:      rows,
+		DeniedMACs: deniedRows,
+		Total:      total,
+		Used:       used,
+		Unused:     unused,
+		Expired:    expired,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

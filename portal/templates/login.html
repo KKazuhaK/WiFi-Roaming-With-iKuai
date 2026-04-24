@@ -266,7 +266,7 @@
       }
 
       // 根据 429 响应的 body 生成对应的提示文字.
-      // body 可能带: permanent=true / retry_after_seconds=N / rule=xxx
+      // body 可能带: permanent=true / retry_after_seconds=N
       function buildRateLimitMsg(body) {
         if (body && body.permanent) return S.rateLimitedPermanent;
         if (body && body.retry_after_seconds) {

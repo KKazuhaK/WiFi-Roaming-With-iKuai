@@ -286,6 +286,46 @@
       </table>
     </div>
 
+    <!-- MAC 封禁 -->
+    <section style="margin-top: 32px;">
+      <div class="toolbar" style="margin-bottom: 16px;">
+        <div style="font-weight: 600; font-size: 16px; flex: 1;">MAC 封禁</div>
+        <div class="form-inline" style="flex: 2; min-width: 320px;">
+          <input type="text" id="deny-mac-input" class="search" placeholder="aa:bb:cc:dd:ee:ff">
+          <input type="text" id="deny-mac-reason" class="search" placeholder="原因，可选">
+          <button type="button" class="btn btn-danger btn-mini" onclick="createDeniedMACFromForm()">封禁</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 220px;">MAC</th>
+              <th>原因</th>
+              <th style="width: 180px;">创建时间</th>
+              <th style="width: 220px;">管理员</th>
+              <th style="width: 160px;">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{ range .DeniedMACs }}
+            <tr>
+              <td class="code">{{ .MAC }}</td>
+              <td class="muted">{{ .Reason }}</td>
+              <td class="muted">{{ .CreatedAt }}</td>
+              <td class="muted">{{ .CreatedBy }}</td>
+              <td><button type="button" class="btn btn-danger btn-mini" onclick="deleteDeniedMAC('{{ .MAC }}')">解除</button></td>
+            </tr>
+            {{ end }}
+            {{ if not .DeniedMACs }}
+            <tr><td colspan="5" class="empty">当前没有永久封禁的 MAC.</td></tr>
+            {{ end }}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- 限流状态 -->
     <section style="margin-top: 32px;">
       <div class="toolbar" style="margin-bottom: 16px;">
@@ -302,7 +342,7 @@
               <th style="width: 120px;">类型</th>
               <th>Key</th>
               <th style="width: 160px;">状态</th>
-              <th style="width: 100px;">操作</th>
+              <th style="width: 160px;">操作</th>
             </tr>
           </thead>
           <tbody id="rl-tbody">
@@ -569,6 +609,50 @@
 
     // ===== 限流管理 =====
 
+    function createDeniedMAC(mac, reason, reload) {
+      var fd = new FormData();
+      fd.append('mac', mac);
+      fd.append('reason', reason || '');
+      fetch('/admin/denylist/macs/create', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, body: b }; }); })
+        .then(function(res) {
+          if (res.ok && res.body.ok) {
+            toast(res.body.created ? '已封禁 MAC: ' + res.body.mac : 'MAC 已在封禁列表');
+            if (reload) setTimeout(function() { location.reload(); }, 600);
+            else refreshRL();
+          } else {
+            toast('封禁失败: ' + ((res.body && res.body.error) || 'error'));
+          }
+        })
+        .catch(function() { toast('网络异常'); });
+    }
+
+    function createDeniedMACFromForm() {
+      var mac = $('deny-mac-input').value.trim();
+      if (!mac) {
+        toast('请填写 MAC');
+        return;
+      }
+      createDeniedMAC(mac, $('deny-mac-reason').value.trim(), true);
+    }
+
+    function deleteDeniedMAC(mac) {
+      if (!confirm('确认解除 MAC 封禁: ' + mac + ' ?')) return;
+      var fd = new FormData();
+      fd.append('mac', mac);
+      fetch('/admin/denylist/macs/delete', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(body) {
+          if (body.ok) {
+            toast('已解除');
+            setTimeout(function() { location.reload(); }, 500);
+          } else {
+            toast('解除失败: ' + (body.error || 'unknown'));
+          }
+        })
+        .catch(function() { toast('网络异常'); });
+    }
+
     function fmtDurationSecs(s) {
       if (s <= 0) return '0 秒';
       if (s < 60) return s + ' 秒';
@@ -590,18 +674,18 @@
         ' + ' + th.email_long + '/' + fmtDurationSecs(th.email_long_s) +
         ' | MAC ' + th.mac + '/' + fmtDurationSecs(th.mac_s) +
         ' | IP ' + th.ip + '/' + fmtDurationSecs(th.ip_s) +
-        ' · 首封 ' + fmtDurationSecs(th.ip_ban_s) +
-        ', 第 ' + th.ip_ban_escalate + ' 次永久';
+        ' · 冷却 ' + fmtDurationSecs(th.ip_ban_s) +
+        (th.ip_ban_escalate >= 999999 ? ' · 不升级永久' : ', 第 ' + th.ip_ban_escalate + ' 次永久');
 
       var now = body.now_unix;
       var rows = [];
 
-      // IP 封禁 (最紧急, 排最前)
+      // IP 冷却 (最紧急, 排最前)
       (body.ip_bans || []).forEach(function(b) {
         var remain = b.expires_unix - now;
         var label = b.permanent
           ? 'IP 永久封禁 (第 ' + (b.ban_count || '?') + ' 次)'
-          : 'IP 封禁 (第 ' + (b.ban_count || '?') + ' 次)';
+          : 'IP 冷却 (第 ' + (b.ban_count || '?') + ' 次)';
         var statusTxt = b.permanent
           ? '永久 · 需手动解除'
           : '到期 ' + fmtTime(b.expires_unix) + ' (剩 ' + fmtDurationSecs(Math.max(0, remain)) + ')';
@@ -654,7 +738,8 @@
           key: m.key,
           status: m.count + ' 次 · 最近 ' + fmtTime(m.latest_unix),
           resetType: 'mac',
-          resetKey: m.key
+          resetKey: m.key,
+          canDenyMAC: true
         });
       });
 
@@ -692,6 +777,17 @@
         btn.textContent = '解除';
         btn.addEventListener('click', function() { resetRL(r.resetType, r.resetKey); });
         tr.children[3].appendChild(btn);
+        if (r.canDenyMAC) {
+          var denyBtn = document.createElement('button');
+          denyBtn.className = 'btn btn-danger btn-mini';
+          denyBtn.style.marginLeft = '6px';
+          denyBtn.textContent = '封禁';
+          denyBtn.addEventListener('click', function() {
+            if (!confirm('确认永久封禁 MAC: ' + r.resetKey + ' ?')) return;
+            createDeniedMAC(r.resetKey, '访客码失败次数过高', true);
+          });
+          tr.children[3].appendChild(denyBtn);
+        }
         tbody.appendChild(tr);
       });
     }
@@ -729,8 +825,8 @@
 
     function resetAllRL() {
       if (!confirm('确认清空所有限流状态? 这会:\n' +
-                   '  • 解除所有 IP 封禁\n' +
-                   '  • 清零所有 IP 封禁次数历史 (所有人回到"初犯")\n' +
+                   '  • 解除所有 IP 冷却\n' +
+                   '  • 清零所有 IP 冷却次数历史\n' +
                    '  • 清空邮箱 / MAC / IP 累计失败计数\n\n' +
                    '攻击者继续打还是会被重新计数, 但所有在押的都会被释放.')) return;
       fetch('/admin/ratelimit/reset-all', { method: 'POST', credentials: 'same-origin' })
