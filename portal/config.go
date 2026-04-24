@@ -27,6 +27,8 @@ type Config struct {
 	//                         开成 env 是因为不同固件/部署可能要换 host (走路由器 LAN IP) 或换 scheme
 	IKuaiCustomName  string // 放行 URL 里 custom_name 参数, iKuai 用它在审计日志区分多个对接的 portal
 	IKuaiReleaseType string // 放行 URL 里 release_type 参数, 默认 "1" (正常放行)
+	IKuaiUserIDPrefix string // user_id 前缀, 非空时 user_id = {prefix}-{upn}. 空 = 只送 UPN.
+	//                          例: 设 "Kazuha_Hub" 则 iKuai 审计日志里账号列显示 "Kazuha_Hub-me@kazuha.org"
 
 	// --- Portal 自身 ---
 	SessionSecret []byte // HMAC 签 cookie 用的随机密钥，32 字节，敏感
@@ -54,8 +56,9 @@ func loadConfig() Config {
 
 		IKuaiWebAuthURL: envOr("IKUAI_WEBAUTH_URL",
 			"https://portal.ikuai8-wifi.com/Action/webauth-up"),
-		IKuaiCustomName:  envOr("IKUAI_CUSTOM_NAME", "kazuha-hub"),
-		IKuaiReleaseType: envOr("IKUAI_RELEASE_TYPE", "1"),
+		IKuaiCustomName:   envOr("IKUAI_CUSTOM_NAME", "kazuha-hub"),
+		IKuaiReleaseType:  envOr("IKUAI_RELEASE_TYPE", "1"),
+		IKuaiUserIDPrefix: envOr("IKUAI_USER_ID_PREFIX", ""),
 
 		ListenAddr:   envOr("LISTEN_ADDR", "127.0.0.1:28080"),
 		BrandName:    envOr("BRAND_NAME", "Kazuha Hub"),
