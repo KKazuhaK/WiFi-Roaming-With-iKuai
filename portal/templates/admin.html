@@ -267,8 +267,10 @@
             <td class="muted">{{ .ExpiresAt }}</td>
             <td class="muted">
               {{ if gt .UseCount 0 }}
-                {{ .UseCount }} 次 · {{ .LastUsedAt }}<br>
+                {{ .UseCount }}{{ if gt .MaxUses 0 }}/{{ .MaxUses }}{{ end }} 次 · {{ .LastUsedAt }}<br>
                 <span style="font-size:11px">{{ .LastUsedMAC }}</span>
+              {{ else if gt .MaxUses 0 }}
+                0/{{ .MaxUses }} 次
               {{ else }}
                 —
               {{ end }}
@@ -307,6 +309,10 @@
             <input type="number" name="duration_h" value="2" min="0"> <span>小时</span>
             <input type="number" name="duration_m" value="0" min="0" max="59"> <span>分</span>
           </div>
+        </div>
+        <div class="form-field">
+          <label>可使用次数 (0 = 不限)</label>
+          <input type="number" name="max_uses" value="1" min="0">
         </div>
         <div class="form-field">
           <label>备注</label>
@@ -353,6 +359,10 @@
             <input type="number" name="duration_h" value="2" min="0"> <span>小时</span>
             <input type="number" name="duration_m" value="0" min="0" max="59"> <span>分</span>
           </div>
+        </div>
+        <div class="form-field">
+          <label>每个码可使用次数 (0 = 不限)</label>
+          <input type="number" name="max_uses" value="1" min="0">
         </div>
         <div class="form-field">
           <label>备注</label>
@@ -436,6 +446,7 @@
       var h = parseInt(f.duration_h.value) || 0;
       var m = parseInt(f.duration_m.value) || 0;
       fd.append('duration_min', (h * 60 + m).toString());
+      fd.append('max_uses', (parseInt(f.max_uses.value) || 0).toString());
       fd.append('note', f.note.value);
 
       fetch('/admin/codes/create', { method: 'POST', body: fd, credentials: 'same-origin' })
@@ -467,6 +478,7 @@
       var h = parseInt(f.duration_h.value) || 0;
       var m = parseInt(f.duration_m.value) || 0;
       fd.append('duration_min', (h * 60 + m).toString());
+      fd.append('max_uses', (parseInt(f.max_uses.value) || 0).toString());
       fd.append('note', f.note.value);
 
       fetch('/admin/codes/batch', { method: 'POST', body: fd, credentials: 'same-origin' })

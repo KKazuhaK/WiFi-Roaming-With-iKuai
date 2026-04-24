@@ -525,6 +525,7 @@ func (a *App) handleCodeCreate(w http.ResponseWriter, r *http.Request) {
 	gc := &GuestCode{
 		Code:      code,
 		CreatedAt: time.Now(),
+		MaxUses:   parseMaxUses(r.FormValue("max_uses")),
 		Note:      strings.TrimSpace(r.FormValue("note")),
 	}
 	if err := parseExpiry(r, gc); err != nil {
@@ -565,11 +566,17 @@ func (a *App) handleCodeBatch(w http.ResponseWriter, r *http.Request) {
 		length = 32
 	}
 	note := strings.TrimSpace(r.FormValue("note"))
+	maxUses := parseMaxUses(r.FormValue("max_uses"))
+	// baseProbe 只用来复用 parseExpiry 的过期计算; 每个码的 CreatedAt 用各自
+	// 的 time.Now(), 保证 List 排序时不会因时间戳相同而顺序抖动.
 	baseProbe := &GuestCode{CreatedAt: time.Now()}
 	if err := parseExpiry(r, baseProbe); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// 如果用户填了绝对过期时间, 所有码共用; 否则按 "创建时间 + 时长" 给每个码算.
+	absoluteExpiry := strings.TrimSpace(r.FormValue("expires_at")) != ""
+	duration := baseProbe.ExpiresAt.Sub(baseProbe.CreatedAt)
 	generated := make([]string, 0, count)
 	for i := 0; i < count; i++ {
 		raw, err := generateCode(codeType, length)
@@ -577,10 +584,16 @@ func (a *App) handleCodeBatch(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "rand_failed"})
 			return
 		}
+		createdAt := time.Now()
+		expiresAt := baseProbe.ExpiresAt
+		if !absoluteExpiry {
+			expiresAt = createdAt.Add(duration)
+		}
 		gc := &GuestCode{
 			Code:      raw,
-			CreatedAt: baseProbe.CreatedAt,
-			ExpiresAt: baseProbe.ExpiresAt,
+			CreatedAt: createdAt,
+			ExpiresAt: expiresAt,
+			MaxUses:   maxUses,
 			Note:      note,
 		}
 		if !a.guestCodes.Add(gc) {
@@ -737,6 +750,7 @@ type adminCodeRow struct {
 	Duration    string
 	Status      string
 	UseCount    int
+	MaxUses     int // 0 = 不限
 	LastUsedAt  string
 	LastUsedMAC string
 	LastUsedIP  string
@@ -754,6 +768,7 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 			ExpiresAt: c.ExpiresAt.Local().Format("2006-01-02 15:04"),
 			Status:    c.Status(),
 			UseCount:  c.UseCount(),
+			MaxUses:   c.MaxUses,
 			Note:      c.Note,
 		}
 		d := c.ExpiresAt.Sub(c.CreatedAt)
@@ -831,6 +846,15 @@ func isAllowedDomain(email string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+// parseMaxUses: 空 / 0 / 负数 → 0 (不限); 否则原值.
+func parseMaxUses(s string) int {
+	n := parseIntDefault(s, 0)
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 func parseIntDefault(s string, def int) int {

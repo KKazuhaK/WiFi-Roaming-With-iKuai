@@ -27,12 +27,13 @@ const (
 // 设计备注:
 //   - ExpiresAt 是绝对过期时间. 创建时如果 admin 显式填了 "过期时间" 用那个;
 //     否则用 CreatedAt + 限时.
-//   - 码可重复使用直到过期, 每次使用记到 Uses 里 (像 iKuai 的 "使用记录" 一列).
+//   - MaxUses 限制同一个码最多可成功使用多少次. 0 = 不限, 直到过期.
 //   - Note 是 admin 的备注, 只用于后台显示.
 type GuestCode struct {
 	Code      string    `json:"code"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
+	MaxUses   int       `json:"max_uses,omitempty"`
 	Note      string    `json:"note,omitempty"`
 	Uses      []CodeUse `json:"uses,omitempty"`
 }
@@ -48,11 +49,16 @@ func (c *GuestCode) IsExpired() bool {
 	return time.Now().After(c.ExpiresAt)
 }
 
+// IsExhausted: 达到 MaxUses 上限 (MaxUses=0 视为无限).
+func (c *GuestCode) IsExhausted() bool {
+	return c.MaxUses > 0 && len(c.Uses) >= c.MaxUses
+}
+
 func (c *GuestCode) UseCount() int {
 	return len(c.Uses)
 }
 
-// Status: 给 UI 分类 Tabs 用.
+// Status: 给 UI 分类 Tabs 用. 用完的归到 "已使用", 不单独列一类.
 func (c *GuestCode) Status() string {
 	switch {
 	case c.IsExpired():
@@ -75,6 +81,7 @@ func newGuestCodeStore() *GuestCodeStore {
 }
 
 // List 返回按 CreatedAt 倒序排列的副本. 拿到后调用者不持锁.
+// 时间相同时按 Code 字典序兜底, 保证多次刷新顺序稳定 (map 遍历本身无序).
 func (s *GuestCodeStore) List() []*GuestCode {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -82,8 +89,11 @@ func (s *GuestCodeStore) List() []*GuestCode {
 	for _, c := range s.codes {
 		out = append(out, c)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].CreatedAt.After(out[j].CreatedAt)
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].Code < out[j].Code
 	})
 	return out
 }
@@ -129,7 +139,7 @@ func (s *GuestCodeStore) DeleteExpired() int {
 	return n
 }
 
-// Validate: 找到、未过期就记一次使用, 返回 code 对象. nil = 无效.
+// Validate: 找到、未过期、未达 MaxUses 就记一次使用, 返回 code 对象. nil = 无效.
 // guestUPN 是我们上报给 iKuai 的 user_id (每次连接都不同).
 func (s *GuestCodeStore) Validate(code, mac, ip, guestUPN string) *GuestCode {
 	s.mu.Lock()
@@ -139,7 +149,7 @@ func (s *GuestCodeStore) Validate(code, mac, ip, guestUPN string) *GuestCode {
 		return nil
 	}
 	c, ok := s.codes[k]
-	if !ok || c.IsExpired() {
+	if !ok || c.IsExpired() || c.IsExhausted() {
 		return nil
 	}
 	c.Uses = append(c.Uses, CodeUse{
