@@ -47,24 +47,25 @@
       box-shadow: 0 8px 32px rgba(0,0,0,0.06);
       border: 1px solid var(--border);
     }
-    .icon {
-      width: 56px;
-      height: 56px;
-      margin: 0 auto 20px;
-      border-radius: 50%;
-      background: rgba(220, 38, 38, 0.1);
-      color: var(--danger);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 32px;
-      font-weight: 700;
+    .brand-logo {
+      display: none;
+      margin: 0 auto 24px;
+      max-width: 240px;
+      max-height: 90px;
+      width: auto;
+      height: auto;
+    }
+    .brand-logo.light { display: block; }
+    @media (prefers-color-scheme: dark) {
+      .brand-logo.light { display: none; }
+      .brand-logo.dark  { display: block; }
     }
     h1 {
       font-size: 20px;
       margin: 0 0 12px;
       text-align: center;
       font-weight: 600;
+      color: var(--danger);
     }
     .msg {
       text-align: center;
@@ -96,10 +97,12 @@
 </head>
 <body>
   <main class="card">
-    <div class="icon">!</div>
+    <img class="brand-logo light" src="/static/logo-title-light.png" alt="{{ .Brand.Name }}">
+    <img class="brand-logo dark"  src="/static/logo-title-dark.png"  alt="{{ .Brand.Name }}">
+
     <h1>{{ .S.ErrorTitle }}</h1>
     <p class="msg">{{ .Message }}</p>
-    <a href="/login" class="btn">{{ .S.SignInButton }}</a>
+    <a href="/login" class="btn">{{ printf .S.SignInButton .Brand.Name }}</a>
     <div class="footer">{{ printf .S.Footer .Brand.Name }} · {{ .NowYear }}</div>
   </main>
 </body>

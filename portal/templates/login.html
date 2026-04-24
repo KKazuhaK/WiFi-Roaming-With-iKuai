@@ -45,21 +45,22 @@
       box-shadow: 0 8px 32px rgba(0,0,0,0.06);
       border: 1px solid var(--border);
     }
-    .logo {
-      width: 56px;
-      height: 56px;
-      margin: 0 auto 20px;
-      display: block;
-      border-radius: 12px;
-      background: var(--brand-color);
-      color: white;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 24px;
+
+    /* 顶部 logo+title 图. 两张图各自在对应主题下显示, 另一张 display:none. */
+    .brand-logo {
+      display: none;
+      margin: 0 auto 24px;
+      max-width: 240px;
+      max-height: 90px;
+      width: auto;
+      height: auto;
     }
-    .logo img { width: 100%; height: 100%; border-radius: 12px; object-fit: contain; }
+    .brand-logo.light { display: block; }
+    @media (prefers-color-scheme: dark) {
+      .brand-logo.light { display: none; }
+      .brand-logo.dark  { display: block; }
+    }
+
     h1 {
       font-size: 20px;
       margin: 0 0 8px;
@@ -74,9 +75,12 @@
       line-height: 1.5;
     }
     .btn {
-      display: block;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
       width: 100%;
-      padding: 14px 20px;
+      padding: 12px 20px;
       background: var(--brand-color);
       color: white;
       border: none;
@@ -85,76 +89,54 @@
       font-weight: 500;
       cursor: pointer;
       text-decoration: none;
-      text-align: center;
       transition: opacity 0.15s;
     }
     .btn:hover { opacity: 0.9; }
     .btn:active { opacity: 0.8; }
-    .btn svg { vertical-align: -3px; margin-right: 6px; }
-    .device {
-      margin-top: 24px;
-      padding-top: 20px;
-      border-top: 1px solid var(--border);
-      font-size: 12px;
-      color: var(--text-muted);
-      line-height: 1.6;
+    .btn-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: rgba(255,255,255,0.1);
+      flex-shrink: 0;
     }
-    .device dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
-    .device dt { color: var(--text-muted); }
-    .device dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .footer {
-      margin-top: 20px;
+      margin-top: 32px;
       text-align: center;
       font-size: 11px;
       color: var(--text-muted);
     }
     .lang-switch {
       text-align: center;
-      margin-top: 12px;
+      margin-top: 16px;
       font-size: 12px;
     }
     .lang-switch a {
       color: var(--text-muted);
       text-decoration: none;
-      margin: 0 6px;
+      margin: 0 8px;
     }
     .lang-switch a.active { color: var(--brand-color); font-weight: 600; }
   </style>
 </head>
 <body>
   <main class="card">
-    <div class="logo">
-      {{ if .Brand.LogoURL }}
-        <img src="{{ .Brand.LogoURL }}" alt="{{ .Brand.Name }}">
-      {{ else }}
-        {{ .Brand.Initial }}
-      {{ end }}
-    </div>
+    <img class="brand-logo light" src="/static/logo-title-light.png" alt="{{ .Brand.Name }}">
+    <img class="brand-logo dark"  src="/static/logo-title-dark.png"  alt="{{ .Brand.Name }}">
+
     <h1>{{ printf .S.Title .Brand.Name }}</h1>
-    <p class="subtitle">{{ .S.Subtitle }}</p>
+    <p class="subtitle">{{ printf .S.Subtitle .Brand.Name }}</p>
 
     <a href="/login" class="btn">
-      <svg width="18" height="18" viewBox="0 0 21 21" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
-        <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
-        <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
-        <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
-      </svg>
-      {{ .S.SignInButton }}
+      <img class="btn-icon" src="/static/HeadPicture.png" alt="">
+      <span>{{ printf .S.SignInButton .Brand.Name }}</span>
     </a>
 
-    <div class="device">
-      <dl>
-        <dt>{{ .S.LabelDevice }}</dt>
-        <dd>{{ .DeviceMAC }}</dd>
-        <dt>IP</dt>
-        <dd>{{ .DeviceIP }}</dd>
-      </dl>
-    </div>
-
     <div class="lang-switch">
-      <a href="?lang=zh" class="{{ if eq .Lang "zh" }}active{{ end }}">中文</a>
-      <a href="?lang=en" class="{{ if eq .Lang "en" }}active{{ end }}">English</a>
+      <a href="?lang=zh-cn" class="{{ if eq .Lang "zh-cn" }}active{{ end }}">{{ .S.LangZHCNLabel }}</a>
+      <a href="?lang=zh-tw" class="{{ if eq .Lang "zh-tw" }}active{{ end }}">{{ .S.LangZHTWLabel }}</a>
+      <a href="?lang=en"    class="{{ if eq .Lang "en" }}active{{ end }}">{{ .S.LangENLabel }}</a>
     </div>
 
     <div class="footer">{{ printf .S.Footer .Brand.Name }} · {{ .NowYear }}</div>
