@@ -55,14 +55,14 @@ func (s *DenylistStore) loadFromDisk() error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("读取 %s: %w", s.persistPath, err)
+		return fmt.Errorf("read %s: %w", s.persistPath, err)
 	}
 	if len(data) == 0 {
 		return nil
 	}
 	var disk denylistDisk
 	if err := json.Unmarshal(data, &disk); err != nil {
-		return fmt.Errorf("解析 %s: %w", s.persistPath, err)
+		return fmt.Errorf("parse %s: %w", s.persistPath, err)
 	}
 	for mac, item := range disk.MACs {
 		norm := normalizeMAC(mac)
@@ -72,7 +72,7 @@ func (s *DenylistStore) loadFromDisk() error {
 		item.MAC = norm
 		s.macs[norm] = item
 	}
-	log.Printf("MAC 封禁列表: 从 %s 加载 %d 条", s.persistPath, len(s.macs))
+	log.Printf("MAC denylist: loaded %d entries from %s", s.persistPath, len(s.macs))
 	return nil
 }
 
@@ -154,21 +154,21 @@ func (s *DenylistStore) saveLocked() {
 	disk := denylistDisk{MACs: s.macs}
 	data, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {
-		log.Printf("MAC 封禁列表序列化失败: %v", err)
+		log.Printf("MAC denylist: marshal failed: %v", err)
 		return
 	}
 	dir := filepath.Dir(s.persistPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("MAC 封禁列表 mkdir %s 失败: %v", dir, err)
+		log.Printf("MAC denylist: mkdir %s failed: %v", dir, err)
 		return
 	}
 	tmp := s.persistPath + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		log.Printf("MAC 封禁列表写 %s 失败: %v", tmp, err)
+		log.Printf("MAC denylist: write %s failed: %v", tmp, err)
 		return
 	}
 	if err := os.Rename(tmp, s.persistPath); err != nil {
-		log.Printf("MAC 封禁列表 rename %s → %s 失败: %v", tmp, s.persistPath, err)
+		log.Printf("MAC denylist: rename %s -> %s failed: %v", tmp, s.persistPath, err)
 	}
 }
 

@@ -269,15 +269,15 @@ func newBanHistory(persistPath string) (*banHistory, error) {
 		if os.IsNotExist(err) {
 			return b, nil
 		}
-		return nil, fmt.Errorf("读取 %s: %w", persistPath, err)
+		return nil, fmt.Errorf("read %s: %w", persistPath, err)
 	}
 	if len(data) == 0 {
 		return b, nil
 	}
 	if err := json.Unmarshal(data, &b.counts); err != nil {
-		return nil, fmt.Errorf("解析 %s: %w", persistPath, err)
+		return nil, fmt.Errorf("parse %s: %w", persistPath, err)
 	}
-	log.Printf("ban history: 从 %s 加载 %d 条 IP 冷却历史", persistPath, len(b.counts))
+	log.Printf("ban history: loaded %d IP cooldown entries from %s", persistPath, len(b.counts))
 	return b, nil
 }
 
@@ -338,21 +338,21 @@ func (b *banHistory) saveLocked() {
 	}
 	data, err := json.MarshalIndent(b.counts, "", "  ")
 	if err != nil {
-		log.Printf("ban history 序列化失败: %v", err)
+		log.Printf("ban history: marshal failed: %v", err)
 		return
 	}
 	dir := filepath.Dir(b.persistPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("ban history mkdir %s 失败: %v", dir, err)
+		log.Printf("ban history: mkdir %s failed: %v", dir, err)
 		return
 	}
 	tmp := b.persistPath + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		log.Printf("ban history 写 %s 失败: %v", tmp, err)
+		log.Printf("ban history: write %s failed: %v", tmp, err)
 		return
 	}
 	if err := os.Rename(tmp, b.persistPath); err != nil {
-		log.Printf("ban history rename %s → %s 失败: %v", tmp, b.persistPath, err)
+		log.Printf("ban history: rename %s -> %s failed: %v", tmp, b.persistPath, err)
 	}
 }
 

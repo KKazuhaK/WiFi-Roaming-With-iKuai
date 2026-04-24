@@ -137,15 +137,15 @@ func loadConfig() Config {
 	secretHex := mustEnv("SESSION_SECRET")
 	secret, err := hex.DecodeString(secretHex)
 	if err != nil {
-		log.Fatalf("SESSION_SECRET 必须是 hex 字符串: %v", err)
+		log.Fatalf("SESSION_SECRET must be a hex string: %v", err)
 	}
 	if len(secret) < 32 {
-		log.Fatalf("SESSION_SECRET 至少 32 字节 (64 个 hex 字符), 当前 %d", len(secret))
+		log.Fatalf("SESSION_SECRET must be at least 32 bytes (64 hex chars), got %d", len(secret))
 	}
 	cfg.SessionSecret = secret
 
 	if !strings.HasPrefix(cfg.PublicURL, "https://") {
-		log.Fatalf("PUBLIC_URL 必须以 https:// 开头, 当前: %s", cfg.PublicURL)
+		log.Fatalf("PUBLIC_URL must start with https://, got: %s", cfg.PublicURL)
 	}
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
 
@@ -166,10 +166,10 @@ func loadConfig() Config {
 		}
 	}
 	if filled > 0 && empty > 0 {
-		log.Fatalf("Duo 配置不完整: 以下 5 个字段必须同时设置或同时留空 — %v", duoFields)
+		log.Fatalf("Duo config incomplete: the following 5 fields must all be set or all be empty: %v", duoFields)
 	}
 	if cfg.IsDuoEnabled() && len(cfg.AllowedEmailDomains) == 0 {
-		log.Fatalf("启用 Duo 必须同时设置 ALLOWED_EMAIL_DOMAINS")
+		log.Fatalf("Duo requires ALLOWED_EMAIL_DOMAINS to be set")
 	}
 
 	return cfg
@@ -211,7 +211,7 @@ func (c Config) RedirectURL() string {
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
-		log.Fatalf("环境变量 %s 未设置", key)
+		log.Fatalf("env %s is not set", key)
 	}
 	return v
 }
@@ -230,7 +230,7 @@ func envOrInt(key string, fallback int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		log.Fatalf("环境变量 %s 必须是整数, 当前: %q", key, v)
+		log.Fatalf("env %s must be an integer, got: %q", key, v)
 	}
 	return n
 }
@@ -238,7 +238,7 @@ func envOrInt(key string, fallback int) int {
 func envOrNonNegativeInt(key string, fallback int) int {
 	n := envOrInt(key, fallback)
 	if n < 0 {
-		log.Fatalf("环境变量 %s 必须是非负整数, 当前: %d", key, n)
+		log.Fatalf("env %s must be a non-negative integer, got: %d", key, n)
 	}
 	return n
 }
@@ -251,7 +251,7 @@ func envOrDuration(key string, fallback time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Fatalf("环境变量 %s 必须是时长 (如 5m, 1h), 当前: %q", key, v)
+		log.Fatalf("env %s must be a duration (e.g. 5m, 1h), got: %q", key, v)
 	}
 	return d
 }

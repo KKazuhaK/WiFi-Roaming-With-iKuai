@@ -58,14 +58,14 @@ func (s *IKuaiPolicyStore) loadFromDisk() error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("读取 %s: %w", s.persistPath, err)
+		return fmt.Errorf("read %s: %w", s.persistPath, err)
 	}
 	if len(data) == 0 {
 		return nil
 	}
 	var raw map[string]IKuaiPolicy
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("解析 %s: %w", s.persistPath, err)
+		return fmt.Errorf("parse %s: %w", s.persistPath, err)
 	}
 	for k, p := range raw {
 		profile, ok := parseIKuaiProfile(k)
@@ -73,11 +73,11 @@ func (s *IKuaiPolicyStore) loadFromDisk() error {
 			continue
 		}
 		if err := validateIKuaiPolicy(p); err != nil {
-			return fmt.Errorf("解析 %s: profile %s: %w", s.persistPath, profile, err)
+			return fmt.Errorf("parse %s: profile %s: %w", s.persistPath, profile, err)
 		}
 		s.policies[profile] = normalizeIKuaiPolicyForProfile(profile, p)
 	}
-	log.Printf("iKuai 放行策略: 从 %s 加载", s.persistPath)
+	log.Printf("iKuai policy: loaded from %s", s.persistPath)
 	return nil
 }
 
@@ -133,21 +133,21 @@ func (s *IKuaiPolicyStore) saveLocked() {
 	}
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
-		log.Printf("iKuai 放行策略序列化失败: %v", err)
+		log.Printf("iKuai policy: marshal failed: %v", err)
 		return
 	}
 	dir := filepath.Dir(s.persistPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("iKuai 放行策略 mkdir %s 失败: %v", dir, err)
+		log.Printf("iKuai policy: mkdir %s failed: %v", dir, err)
 		return
 	}
 	tmp := s.persistPath + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		log.Printf("iKuai 放行策略写 %s 失败: %v", tmp, err)
+		log.Printf("iKuai policy: write %s failed: %v", tmp, err)
 		return
 	}
 	if err := os.Rename(tmp, s.persistPath); err != nil {
-		log.Printf("iKuai 放行策略 rename %s → %s 失败: %v", tmp, s.persistPath, err)
+		log.Printf("iKuai policy: rename %s -> %s failed: %v", tmp, s.persistPath, err)
 	}
 }
 
@@ -199,11 +199,11 @@ func parseIKuaiProfile(s string) (IKuaiAuthProfile, bool) {
 func ikuaiProfileLabel(p IKuaiAuthProfile) string {
 	switch p {
 	case IKuaiProfileSSO:
-		return "SSO 成员"
+		return "SSO member"
 	case IKuaiProfileDuo:
-		return "Duo 成员"
+		return "Duo member"
 	case IKuaiProfileGuest:
-		return "访客码"
+		return "guest_code"
 	default:
 		return string(p)
 	}
