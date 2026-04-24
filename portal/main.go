@@ -37,6 +37,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 //go:embed templates/*.html
@@ -202,6 +204,7 @@ func main() {
 	mux.HandleFunc("/admin/codes/create", app.handleCodeCreate)
 	mux.HandleFunc("/admin/codes/batch", app.handleCodeBatch)
 	mux.HandleFunc("/admin/codes/delete", app.handleCodeDelete)
+	mux.HandleFunc("/admin/codes/delete-bulk", app.handleCodeDeleteBulk)
 	mux.HandleFunc("/admin/codes/delete-expired", app.handleCodeDeleteExpired)
 	mux.HandleFunc("/admin/ratelimit/status", app.handleRateLimitStatus)
 	mux.HandleFunc("/admin/ratelimit/reset", app.handleRateLimitReset)
@@ -212,6 +215,7 @@ func main() {
 	mux.HandleFunc("/admin/ikuai-policy/update", app.handleIKuaiPolicyUpdate)
 	mux.HandleFunc("/admin/events/query", app.handleEventsQuery)
 	mux.HandleFunc("/admin/events/export.csv", app.handleEventsExportCSV)
+	mux.HandleFunc("/admin/qr.png", app.handleAdminQR)
 	mux.HandleFunc("/admin/denylist/export.csv", app.handleDenylistExportCSV)
 	mux.HandleFunc("/admin/denylist/import", app.handleDenylistImportCSV)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
@@ -1043,6 +1047,44 @@ func (a *App) handleCodeDeleteExpired(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": n})
 }
 
+// handleCodeDeleteBulk: POST /admin/codes/delete-bulk
+// form: codes=<逗号分隔的码列表>
+// 一次删多个访客码. 写一条审计 (count + 抽样几个码尾 4 位), 不为每条单独写, 防日志噪音.
+func (a *App) handleCodeDeleteBulk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	admin, ok := a.requireAdmin(w, r, true)
+	if !ok {
+		return
+	}
+	raw := r.FormValue("codes")
+	if strings.TrimSpace(raw) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_codes"})
+		return
+	}
+	codes := strings.Split(raw, ",")
+	deleted := 0
+	skipped := 0
+	for _, c := range codes {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if a.guestCodes.Delete(c) {
+			deleted++
+		} else {
+			skipped++
+		}
+	}
+	a.logAdminAction(admin.UPN, ResultSuccess,
+		fmt.Sprintf("delete-bulk deleted=%d skipped=%d", deleted, skipped))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "deleted": deleted, "skipped": skipped,
+	})
+}
+
 // handleRateLimitStatus GET /admin/ratelimit/status
 // 返回当前限流状态快照 (被封 IP + 邮箱 / MAC 失败计数), 供 admin UI 渲染.
 func (a *App) handleRateLimitStatus(w http.ResponseWriter, r *http.Request) {
@@ -1362,6 +1404,40 @@ func (a *App) handleEventsExportCSV(w http.ResponseWriter, r *http.Request) {
 	if err := WriteEventsCSV(w, events); err != nil {
 		log.Printf("事件日志 CSV 导出失败: %v", err)
 	}
+}
+
+// handleAdminQR: GET /admin/qr.png?text=...&size=200
+// 生成访客码 QR. 仅 admin 可用. 内容来源是 admin 已经拿到的码,
+// 不会泄漏新东西; 但限制 size 上下界防 OOM 攻击.
+func (a *App) handleAdminQR(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.requireAdmin(w, r, false); !ok {
+		return
+	}
+	text := r.URL.Query().Get("text")
+	if text == "" {
+		http.Error(w, "missing text", http.StatusBadRequest)
+		return
+	}
+	if len(text) > 256 {
+		http.Error(w, "text too long", http.StatusBadRequest)
+		return
+	}
+	size := parseIntDefault(r.URL.Query().Get("size"), 220)
+	if size < 64 {
+		size = 64
+	}
+	if size > 1024 {
+		size = 1024
+	}
+	png, err := qrcode.Encode(text, qrcode.Medium, size)
+	if err != nil {
+		log.Printf("qr encode 失败: %v", err)
+		http.Error(w, "encode_failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	_, _ = w.Write(png)
 }
 
 func (a *App) handleDenylistExportCSV(w http.ResponseWriter, r *http.Request) {
