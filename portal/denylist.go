@@ -117,6 +117,20 @@ func (s *DenylistStore) DeleteMAC(mac string) bool {
 	return true
 }
 
+// DeleteAllMACs 清空整个 MAC 封禁列表, 返回清掉了几条.
+// 给 admin "一键解除全部" 用. 只动 MAC 封禁, 不碰限流状态 — 那是另一码事.
+func (s *DenylistStore) DeleteAllMACs() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.macs)
+	if n == 0 {
+		return 0
+	}
+	s.macs = make(map[string]DeniedMAC)
+	s.saveLocked()
+	return n
+}
+
 func (s *DenylistStore) ListMACs() []DeniedMAC {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

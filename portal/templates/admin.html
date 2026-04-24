@@ -133,6 +133,10 @@
       border: 1px solid var(--border);
       background: transparent;
       color: var(--text);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
     }
     .btn:hover { background: rgba(0,0,0,0.04); }
     @media (prefers-color-scheme: dark) {
@@ -491,6 +495,7 @@
         <a class="btn btn-mini" href="/admin/denylist/export.csv">导出 CSV</a>
         <button type="button" class="btn btn-mini" onclick="document.getElementById('deny-import-file').click()">导入 CSV</button>
         <input type="file" id="deny-import-file" accept=".csv,text/csv" style="display:none" onchange="importDenylistCSV(this)">
+        <button type="button" class="btn btn-danger btn-mini" onclick="unbanAllMACs()">一键解除全部</button>
       </div>
 
       <div class="table-wrap">
@@ -934,6 +939,23 @@
         .catch(function() { toast('网络异常'); });
     }
 
+    function unbanAllMACs() {
+      if (!confirm('确认解除全部 MAC 封禁?\n\n' +
+                   '这只清空 MAC 封禁列表, 不影响限流状态.\n' +
+                   '所有曾被封的设备都能立刻重新连接 portal 走登录流程.')) return;
+      fetch('/admin/denylist/macs/delete-all', { method: 'POST', credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(body) {
+          if (body.ok) {
+            toast('已清空 ' + body.cleared + ' 条 MAC 封禁');
+            setTimeout(function() { location.reload(); }, 600);
+          } else {
+            toast('清空失败: ' + (body.error || 'unknown'));
+          }
+        })
+        .catch(function() { toast('网络异常'); });
+    }
+
     function fmtDurationSecs(s) {
       if (s <= 0) return '0 秒';
       if (s < 60) return s + ' 秒';
@@ -1105,7 +1127,7 @@
     }
 
     function resetAllRL() {
-      if (!confirm('确认清空所有限流状态? 这会:\n' +
+      if (!confirm('确认清空所有限流状态? 这只动限流, 不动 MAC 封禁列表. 包括:\n' +
                    '  • 解除所有 IP 冷却\n' +
                    '  • 清零所有 IP 冷却次数历史\n' +
                    '  • 清空邮箱 / MAC / IP 累计失败计数\n\n' +
