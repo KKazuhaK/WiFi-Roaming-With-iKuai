@@ -166,6 +166,7 @@ func main() {
 	mux.HandleFunc("/admin/codes/delete-expired", app.handleCodeDeleteExpired)
 	mux.HandleFunc("/admin/ratelimit/status", app.handleRateLimitStatus)
 	mux.HandleFunc("/admin/ratelimit/reset", app.handleRateLimitReset)
+	mux.HandleFunc("/admin/ratelimit/reset-all", app.handleRateLimitResetAll)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
 	srv := &http.Server{
@@ -937,6 +938,29 @@ func (a *App) handleRateLimitReset(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("admin %s 清除限流: type=%s key=%s", admin.UPN, t, key)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleRateLimitResetAll POST /admin/ratelimit/reset-all
+// 一键清空所有限流状态: 所有 IP 封禁 + 所有邮箱 / MAC / IP 失败计数 + 封禁历史.
+// 用于大面积误伤时快速救场, 或攻击消退后整体归零. 操作进日志.
+func (a *App) handleRateLimitResetAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	admin, ok := a.requireAdmin(w, r, true)
+	if !ok {
+		return
+	}
+	cleared := map[string]int{
+		"ip_bans":         a.ipBans.unbanAll(),
+		"ban_history":     a.banHistory.resetAll(),
+		"email_fails":     a.authEmailFails.resetAll(),
+		"guest_mac_fails": a.guestCodeFails.resetAll(),
+		"ip_fails":        a.ipFails.resetAll(),
+	}
+	log.Printf("admin %s 一键清除所有限流状态: %+v", admin.UPN, cleared)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
 }
 
 func parseExpiry(r *http.Request, gc *GuestCode) error {

@@ -292,6 +292,7 @@
         <div style="font-weight: 600; font-size: 16px; flex: 1;">限流状态</div>
         <div id="rl-thresholds" class="muted" style="font-size: 12px;"></div>
         <button type="button" class="btn btn-mini" onclick="refreshRL()">刷新</button>
+        <button type="button" class="btn btn-danger btn-mini" onclick="resetAllRL()">一键解除全部</button>
       </div>
 
       <div class="table-wrap">
@@ -721,6 +722,28 @@
             refreshRL();
           } else {
             toast('清除失败: ' + (b.error || 'unknown'));
+          }
+        })
+        .catch(function() { toast('网络异常'); });
+    }
+
+    function resetAllRL() {
+      if (!confirm('确认清空所有限流状态? 这会:\n' +
+                   '  • 解除所有 IP 封禁\n' +
+                   '  • 清零所有 IP 封禁次数历史 (所有人回到"初犯")\n' +
+                   '  • 清空邮箱 / MAC / IP 累计失败计数\n\n' +
+                   '攻击者继续打还是会被重新计数, 但所有在押的都会被释放.')) return;
+      fetch('/admin/ratelimit/reset-all', { method: 'POST', credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(b) {
+          if (b.ok) {
+            var c = b.cleared || {};
+            toast('已清空: 封禁 ' + (c.ip_bans||0) + ' + 历史 ' + (c.ban_history||0) +
+                  ' + 邮箱 ' + (c.email_fails||0) + ' + MAC ' + (c.guest_mac_fails||0) +
+                  ' + IP 计数 ' + (c.ip_fails||0));
+            refreshRL();
+          } else {
+            toast('清空失败: ' + (b.error || 'unknown'));
           }
         })
         .catch(function() { toast('网络异常'); });

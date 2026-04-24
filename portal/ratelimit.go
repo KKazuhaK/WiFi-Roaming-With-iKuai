@@ -71,6 +71,15 @@ func (c *failCounter) reset(key string) {
 	delete(c.entries, key)
 }
 
+// resetAll 清空所有 key. 仅供 admin "一键解除" 用.
+func (c *failCounter) resetAll() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := len(c.entries)
+	c.entries = make(map[string][]time.Time)
+	return n
+}
+
 // FailSnapshot 给 admin 面板用: 某个 key 近 maxWindow 内累计多少次失败.
 type FailSnapshot struct {
 	Key     string `json:"key"`
@@ -206,6 +215,15 @@ func (b *ipBanList) unban(ip string) bool {
 	return false
 }
 
+// unbanAll: admin "一键解封" 清空所有封禁. 返回清了几条.
+func (b *ipBanList) unbanAll() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(b.bans)
+	b.bans = make(map[string]time.Time)
+	return n
+}
+
 // BanSnapshot 给 admin 面板用.
 type BanSnapshot struct {
 	IP         string `json:"ip"`
@@ -289,6 +307,17 @@ func (b *banHistory) reset(ip string) {
 		delete(b.counts, ip)
 		b.saveLocked()
 	}
+}
+
+// resetAll: admin "一键解封" 清空所有封禁历史 (所有 IP 回到初犯). 返回清了几条.
+// 会写一次盘 (把空 map 覆盖掉旧文件).
+func (b *banHistory) resetAll() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(b.counts)
+	b.counts = make(map[string]int)
+	b.saveLocked()
+	return n
 }
 
 // snapshot: admin UI 用, 返回 {ip: count} 的副本.

@@ -250,15 +250,19 @@
         rateLimitedRetry:    {{ .S.RateLimitedRetry }},
         rateLimitedPermanent: {{ .S.RateLimitedPermanent }},
         invalidCode:         {{ .S.GuestCodeInvalid }},
-        netError:            {{ .S.ErrorGenericMsg }}
+        netError:            {{ .S.ErrorGenericMsg }},
+        unitSeconds:         {{ .S.UnitSeconds }},
+        unitMinutes:         {{ .S.UnitMinutes }},
+        unitHours:           {{ .S.UnitHours }}
       };
 
       // 格式化重试等待时间: 几秒显示秒, 几分钟显示分钟, 几小时显示小时.
+      // 单位走 i18n, 不再混中英.
       function fmtRetryAfter(seconds) {
         if (!seconds || seconds <= 0) return '';
-        if (seconds < 60) return seconds + ' 秒';
-        if (seconds < 3600) return Math.ceil(seconds / 60) + ' 分钟';
-        return Math.ceil(seconds / 3600) + ' 小时';
+        if (seconds < 60) return seconds + ' ' + S.unitSeconds;
+        if (seconds < 3600) return Math.ceil(seconds / 60) + ' ' + S.unitMinutes;
+        return Math.ceil(seconds / 3600) + ' ' + S.unitHours;
       }
 
       // 根据 429 响应的 body 生成对应的提示文字.
