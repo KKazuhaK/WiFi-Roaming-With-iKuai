@@ -54,14 +54,11 @@ services:
     ports:
       - "127.0.0.1:28080:28080"
 
-    # 访客码 / MAC 封禁列表 / iKuai 放行策略默认写到容器内 /data/.
-    # 行为: docker compose restart / stop+start / 宿主机重启 → 活;
-    #       docker compose up -d --build / down / rm → 数据丢.
-    # 要跨重建保住, 取消下面两行注释, 数据会落到宿主机 ./data/:
-    #   guest-codes.json / denylist.json / ikuai-policy.json
-    #
-    # volumes:
-    #   - ./data:/data
+    # 所有持久化文件 (访客码 / MAC 封禁 / iKuai 放行策略 / 事件日志) 默认写到容器
+    # 内 /data/. 这里把 /data bind-mount 到宿主机 ./data/, 跨 docker compose
+    # up --build / down / rm 都不丢数据. 要换位置改这一行即可.
+    volumes:
+      - ./data:/data
 
     # 日志限制: 每文件 10MB * 最多 3 个 = 30MB 上限, 防小 VPS 爆磁盘.
     logging:
