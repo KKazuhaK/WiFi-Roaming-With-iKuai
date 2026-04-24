@@ -28,7 +28,9 @@ WiFi-Roaming-With-iKuai/
 │   ├── oidc.go                # Entra OIDC 流程
 │   ├── duo.go                 # Duo Auth API 客户端 (preauth 探测)
 │   ├── duo_universal.go       # Duo Universal Prompt (OIDC) 客户端
-│   ├── admin.go               # 访客码内存存储 + 随机生成
+│   ├── admin.go               # 访客码存储 (内存 + 可选 JSON 落盘) + 随机生成
+│   ├── auth_proceed.go        # /auth/proceed 中转, 防账号枚举
+│   ├── ratelimit.go           # 失败计数 + IP 封禁 + clientIP 解析
 │   ├── ikuai.go               # iKuai 放行 token 生成
 │   ├── i18n.go                # 三语字符串 (zh-cn/zh-tw/en)
 │   ├── templates/             # login.html / error.html / admin.html
@@ -125,10 +127,14 @@ vim .env               # 或 nano
 - 单条添加 (自动生成 10 位数字, 或自定义)
 - 批量生成 (纯数字 / 纯字母 / 数字+字母, 任意长度)
 - 设置过期时间 (绝对) 或限时 (相对)
+- 设置每个码的**最大使用次数** (0 = 不限)
 - 筛选 (全部 / 已使用 / 未使用 / 已过期) + 搜索
 - 单条删除 / 批量删除失效
 
-访客码存在容器内存, 重启会丢, 重新生成即可.
+**持久化 (可选)**: 默认只存内存, 容器重启数据丢。要跨 `restart` / 重建也保留,
+在 `.env` 里设 `GUEST_CODES_PATH=/data/guest-codes.json` 并在
+`docker-compose.yml` 里开 volume 挂载 (配置文件顶部有注释示例)。
+落盘采用原子写 (tmp + rename), 启动加载失败会 fatal 避免覆盖损坏文件。
 
 ### 步骤 3: 起服务
 
@@ -244,6 +250,100 @@ docker compose exec portal sh
 
 - 手机连 WiFi 后能不能打开 `https://login.microsoftonline.com`
 - 不能的话说明免认证白名单没加齐, 回 iKuai 加
+
+### 日志里看到 `限流` 或 `IP 失败超限, 封禁`
+
+不是 bug, 是规则生效了。细节见下面"安全 / 防滥用"章节, 对应调阈值 env 即可。
+
+---
+
+## 安全 / 防滥用
+
+Portal 面向公网, 默认就带以下应用层防御, **不需要额外配置** 就能跑起来。
+阈值全部走 env, 想调的话见 `.env.example` 里 "限流 / 防滥用" 段, 留空走默认。
+
+### 三层失败计数
+
+| 规则 | 键 | 默认阈值 | 成功清零条件 | 命中动作 |
+|---|---|---|---|---|
+| **1** · `/auth/start` | email | 5 分钟 3 次 **或** 1 小时 10 次 | `/auth/callback` 或 `/auth/duo-callback` 成功 | 429 `rate_limited` |
+| **5** · `/auth/guest-code` | session cookie 里签名的 MAC | 1 小时 10 次 | 访客码正确 | 429 `rate_limited` |
+| **6** · 全端点兜底 | IP (X-Real-IP) | 1 小时累计 30 次任意失败 | 不自动, 封禁到期 | 封 1 小时, 所有 /auth/* 直接 429 |
+
+三层并行独立, 任一命中都返 429。**规则 6** 也会累加 "触发规则 1/5 本身" — 所以
+同一个攻击者哪怕换邮箱也会在同 IP 上累加。
+
+### 账号枚举防护
+
+`/auth/start` 不再返回真实的 Duo / Entra URL — 而是返回随机 opaque token,
+浏览器访问 `/auth/proceed?token=X` 才 302 到真正目的。响应对所有邮箱一致,
+被 Duo `deny` 的账号也被路由到 Entra (让 Entra 自己拒), 不暴露 "deny" 信号。
+攻击者想枚举谁在 Duo 得为每个邮箱跟一次 302, 成本翻倍且立刻触发规则 1/6。
+
+### 阈值 env (全部可选, 默认已列在表里)
+
+```
+AUTH_EMAIL_FAILS_SHORT=3         AUTH_EMAIL_WINDOW_SHORT=5m
+AUTH_EMAIL_FAILS_LONG=10         AUTH_EMAIL_WINDOW_LONG=1h
+GUEST_CODE_MAC_FAILS=10          GUEST_CODE_MAC_WINDOW=1h
+IP_FAILS_LIMIT=30                IP_FAILS_WINDOW=1h
+IP_BAN_DURATION=1h
+AUTH_PROCEED_TTL=5m              # opaque token 存活时间
+```
+
+### 关键日志片段
+
+```
+限流: email 3/5m0s + 10/1h0m0s, MAC 10/1h0m0s, IP 30/1h0m0s → ban 1h0m0s
+# ↑ 启动时打印, 确认阈值加载成功
+
+auth/start 邮箱限流: me@kazuha.org short=3 long=3 ip=1.2.3.4
+# ↑ 规则 1 命中
+
+guest-code 按 MAC 限流: mac=aa:bb:cc:dd:ee:ff ip=1.2.3.4
+# ↑ 规则 5 命中
+
+IP 失败超限, 封禁 1h0m0s: 1.2.3.4 (累计=30 窗口=1h0m0s 原因=...)
+# ↑ 规则 6 命中
+```
+
+### 爬虫
+
+`/robots.txt` 返 `Disallow: /`, 模板里也打了 `<meta name="robots" content="noindex, nofollow">`。
+正经爬虫 (Google / Bing 之类) 会跳过。恶意爬虫不理这个, 交给上面三条限流。
+
+### 强烈建议: 按路由器 WAN IP 白名单 (Nginx 层)
+
+Captive portal 只服务 "已连上 Kazuha Hub Roaming SSID 的设备"。那些设备的 HTTPS
+请求从 iKuai 路由器 WAN 口出来, 目标 `wifi.login.kazuhahub.com`。所以**所有合法
+流量都来自已知的少量路由器 WAN IP**, 别的 IP 碰到 `/portal` / `/auth/*` 只能是扫
+描器或攻击者。
+
+在 Nginx 层按路由器 WAN IP 白名单:
+- 攻击者从任意公网 IP 根本连不到 `/auth/start`, 三层限流直接变成第二道保险
+- MFA 轰炸通道从"需要三层代理穿透限流" → "根本没有入口"
+- 扫描器 / 爬虫在 TCP 握手后第一时间 403
+
+`deploy/aapanel-nginx-snippet.conf` 里有一段**默认注释掉**的配置块示例, 取消注释
+并填上每个站点的路由器 WAN IP 就能用。IP 动态的话配合 ddclient / 定时刷新脚本。
+
+> ⚠️ **前提**: 你的路由器 WAN 有相对固定的公网 IP (静态 IP / 家用宽带的半静态 PPPoE
+> 都行)。纯动态 IP + 无 DDNS 的情况用这一层会经常自己误伤。
+
+### 可选: `/admin` IP 白名单 (Nginx 层)
+
+`/admin*` 已经被 Entra SSO 保护 — 不加白名单也安全。加了能把扫描器的探测在 Entra
+之前就拦掉, 但基本属于锦上添花。
+
+`deploy/aapanel-nginx-snippet.conf` 里有对应的注释示例。
+
+### 不在 Portal 层解决的
+
+以下攻击类型需要靠基础设施, Portal 代码层面不保护:
+
+- **DDoS 打爆 Nginx / VPS 带宽** → 靠 CF / Nginx `limit_conn` / 运营商 DDoS 保护
+- **发现源 IP 绕过反代直打 VPS** → 靠 iptables 只允许反代来源 IP
+- **Duo API 配额被大量 preauth 耗尽** → 被规则 6 间接缓解; 真心担心可以在 Duo Admin Panel 给 Auth API 应用加阈值告警
 
 ---
 
