@@ -266,15 +266,16 @@ IKUAI_GUEST_UPLOAD=0     IKUAI_GUEST_DOWNLOAD=0     IKUAI_GUEST_COMMENT=
 
 #### 持久化
 
-所有 admin 维护的数据**默认全部写到容器内 `/data/`**, `docker-compose.yml`
+所有持久化文件**统一写到容器内 `/data/`**, `docker-compose.yml`
 里已经把 `/data` bind-mount 到宿主机 `./data/`,跨 `docker compose up --build / down / rm`
-不丢数据。**不需要单独配置任何 `*_PATH` env**, 默认即可:
+不丢数据。路径在代码里固定 (没有任何 `*_PATH` env, 用户也不需要配):
 
 | 文件 | 内容 |
 |---|---|
 | `/data/guest-codes.json` | 访客码 |
 | `/data/denylist.json` | MAC 永久封禁列表 |
 | `/data/ikuai-policy.json` | iKuai 放行策略 (admin 改的会写进来) |
+| `/data/ratelimit-state.json` | IP 冷却历史次数 (配合 `IP_BAN_ESCALATE_AT` 用) |
 | `/data/events.jsonl` | 事件日志 (登录 + admin 审计, JSONL, 默认保留 7 天) |
 
 要换位置改 `docker-compose.yml` 的 `volumes: - ./data:/data` 一行即可。
@@ -505,11 +506,10 @@ IP_FAILS_LIMIT=20                IP_FAILS_WINDOW=5m
 IP_BAN_DURATION=2m               # IP 短时冷却时长
 IP_BAN_ESCALATE_AT=999999        # 基本等于不升级永久
 AUTH_PROCEED_TTL=5m              # opaque token 存活时间
-RATELIMIT_STATE_PATH=            # 默认禁用 (内网 DHCP IP 不适合长期记录)
 EVENT_LOG_RETENTION_DAYS=7       # 事件日志保留期
 ```
 
-(MAC 封禁列表 / 事件日志的文件路径已统一在 `/data/`, 见上面"持久化"段, 不需要在 env 里配。)
+(所有持久化文件路径都固定在 `/data/`, 见上面"持久化"段, 没有 `*_PATH` env 可配。)
 
 ### IP 短时冷却模型
 
@@ -521,7 +521,7 @@ EVENT_LOG_RETENTION_DAYS=7       # 事件日志保留期
 - 失败次数按对应窗口自动过期: 邮箱 3 分钟 / 1 小时, 访客码 MAC 30 分钟, IP 5 分钟
 - 前端只显示"操作过于频繁, 请在 X 分钟后再试"
 - 不向用户暴露命中的是邮箱 / MAC / IP 哪条规则
-- `RATELIMIT_STATE_PATH` 建议留空, 不长期记录 DHCP IP
+- IP 冷却历史 (`/data/ratelimit-state.json`) 跨重启保留 — 仅当 `IP_BAN_ESCALATE_AT < 999999` 时生效, 默认基本等于不用
 - 只有 MAC 永久封禁会提示联系管理员
 
 ### Admin 限流 / 封禁面板

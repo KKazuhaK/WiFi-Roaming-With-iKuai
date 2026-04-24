@@ -21,12 +21,11 @@ type Config struct {
 	ClientSecret string // 敏感
 
 	// --- iKuai 自定义认证 ---
-	IKuaiAppKey       string // 敏感
-	IKuaiWebAuthURL   string
-	IKuaiCustomName   string
-	IKuaiReleaseType  string
-	IKuaiUserIDPrefix string
-	IKuaiPolicyPath   string
+	IKuaiAppKey         string // 敏感
+	IKuaiWebAuthURL     string
+	IKuaiCustomName     string
+	IKuaiReleaseType    string
+	IKuaiUserIDPrefix   string
 	IKuaiPolicyDefaults map[IKuaiAuthProfile]IKuaiPolicy
 
 	// --- Portal 自身 ---
@@ -64,12 +63,6 @@ type Config struct {
 	// 两个都为空 = admin 后台完全禁用.
 	AdminEmails   []string
 	AdminGroupIDs []string
-	// 访客码持久化文件路径. 默认 /data/guest-codes.json.
-	// 启动加载 + 每次变更原子写盘, 配合 docker volume 挂出来即可.
-	GuestCodesPath string
-
-	// MAC 封禁列表持久化文件路径. 默认 /data/denylist.json.
-	DenylistPath string
 
 	// --- 限流配置 ---
 	// 规则 1: /auth/start 按邮箱失败计数, 双窗口. 成功回调清零.
@@ -88,11 +81,8 @@ type Config struct {
 	IPBanEscalateAt  int           // 第 N 次触发永久封禁, 默认 999999 (近似关闭)
 	// 账号枚举防护: /auth/start 返回 opaque token, 浏览器访问 /auth/proceed 再内跳.
 	AuthProceedTTL time.Duration // token 存活 (default 5m)
-	// 限流历史 (IP 冷却计数) 持久化文件路径. 内网短时冷却模式建议留空.
-	RatelimitStatePath string
 
 	// --- 事件日志 (admin observability) ---
-	EventLogPath      string        // 空 = 纯内存, 非空 = JSONL 持久化
 	EventLogRetention time.Duration // 超过此时长的事件会被 gc 掉, 默认 7 天
 }
 
@@ -106,10 +96,9 @@ func loadConfig() Config {
 
 		IKuaiWebAuthURL: envOr("IKUAI_WEBAUTH_URL",
 			"https://portal.ikuai8-wifi.com/Action/webauth-up"),
-		IKuaiCustomName:   envOr("IKUAI_CUSTOM_NAME", "kazuha-hub"),
-		IKuaiReleaseType:  envOr("IKUAI_RELEASE_TYPE", "1"),
-		IKuaiUserIDPrefix: envOr("IKUAI_USER_ID_PREFIX", ""),
-		IKuaiPolicyPath:   strings.TrimSpace(envOr("IKUAI_POLICY_PATH", "/data/ikuai-policy.json")),
+		IKuaiCustomName:     envOr("IKUAI_CUSTOM_NAME", "kazuha-hub"),
+		IKuaiReleaseType:    envOr("IKUAI_RELEASE_TYPE", "1"),
+		IKuaiUserIDPrefix:   envOr("IKUAI_USER_ID_PREFIX", ""),
 		IKuaiPolicyDefaults: defaultIKuaiPoliciesFromEnv(),
 
 		ListenAddr:   envOr("LISTEN_ADDR", "127.0.0.1:28080"),
@@ -127,10 +116,8 @@ func loadConfig() Config {
 		DuoAPIHost:          envOr("DUO_API_HOST", ""),
 		AllowedEmailDomains: splitCSV(envOr("ALLOWED_EMAIL_DOMAINS", "")),
 
-		AdminEmails:    splitCSV(envOr("ADMIN_EMAILS", "")),
-		AdminGroupIDs:  splitCSV(envOr("ADMIN_GROUP_IDS", "")),
-		GuestCodesPath: strings.TrimSpace(envOr("GUEST_CODES_PATH", "/data/guest-codes.json")),
-		DenylistPath:   strings.TrimSpace(envOr("DENYLIST_PATH", "/data/denylist.json")),
+		AdminEmails:   splitCSV(envOr("ADMIN_EMAILS", "")),
+		AdminGroupIDs: splitCSV(envOr("ADMIN_GROUP_IDS", "")),
 
 		AuthEmailFailsShort:  envOrInt("AUTH_EMAIL_FAILS_SHORT", 5),
 		AuthEmailWindowShort: envOrDuration("AUTH_EMAIL_WINDOW_SHORT", 3*time.Minute),
@@ -142,10 +129,8 @@ func loadConfig() Config {
 		IPFailsWindow:        envOrDuration("IP_FAILS_WINDOW", 5*time.Minute),
 		IPBanDuration:        envOrDuration("IP_BAN_DURATION", 2*time.Minute),
 		IPBanEscalateAt:      envOrInt("IP_BAN_ESCALATE_AT", 999999),
-		AuthProceedTTL:       envOrDuration("AUTH_PROCEED_TTL", 5*time.Minute),
-		RatelimitStatePath:   strings.TrimSpace(envOr("RATELIMIT_STATE_PATH", "")),
+		AuthProceedTTL: envOrDuration("AUTH_PROCEED_TTL", 5*time.Minute),
 
-		EventLogPath:      strings.TrimSpace(envOr("EVENT_LOG_PATH", "/data/events.jsonl")),
 		EventLogRetention: time.Duration(envOrInt("EVENT_LOG_RETENTION_DAYS", 7)) * 24 * time.Hour,
 	}
 

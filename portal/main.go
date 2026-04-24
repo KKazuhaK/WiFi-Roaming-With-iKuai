@@ -45,6 +45,18 @@ var templateFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
+// 持久化文件路径. 全部固定在容器内 /data/ 下, 由 docker-compose 把 /data
+// bind-mount 到宿主机 ./data/. 这些不暴露成 env, 避免用户错配 — 想换路径改
+// docker-compose 的 volume 一行就行.
+const (
+	dataDir         = "/data"
+	guestCodesPath  = dataDir + "/guest-codes.json"
+	denylistPath    = dataDir + "/denylist.json"
+	ikuaiPolicyPath = dataDir + "/ikuai-policy.json"
+	banHistoryPath  = dataDir + "/ratelimit-state.json"
+	eventLogPath    = dataDir + "/events.jsonl"
+)
+
 type App struct {
 	cfg          Config
 	oidc         *OIDCClient
@@ -100,34 +112,19 @@ func main() {
 		log.Printf("访客码 admin 后台: 未启用")
 	}
 
-	guestStore, err := newGuestCodeStore(cfg.GuestCodesPath)
+	guestStore, err := newGuestCodeStore(guestCodesPath)
 	if err != nil {
 		log.Fatalf("访客码存储初始化失败: %v", err)
 	}
-	if cfg.GuestCodesPath != "" {
-		log.Printf("访客码持久化: 已启用, path=%s", cfg.GuestCodesPath)
-	} else {
-		log.Printf("访客码持久化: 未启用 (纯内存, 容器重启数据丢)")
-	}
 
-	denylistStore, err := newDenylistStore(cfg.DenylistPath)
+	denylistStore, err := newDenylistStore(denylistPath)
 	if err != nil {
 		log.Fatalf("MAC 封禁列表初始化失败: %v", err)
 	}
-	if cfg.DenylistPath != "" {
-		log.Printf("MAC 封禁列表持久化: 已启用, path=%s", cfg.DenylistPath)
-	} else {
-		log.Printf("MAC 封禁列表持久化: 未启用 (纯内存)")
-	}
 
-	ikuaiPolicyStore, err := newIKuaiPolicyStore(cfg.IKuaiPolicyDefaults, cfg.IKuaiPolicyPath)
+	ikuaiPolicyStore, err := newIKuaiPolicyStore(cfg.IKuaiPolicyDefaults, ikuaiPolicyPath)
 	if err != nil {
 		log.Fatalf("iKuai 放行策略初始化失败: %v", err)
-	}
-	if cfg.IKuaiPolicyPath != "" {
-		log.Printf("iKuai 放行策略持久化: 已启用, path=%s", cfg.IKuaiPolicyPath)
-	} else {
-		log.Printf("iKuai 放行策略持久化: 未启用 (纯内存, env 为启动默认值)")
 	}
 
 	tmpl, err := template.ParseFS(templateFS, "templates/*.html")
@@ -135,20 +132,17 @@ func main() {
 		log.Fatalf("模板加载失败: %v", err)
 	}
 
-	banHist, err := newBanHistory(cfg.RatelimitStatePath)
+	banHist, err := newBanHistory(banHistoryPath)
 	if err != nil {
 		log.Fatalf("ban history 初始化失败: %v", err)
 	}
 
-	eventLog, err := newEventLog(cfg.EventLogPath, cfg.EventLogRetention)
+	eventLog, err := newEventLog(eventLogPath, cfg.EventLogRetention)
 	if err != nil {
 		log.Fatalf("事件日志初始化失败: %v", err)
 	}
-	if cfg.EventLogPath != "" {
-		log.Printf("事件日志: 已启用持久化, path=%s 保留=%s", cfg.EventLogPath, cfg.EventLogRetention)
-	} else {
-		log.Printf("事件日志: 未启用持久化 (纯内存, 容器重启数据丢)")
-	}
+	log.Printf("持久化目录: %s (访客码 / MAC 封禁 / iKuai 策略 / 限流历史 / 事件日志, 事件保留 %s)",
+		dataDir, cfg.EventLogRetention)
 
 	app := &App{
 		cfg:            cfg,
@@ -185,9 +179,6 @@ func main() {
 			cfg.AuthEmailFailsLong, cfg.AuthEmailWindowLong,
 			cfg.GuestCodeMacFails, cfg.GuestCodeMacWindow,
 			cfg.IPFailsLimit, cfg.IPFailsWindow, cfg.IPBanDuration, cfg.IPBanEscalateAt)
-	}
-	if cfg.RatelimitStatePath != "" {
-		log.Printf("ban history 持久化: 已启用, path=%s", cfg.RatelimitStatePath)
 	}
 
 	staticSub, err := fs.Sub(staticFS, "static")
