@@ -40,6 +40,13 @@ services:
     env_file:
       - .env
 
+    environment:
+      # 强制监听 0.0.0.0:28080 (容器内). Portal 的默认是 127.0.0.1:28080 — 只让
+      # 容器内自己 loopback 访问, 结果 docker port publish / Caddy 反代都打不到.
+      # healthcheck 里也是 127.0.0.1, 打自己能通 → 容器会被标 healthy 但外部 502.
+      # 这里写死覆盖 .env, 避免被漏填或手抖注释掉导致难排查的 502.
+      - LISTEN_ADDR=0.0.0.0:28080
+
     # 端口映射: 容器里 28080 → 宿主机 127.0.0.1:28080
     # 绑 127.0.0.1 关键! 模式 A 给外部 Nginx 用; 模式 B 即使绑了也只有本机能连 —
     # Caddy 通过 compose 网络 (service 名 "portal:28080") 访问, 用不到这个 host 映射.
