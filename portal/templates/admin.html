@@ -259,6 +259,7 @@
   <main>
     <nav class="admin-nav" aria-label="管理分类">
       <button type="button" class="admin-tab active" data-section="section-codes">访客码</button>
+      <button type="button" class="admin-tab" data-section="section-ikuai-policy">放行策略</button>
       <button type="button" class="admin-tab" data-section="section-macs">MAC 封禁</button>
       <button type="button" class="admin-tab" data-section="section-ratelimit">限流状态</button>
     </nav>
@@ -317,6 +318,46 @@
         </tbody>
       </table>
     </div>
+    </section>
+
+    <!-- iKuai 放行策略 -->
+    <section id="section-ikuai-policy" class="admin-section">
+      <div class="toolbar" style="margin-bottom: 16px;">
+        <div style="font-weight: 600; font-size: 16px; flex: 1;">iKuai 放行策略</div>
+        <div class="muted" style="font-size: 12px;">upload / download 单位 KB, 0 = 不限; timeout 单位分钟, 0 = 不过期</div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 140px;">认证方式</th>
+              <th style="width: 140px;">上传</th>
+              <th style="width: 140px;">下载</th>
+              <th style="width: 140px;">超时</th>
+              <th>Comment</th>
+              <th style="width: 120px;">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{ range .IKuaiPolicies }}
+            <tr>
+              <td><span class="chip unused">{{ .Label }}</span></td>
+              <td><input form="policy-{{ .Profile }}" type="number" name="upload" value="{{ .Upload }}" min="0" class="search" style="min-width: 110px;"></td>
+              <td><input form="policy-{{ .Profile }}" type="number" name="download" value="{{ .Download }}" min="0" class="search" style="min-width: 110px;"></td>
+              <td><input form="policy-{{ .Profile }}" type="number" name="timeout" value="{{ .Timeout }}" min="0" class="search" style="min-width: 110px;"></td>
+              <td><input form="policy-{{ .Profile }}" type="text" name="comment" value="{{ .Comment }}" maxlength="128" class="search" style="min-width: 220px;"></td>
+              <td>
+                <form id="policy-{{ .Profile }}" class="policy-form" style="margin:0">
+                  <input type="hidden" name="profile" value="{{ .Profile }}">
+                  <button type="submit" class="btn btn-primary btn-mini">保存</button>
+                </form>
+              </td>
+            </tr>
+            {{ end }}
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <!-- MAC 封禁 -->
@@ -607,6 +648,23 @@
         .catch(function() { toast('网络异常'); });
     }
     $('form-batch').addEventListener('submit', submitBatch);
+
+    document.querySelectorAll('.policy-form').forEach(function(f) {
+      f.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var fd = new FormData(f);
+        document.querySelectorAll('[form="' + f.id + '"]').forEach(function(input) {
+          fd.set(input.name, input.value);
+        });
+        fetch('/admin/ikuai-policy/update', { method: 'POST', body: fd, credentials: 'same-origin' })
+          .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, body: b }; }); })
+          .then(function(res) {
+            if (res.ok && res.body.ok) toast('放行策略已保存');
+            else toast('保存失败: ' + ((res.body && res.body.error) || 'error'));
+          })
+          .catch(function() { toast('网络异常'); });
+      });
+    });
 
     function copyResult() {
       var text = $('result-codes').textContent;

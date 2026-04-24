@@ -15,12 +15,14 @@ package main
 //     ?type=20&user_id={id}&custom_name={name}&user_ip={ip}&timestamp={ts}
 //     &mac={mac}&upload=0&download=0&token={hex}&release_type=1
 //
-// user_id / custom_name / release_type 是透传参数 (不进 MD5 token 计算):
+// user_id / custom_name / release_type / timeout / comment 是透传参数 (不进 MD5 token 计算):
 //   user_id     — iKuai 审计日志 "账号" 列. 格式由 IKUAI_USER_ID_PREFIX 控制:
 //                  前缀空 → user_id = UPN                 (例: me@kazuha.org)
 //                  前缀非空 → user_id = {prefix}-{UPN}     (例: Kazuha_Hub-me@kazuha.org)
 //   custom_name — IKUAI_CUSTOM_NAME env, 区分多个对接的 portal
 //   release_type = IKUAI_RELEASE_TYPE env, 默认 "1"
+//   timeout      — iKuai 认证超时时间, 单位分钟, 0 = 不过期
+//   comment      — iKuai 侧备注, 可用来标识 auth 来源, 不要放敏感信息
 //
 // 注意:
 //   - 官方文档明确用 https. 从 VPS 外部 curl HTTPS 遇到 TLS handshake fail,
@@ -67,14 +69,16 @@ func extractDeviceInfo(r *http.Request, cfg Config) (DeviceInfo, bool) {
 
 // buildWebAuthURL 生成给浏览器 302 过去的 iKuai 放行 URL。
 // userUPN 是用户的 Entra UPN, 会按 IKUAI_USER_ID_PREFIX 加前缀组成 user_id.
-func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string) string {
+func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string, policy IKuaiPolicy) string {
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	upload := fmt.Sprintf("%d", policy.Upload)
+	download := fmt.Sprintf("%d", policy.Download)
 
 	// token 源串必须完全按 iKuai 规定的顺序和格式拼接
 	// 注意: user_id / custom_name / release_type 不进 token 计算, 只是透传
 	raw := fmt.Sprintf(
-		"user_ip=%s&timestamp=%s&mac=%s&upload=0&download=0&key=%s",
-		dev.IP, timestamp, dev.MAC, cfg.IKuaiAppKey,
+		"user_ip=%s&timestamp=%s&mac=%s&upload=%s&download=%s&key=%s",
+		dev.IP, timestamp, dev.MAC, upload, download, cfg.IKuaiAppKey,
 	)
 	sum := md5.Sum([]byte(raw))
 	token := hex.EncodeToString(sum[:])
@@ -93,8 +97,12 @@ func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string) string {
 	params.Set("user_ip", dev.IP)
 	params.Set("timestamp", timestamp)
 	params.Set("mac", dev.MAC)
-	params.Set("upload", "0")   // 上行限速, 0 = 不限
-	params.Set("download", "0") // 下行限速, 0 = 不限
+	params.Set("upload", upload)     // 上行限速, 0 = 不限
+	params.Set("download", download) // 下行限速, 0 = 不限
+	params.Set("timeout", fmt.Sprintf("%d", policy.Timeout)) // 分钟, 0 = 不过期
+	if policy.Comment != "" {
+		params.Set("comment", policy.Comment)
+	}
 	params.Set("token", token)
 	params.Set("release_type", cfg.IKuaiReleaseType)
 

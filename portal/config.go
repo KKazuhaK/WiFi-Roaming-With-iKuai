@@ -26,6 +26,8 @@ type Config struct {
 	IKuaiCustomName   string
 	IKuaiReleaseType  string
 	IKuaiUserIDPrefix string
+	IKuaiPolicyPath   string
+	IKuaiPolicyDefaults map[IKuaiAuthProfile]IKuaiPolicy
 
 	// --- Portal 自身 ---
 	SessionSecret []byte // 敏感
@@ -62,12 +64,11 @@ type Config struct {
 	// 两个都为空 = admin 后台完全禁用.
 	AdminEmails   []string
 	AdminGroupIDs []string
-	// 访客码持久化文件路径. 空 = 纯内存 (重启数据丢).
-	// 非空则启动加载 + 每次变更原子写盘, 配合 docker volume 挂出来即可.
+	// 访客码持久化文件路径. 默认 /data/guest-codes.json.
+	// 启动加载 + 每次变更原子写盘, 配合 docker volume 挂出来即可.
 	GuestCodesPath string
 
-	// MAC 封禁列表持久化文件路径. 空 = 纯内存; 非空 = JSON 文件持久化.
-	// 推荐 /data/denylist.json.
+	// MAC 封禁列表持久化文件路径. 默认 /data/denylist.json.
 	DenylistPath string
 
 	// --- 限流配置 ---
@@ -104,6 +105,8 @@ func loadConfig() Config {
 		IKuaiCustomName:   envOr("IKUAI_CUSTOM_NAME", "kazuha-hub"),
 		IKuaiReleaseType:  envOr("IKUAI_RELEASE_TYPE", "1"),
 		IKuaiUserIDPrefix: envOr("IKUAI_USER_ID_PREFIX", ""),
+		IKuaiPolicyPath:   strings.TrimSpace(envOr("IKUAI_POLICY_PATH", "/data/ikuai-policy.json")),
+		IKuaiPolicyDefaults: defaultIKuaiPoliciesFromEnv(),
 
 		ListenAddr:   envOr("LISTEN_ADDR", "127.0.0.1:28080"),
 		BrandName:    envOr("BRAND_NAME", "Kazuha Hub"),
@@ -122,8 +125,8 @@ func loadConfig() Config {
 
 		AdminEmails:    splitCSV(envOr("ADMIN_EMAILS", "")),
 		AdminGroupIDs:  splitCSV(envOr("ADMIN_GROUP_IDS", "")),
-		GuestCodesPath: strings.TrimSpace(envOr("GUEST_CODES_PATH", "")),
-		DenylistPath:   strings.TrimSpace(envOr("DENYLIST_PATH", "")),
+		GuestCodesPath: strings.TrimSpace(envOr("GUEST_CODES_PATH", "/data/guest-codes.json")),
+		DenylistPath:   strings.TrimSpace(envOr("DENYLIST_PATH", "/data/denylist.json")),
 
 		AuthEmailFailsShort:  envOrInt("AUTH_EMAIL_FAILS_SHORT", 5),
 		AuthEmailWindowShort: envOrDuration("AUTH_EMAIL_WINDOW_SHORT", 3*time.Minute),
@@ -236,6 +239,14 @@ func envOrInt(key string, fallback int) int {
 	n, err := strconv.Atoi(v)
 	if err != nil {
 		log.Fatalf("环境变量 %s 必须是整数, 当前: %q", key, v)
+	}
+	return n
+}
+
+func envOrNonNegativeInt(key string, fallback int) int {
+	n := envOrInt(key, fallback)
+	if n < 0 {
+		log.Fatalf("环境变量 %s 必须是非负整数, 当前: %d", key, n)
 	}
 	return n
 }

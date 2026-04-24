@@ -25,8 +25,8 @@ services:
       # healthcheck 是 wget 127.0.0.1 所以还能过, 但 Caddy 会 502.
       # 这里写死覆盖 .env, 避免被漏填或手抖注释掉.
       - LISTEN_ADDR=0.0.0.0:28080
-    # 访客码 / MAC 封禁列表持久化. 想跨重建保住数据就保留这行.
-    # 数据落在项目目录的 ./data/guest-codes.json 和 ./data/denylist.json.
+    # 访客码 / MAC 封禁列表 / iKuai 放行策略持久化. 想跨重建保住数据就保留这行.
+    # 数据落在项目目录的 ./data/guest-codes.json / denylist.json / ikuai-policy.json.
     volumes:
       - ./data:/data
     logging:

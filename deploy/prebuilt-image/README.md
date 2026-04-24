@@ -113,9 +113,10 @@ BRAND_COLOR=#2563eb
 ADMIN_EMAILS=me@kazuha.org
 #ADMIN_GROUP_IDS=<如果你配了 Entra 组, 填 GUID>
 
-# === 访客码 / MAC 封禁持久化 ===
+# === 访客码 / MAC 封禁 / iKuai 放行策略持久化 ===
 GUEST_CODES_PATH=/data/guest-codes.json
 DENYLIST_PATH=/data/denylist.json
+IKUAI_POLICY_PATH=/data/ikuai-policy.json
 
 # === Duo (可选) ===
 #DUO_IKEY=
@@ -132,9 +133,9 @@ cookie 跨部署不互通。如果 Windows 手头没 openssl, PowerShell 里:
 [Convert]::ToHexString((1..32 | ForEach-Object { [byte](Get-Random -Max 256) }))
 ```
 
-### `data/` 目录 (可选, 想持久化访客码 / MAC 封禁时要)
+### `data/` 目录
 
-File Station 里在项目目录 **新增資料夾** → 命名 `data`。权限默认就行, 容器会以 root 写 `guest-codes.json` 和 `denylist.json` 进去。
+File Station 里在项目目录 **新增資料夾** → 命名 `data`。权限默认就行, 容器会以 root 写 `guest-codes.json`、`denylist.json` 和 `ikuai-policy.json` 进去。
 
 ---
 
