@@ -25,8 +25,8 @@ services:
       # healthcheck 是 wget 127.0.0.1 所以还能过, 但 Caddy 会 502.
       # 这里写死覆盖 .env, 避免被漏填或手抖注释掉.
       - LISTEN_ADDR=0.0.0.0:28080
-    # 访客码持久化. 想跨重建保住数据就保留这行.
-    # 数据落在项目目录的 ./data/guest-codes.json, 直接 File Station 能看 / 备份.
+    # 访客码 / MAC 封禁列表持久化. 想跨重建保住数据就保留这行.
+    # 数据落在项目目录的 ./data/guest-codes.json 和 ./data/denylist.json.
     volumes:
       - ./data:/data
     logging:

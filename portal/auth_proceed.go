@@ -109,6 +109,11 @@ func (a *App) handleAuthProceed(w http.ResponseWriter, r *http.Request) {
 	if sess.Lang != "" {
 		lang = Lang(sess.Lang)
 	}
+	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
+		log.Printf("拒绝已封禁 MAC auth/proceed: mac=%s ip=%s", sess.MAC, sess.UserIP)
+		a.renderError(w, r, lang, lang.s().RateLimitedPermanent, http.StatusForbidden)
+		return
+	}
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		a.renderError(w, r, lang, lang.s().ExpiredMsg, http.StatusBadRequest)

@@ -1,13 +1,13 @@
 package main
 
 // ratelimit.go
-// 三套失败计数 / 封禁机制, 全内存, 单容器场景够用:
+// 三套失败计数 / 冷却机制, 全内存, 单容器场景够用:
 //
 //   failCounter  记时间戳列表, 支持查询任意窗口内的失败次数, 支持成功清零.
 //                用于规则 1 (邮箱双窗口 5m/1h) 和规则 5 (MAC 1h).
 //
-//   ipBanList    记 IP → 封禁到期时间, 到期自动失效.
-//                用于规则 6: 单 IP 累计失败超限 → 直接 ban 一段时间.
+//   ipBanList    记 IP → 冷却到期时间, 到期自动失效.
+//                用于规则 6: 单 IP 累计失败超限 → 短时冷却.
 //
 //   clientIP     从反代 header (X-Real-IP / X-Forwarded-For) 提取真实客户端 IP.
 //                Portal 只绑 127.0.0.1, 所有连接都过 Nginx 反代, header 可信.
@@ -143,7 +143,7 @@ func (c *failCounter) gcLoop() {
 	}
 }
 
-// ipBanList 单 IP 黑名单 + 到期时间. isBanned 读取时顺手清理到期项.
+// ipBanList 单 IP 冷却列表 + 到期时间. isBanned 读取时顺手清理到期项.
 type ipBanList struct {
 	mu   sync.Mutex
 	bans map[string]time.Time // ip → banUntil
@@ -173,7 +173,7 @@ func (b *ipBanList) isBanned(ip string) bool {
 	return true
 }
 
-// expiryOf 返回该 IP 封禁到期时间, ok=false 表示没被封.
+// expiryOf 返回该 IP 冷却到期时间, ok=false 表示没在冷却.
 // 跟 isBanned 一样会顺手清掉过期条目.
 func (b *ipBanList) expiryOf(ip string) (time.Time, bool) {
 	b.mu.Lock()
@@ -245,8 +245,8 @@ func (b *ipBanList) snapshot() []BanSnapshot {
 	return out
 }
 
-// banHistory 记录每个 IP 被封过多少次. 持久化到磁盘, 跨容器重启保留 —
-// 不然"第二次封禁永久"意义全失, 攻击者重启一次就重置。
+// banHistory 记录每个 IP 被冷却过多少次. 默认不持久化、不升级永久。
+// 如果管理员显式把 IPBanEscalateAt 调小并设置持久化, 仍可作为升级模型使用。
 // 内容只有 {ip: count}, 不涉及积累失败计数 (那些重启清零对合法用户更友好).
 type banHistory struct {
 	mu          sync.Mutex
@@ -277,7 +277,7 @@ func newBanHistory(persistPath string) (*banHistory, error) {
 	if err := json.Unmarshal(data, &b.counts); err != nil {
 		return nil, fmt.Errorf("解析 %s: %w", persistPath, err)
 	}
-	log.Printf("ban history: 从 %s 加载 %d 条 IP 封禁历史", persistPath, len(b.counts))
+	log.Printf("ban history: 从 %s 加载 %d 条 IP 冷却历史", persistPath, len(b.counts))
 	return b, nil
 }
 
