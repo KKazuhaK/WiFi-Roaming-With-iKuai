@@ -10,8 +10,7 @@
 所有四类**共用同一个 SSID `Kazuha Hub Roaming`**. 每条流程最终都通过 iKuai 自定义认证
 (`type=20`) 把设备 MAC / IP 放进路由器白名单.
 
-架构、设计决策、Phase 进度见 [`project-notes.md`](./project-notes.md)。
-这份 README 只讲 **怎么把 Portal 跑起来**。
+这份 README 覆盖架构、部署、安全模型和运维。
 
 ## 两种部署模式 (同一份 compose)
 
@@ -40,7 +39,6 @@
 ```
 WiFi-Roaming-With-iKuai/
 ├── README.md                  # 本文
-├── project-notes.md           # 设计决策 / Phase 进度
 ├── portal/                    # Go 源码 + Dockerfile + 前端模板
 │   ├── main.go                # HTTP 路由
 │   ├── config.go              # 环境变量读取
@@ -287,13 +285,13 @@ curl -I "https://wifi.login.kazuhahub.com/portal?user_ip=192.168.1.100&mac=aa:bb
 
 ## Phase 4 · iKuai 接入
 
-详见 `project-notes.md` 里 Phase 4 的步骤. 核心是:
-
-1. iKuai 云控制台 → 自定义认证 → 生成 appkey
-2. 替换 VPS `/opt/wifi-portal/.env` 里的 `IKUAI_APPKEY`
-3. `docker compose restart portal`
-4. iKuai 路由器后台配 SSID `Kazuha Hub Roaming`, 认证对接 URL 填 `https://wifi.login.kazuhahub.com/portal`
-5. 免认证白名单加上 Entra 域名 (见下)
+- [ ] 4.1 iKuai 云控制台 → 自定义认证 → 生成 appkey
+- [ ] 4.2 VPS `/opt/wifi-portal/.env` 填 `IKUAI_APPKEY`, 再 `docker compose restart portal`
+- [ ] 4.3 iKuai 路由器配 Web 认证 → 自定义认证, Portal URL 填 `https://wifi.login.kazuhahub.com/portal` (模式 B 带 `:28081`)
+- [ ] 4.4 iKuai 绑 SSID `Kazuha Hub Roaming` 到此认证
+- [ ] 4.5 iKuai 免认证白名单加上 Entra / Duo / Portal 域名 (见下)
+- [ ] 4.6 真机连 WiFi 端到端: Entra 登录 → 放行 → 上网
+- [ ] 4.7 拒绝 Guest 真实测试 (拿一个 UPN 含 `#EXT#` 的外部账号, 验证拒绝页)
 
 ### iKuai 免认证白名单 (必须)
 
