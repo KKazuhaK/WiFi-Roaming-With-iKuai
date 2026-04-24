@@ -832,7 +832,7 @@ func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request, apiMode bool)
 	// 签名 cookie 说明这个用户登录时通过了 IsAdmin 检查 (UPN 白名单 或 Entra 组).
 	// 这里不再每次请求都 re-check UPN 是否在 ADMIN_EMAILS — 否则靠组准入的 admin
 	// 会被立刻踢出, 且组变更无法在请求期检查 (id_token 在登录时一次性签). 撤销 admin
-	// 的生效周期 = cookie TTL (4h); 要立刻踢就清了这人的 cookie, 或改 SessionSecret
+	// 的生效周期 = cookie TTL (1h); 要立刻踢就清了这人的 cookie, 或改 SessionSecret
 	// 让所有 cookie 失效.
 	return sess, true
 }

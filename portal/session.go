@@ -3,7 +3,7 @@ package main
 // session.go
 // 两种签名 cookie:
 //   - kz_wifi_sess   短命 (15 分钟), 撑 OIDC round-trip (Entra 或 Duo Universal Prompt)
-//   - kz_admin_sess  较长 (4 小时), admin 登录后访问 /admin 用
+//   - kz_admin_sess  较长 (1 小时), admin 登录后访问 /admin 用
 // 都是 HMAC-SHA256 签名的 JSON, 不加密.
 
 import (
@@ -24,7 +24,7 @@ const (
 	sessionCookieName = "kz_wifi_sess"
 	sessionTTL        = 15 * time.Minute
 	adminCookieName   = "kz_admin_sess"
-	adminSessionTTL   = 4 * time.Hour
+	adminSessionTTL   = time.Hour
 )
 
 // Session: state/nonce 可被 Entra 或 Duo 任一 OAuth 流程复用.
