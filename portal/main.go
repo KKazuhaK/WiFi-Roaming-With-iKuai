@@ -6,9 +6,9 @@ package main
 // 端点:
 //   GET  /healthz                  健康检查
 //   GET  /portal                   iKuai 302 未认证设备到这里
-//   POST /auth/start               用户输入邮箱 → 服务端 preauth → 返回 { redirect }
-//                                    有 Duo → Duo Universal Prompt URL
-//                                    否则 → /login?hint=... (Entra SSO)
+//   POST /auth/start               用户输入邮箱 → 服务端 preauth → 返回 opaque token
+//                                    响应对所有邮箱一致 (防账号枚举), 浏览器再访问:
+//   GET  /auth/proceed?token=...   查 token → 302 到真正目的 (Duo Universal / Entra)
 //   GET  /login                    跳 Entra (带 login_hint)
 //   GET  /auth/callback            Entra 回调, 按 session.Purpose 分流 (wifi / admin)
 //   GET  /auth/duo-callback        Duo Universal Prompt 回调, 拿 id_token → 放行
@@ -51,11 +51,18 @@ type App struct {
 	duoUniversal *DuoUniversalClient // Duo Universal Prompt (OIDC)
 	guestCodes   *GuestCodeStore
 	templates    *template.Template
-	// 限流: 防 /auth/start 被脚本刷 → 触发 Duo Universal Prompt → MFA 轰炸.
-	// authRateByIP    每 IP    30 次/分钟  — 挡脚本蛮冲.
-	// authRateByEmail 每 email 10 次/小时  — 即使攻击者轮换 IP, 也限推送频率.
-	authRateByIP    *rateLimiter
-	authRateByEmail *rateLimiter
+
+	// --- 限流 / 防滥用 ---
+	// 规则 1: /auth/start 按邮箱失败计数, 双窗口, 成功回调清零. 防 MFA 轰炸.
+	authEmailFails *failCounter
+	// 规则 5: /auth/guest-code 按 MAC 失败计数, 成功清零. 防暴力猜码.
+	guestCodeFails *failCounter
+	// 规则 6: 单 IP 跨端点累计失败, 超限封禁. 防同 IP 广撒网.
+	ipFails *failCounter
+	ipBans  *ipBanList
+
+	// 账号枚举防护: /auth/start 返回 opaque token, /auth/proceed 才 302.
+	proceedStore *proceedTokenStore
 }
 
 func main() {
@@ -102,17 +109,28 @@ func main() {
 	}
 
 	app := &App{
-		cfg:             cfg,
-		oidc:            oidcClient,
-		duo:             duoClient,
-		duoUniversal:    duoUni,
-		guestCodes:      guestStore,
-		templates:       tmpl,
-		authRateByIP:    newRateLimiter(30, time.Minute),
-		authRateByEmail: newRateLimiter(10, time.Hour),
+		cfg:            cfg,
+		oidc:           oidcClient,
+		duo:            duoClient,
+		duoUniversal:   duoUni,
+		guestCodes:     guestStore,
+		templates:      tmpl,
+		authEmailFails: newFailCounter(cfg.AuthEmailWindowLong),
+		guestCodeFails: newFailCounter(cfg.GuestCodeMacWindow),
+		ipFails:        newFailCounter(cfg.IPFailsWindow),
+		ipBans:         newIPBanList(),
+		proceedStore:   newProceedTokenStore(cfg.AuthProceedTTL),
 	}
-	go app.authRateByIP.gcLoop()
-	go app.authRateByEmail.gcLoop()
+	go app.authEmailFails.gcLoop()
+	go app.guestCodeFails.gcLoop()
+	go app.ipFails.gcLoop()
+	go app.ipBans.gcLoop()
+	go app.proceedStore.gcLoop()
+	log.Printf("限流: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s → ban %s",
+		cfg.AuthEmailFailsShort, cfg.AuthEmailWindowShort,
+		cfg.AuthEmailFailsLong, cfg.AuthEmailWindowLong,
+		cfg.GuestCodeMacFails, cfg.GuestCodeMacWindow,
+		cfg.IPFailsLimit, cfg.IPFailsWindow, cfg.IPBanDuration)
 
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -123,6 +141,7 @@ func main() {
 	mux.HandleFunc("/healthz", app.healthz)
 	mux.HandleFunc("/portal", app.handlePortal)
 	mux.HandleFunc("/auth/start", app.handleAuthStart)
+	mux.HandleFunc("/auth/proceed", app.handleAuthProceed)
 	mux.HandleFunc("/login", app.handleLogin)
 	mux.HandleFunc("/auth/callback", app.handleCallback)
 	mux.HandleFunc("/auth/duo-callback", app.handleDuoCallback)
@@ -222,27 +241,37 @@ func (a *App) handlePortal(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAuthStart: 邮箱输入后的分流入口.
-// 有 Duo 且用户在 Duo → 返回 Duo Universal Prompt URL
-// 其它情况 → 返回 /login?hint=<email> (走 Entra SSO 预填邮箱)
+//
+// 关键安全设计:
+//  1. 入口先查 IP 封禁 (规则 6) 和邮箱失败计数 (规则 1), 都过了再走真实分流.
+//  2. 分流决定 (Duo vs Entra vs deny) 不直接暴露在响应里 — 放进 proceedStore
+//     生成 opaque token, 浏览器访问 /auth/proceed?token=X 时才 302 到真正 URL.
+//     这样所有有效邮箱的 /auth/start 响应看起来一模一样, 攻击者没法靠响应差异
+//     枚举谁在 Duo / 谁被 deny.
+//  3. 此处 record 邮箱 "pending attempt", 在 /auth/callback 或 /auth/duo-callback
+//     成功时 reset — legit 用户一次成功就清零, 攻击者一直发不回调就爬满被拦.
 func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	// IP 层限流: 第一道闸, 在读 session / 解 body 之前挡脚本蛮冲.
+
+	// 规则 6 入口: IP 是否在封禁期.
 	ip := clientIP(r)
-	if !a.authRateByIP.allow(ip) {
-		log.Printf("auth/start 限流 (ip): %s", ip)
+	if a.ipBans.isBanned(ip) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
 		return
 	}
+
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
 	if err != nil {
+		a.recordIPFailure(ip, "session_lost")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_lost"})
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
 	if !isValidEmail(email) {
+		a.recordIPFailure(ip, "invalid_email")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_email"})
 		return
 	}
@@ -250,67 +279,94 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	// 不用 Duo 的场景, Entra 自己会做域名 / 租户过滤.
 	if a.cfg.IsDuoEnabled() && !isAllowedDomain(email, a.cfg.AllowedEmailDomains) {
 		log.Printf("拒绝域名不在白名单: %s", email)
+		a.recordIPFailure(ip, "invalid_domain")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_domain"})
 		return
 	}
-	// Email 层限流: 放在域名白名单之后, 避免攻击者用乱码邮箱浪费受害者配额.
-	// 这是防 MFA 轰炸的核心 — 即使攻击者轮换 IP, 也卡住单一受害者的推送频率.
-	if !a.authRateByEmail.allow(email) {
-		log.Printf("auth/start 限流 (email): %s ip=%s", email, ip)
+
+	// 规则 1: 检查该邮箱的失败计数 (双窗口).
+	shortN := a.authEmailFails.countIn(email, a.cfg.AuthEmailWindowShort)
+	longN := a.authEmailFails.countIn(email, a.cfg.AuthEmailWindowLong)
+	if shortN >= a.cfg.AuthEmailFailsShort || longN >= a.cfg.AuthEmailFailsLong {
+		log.Printf("auth/start 邮箱限流: %s short=%d long=%d ip=%s",
+			email, shortN, longN, ip)
+		a.recordIPFailure(ip, "rate_limited_email")
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
 		return
 	}
 
-	// 把邮箱记进 session, 供后续 handler 使用
+	// 把邮箱记进 session, 供后续 handler 使用.
 	sess.Email = email
 	if err := writeSessionCookie(w, a.cfg.SessionSecret, sess, true); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cookie_write"})
 		return
 	}
 
+	// 计算真实目的 URL 和分类 (稍后打进 opaque token, 不在响应里暴露).
 	ssoURL := "/login?hint=" + url.QueryEscape(email)
-
-	// Duo 未启用 → 直接走 Entra
+	var (
+		realURL string
+		kind    proceedKind
+	)
 	if a.duo == nil || a.duoUniversal == nil {
-		writeJSON(w, http.StatusOK, map[string]string{"redirect": ssoURL})
-		return
+		realURL, kind = ssoURL, proceedEntra
+	} else {
+		pre, perr := a.duo.Preauth(email)
+		if perr != nil {
+			log.Printf("Duo preauth 失败 for %s: %v, fallback 到 SSO", email, perr)
+			realURL, kind = ssoURL, proceedEntra
+		} else {
+			log.Printf("Duo preauth for %s: result=%s devices=%d",
+				email, pre.Result, len(pre.Devices))
+			switch pre.Result {
+			case "auth":
+				if pre.HasUniversalPromptCapable() {
+					duoURL, derr := a.duoUniversal.AuthURL(email, sess.State)
+					if derr != nil {
+						log.Printf("Duo AuthURL 构造失败: %v, fallback SSO", derr)
+						realURL, kind = ssoURL, proceedEntra
+					} else {
+						realURL, kind = duoURL, proceedDuo
+					}
+				} else {
+					log.Printf("%s 无任何 Duo 设备, fallback SSO", email)
+					realURL, kind = ssoURL, proceedEntra
+				}
+			case "enroll", "allow":
+				realURL, kind = ssoURL, proceedEntra
+			case "deny":
+				// 不在响应里告诉攻击者 "被拒" — 一律丢给 Entra, Entra 自己拒.
+				log.Printf("Duo 拒绝账号: %s (%s), 仍走 Entra 不暴露 deny 信号",
+					email, pre.StatusMsg)
+				realURL, kind = ssoURL, proceedDeny
+			default:
+				log.Printf("未知 Duo preauth result: %s, fallback SSO", pre.Result)
+				realURL, kind = ssoURL, proceedEntra
+			}
+		}
 	}
 
-	// preauth 探测用户在 Duo 的状态
-	pre, err := a.duo.Preauth(email)
+	// 记一次 pending 失败 — 回调成功会清零.
+	a.authEmailFails.record(email)
+
+	token, err := a.proceedStore.put(realURL, sess.State, email, kind)
 	if err != nil {
-		log.Printf("Duo preauth 失败 for %s: %v, fallback 到 SSO", email, err)
-		writeJSON(w, http.StatusOK, map[string]string{"redirect": ssoURL})
+		log.Printf("proceedStore.put 失败: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 		return
 	}
-	log.Printf("Duo preauth for %s: result=%s devices=%d", email, pre.Result, len(pre.Devices))
+	writeJSON(w, http.StatusOK, map[string]string{"redirect": "/auth/proceed?token=" + token})
+}
 
-	switch pre.Result {
-	case "auth":
-		if !pre.HasUniversalPromptCapable() {
-			log.Printf("%s 无任何 Duo 设备, fallback SSO", email)
-			writeJSON(w, http.StatusOK, map[string]string{"redirect": ssoURL})
-			return
-		}
-		duoURL, err := a.duoUniversal.AuthURL(email, sess.State)
-		if err != nil {
-			log.Printf("Duo AuthURL 构造失败: %v, fallback SSO", err)
-			writeJSON(w, http.StatusOK, map[string]string{"redirect": ssoURL})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"redirect": duoURL})
-
-	case "enroll", "allow":
-		// 没在 Duo 注册, 或被标记跳过 MFA → 正常走 Entra
-		writeJSON(w, http.StatusOK, map[string]string{"redirect": ssoURL})
-
-	case "deny":
-		log.Printf("Duo 拒绝账号: %s (%s)", email, pre.StatusMsg)
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "account_denied"})
-
-	default:
-		log.Printf("未知 Duo preauth result: %s, fallback SSO", pre.Result)
-		writeJSON(w, http.StatusOK, map[string]string{"redirect": ssoURL})
+// recordIPFailure 累加 IP 失败计数, 触发阈值就封禁.
+// reason 只进日志, 便于排查.
+func (a *App) recordIPFailure(ip, reason string) {
+	a.ipFails.record(ip)
+	n := a.ipFails.countIn(ip, a.cfg.IPFailsWindow)
+	if n >= a.cfg.IPFailsLimit {
+		a.ipBans.ban(ip, a.cfg.IPBanDuration)
+		log.Printf("IP 失败超限, 封禁 %s: %s (累计=%d 窗口=%s 原因=%s)",
+			a.cfg.IPBanDuration, ip, n, a.cfg.IPFailsWindow, reason)
 	}
 }
 
@@ -375,6 +431,13 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("放行成员(SSO): upn=%s name=%q ip=%s mac=%s",
 		user.UPN, user.Name, sess.UserIP, sess.MAC)
+	// 规则 1 清零: 走完 Entra 成功 = 这个邮箱是真人, 把 pending 失败抹掉.
+	// 同时清 session.Email (用户输入的) 和 user.UPN (Entra 返回的) 两个 key,
+	// 兜底 case-sensitivity 和 UPN != email 的边界情况.
+	if sess.Email != "" {
+		a.authEmailFails.reset(strings.ToLower(sess.Email))
+	}
+	a.authEmailFails.reset(strings.ToLower(user.UPN))
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, user.UPN)
 	clearSessionCookie(w, true)
 	http.Redirect(w, r, ikuaiURL, http.StatusFound)
@@ -429,6 +492,11 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("放行成员(Duo快捷): upn=%s ip=%s mac=%s", username, sess.UserIP, sess.MAC)
+	// 规则 1 清零: Duo 2FA 过 = 这个邮箱是真人, 把 pending 失败抹掉.
+	if sess.Email != "" {
+		a.authEmailFails.reset(strings.ToLower(sess.Email))
+	}
+	a.authEmailFails.reset(strings.ToLower(username))
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, username)
 	clearSessionCookie(w, true)
 	http.Redirect(w, r, ikuaiURL, http.StatusFound)
@@ -445,9 +513,23 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "guest_disabled"})
 		return
 	}
+	ip := clientIP(r)
+	if a.ipBans.isBanned(ip) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
+		return
+	}
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
 	if err != nil {
+		a.recordIPFailure(ip, "session_lost")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_lost"})
+		return
+	}
+	// 规则 5: 按 session 里的 MAC 查失败计数. MAC 是从 /portal 签进 cookie 的,
+	// 攻击者改不了, 所以比按 IP 更稳.
+	if a.guestCodeFails.countIn(sess.MAC, a.cfg.GuestCodeMacWindow) >= a.cfg.GuestCodeMacFails {
+		log.Printf("guest-code 按 MAC 限流: mac=%s ip=%s", sess.MAC, ip)
+		a.recordIPFailure(ip, "rate_limited_mac")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
 		return
 	}
 	code := strings.TrimSpace(r.FormValue("code"))
@@ -460,11 +542,15 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	c := a.guestCodes.Validate(code, sess.MAC, sess.UserIP, upn)
 	if c == nil {
 		log.Printf("拒绝访客码 ip=%s mac=%s", sess.UserIP, sess.MAC)
+		a.guestCodeFails.record(sess.MAC)
+		a.recordIPFailure(ip, "invalid_guest_code")
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_code"})
 		return
 	}
 	log.Printf("放行访客: upn=%s code-suffix=%s ip=%s mac=%s",
 		upn, tailN(c.Code, 4), sess.UserIP, sess.MAC)
+	// 成功 → MAC 失败计数清零.
+	a.guestCodeFails.reset(sess.MAC)
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, upn)
 	clearSessionCookie(w, true)
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": ikuaiURL})
