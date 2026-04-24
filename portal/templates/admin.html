@@ -255,6 +255,64 @@
     }
     .toast.show { opacity: 1; transform: translateY(0); }
 
+    /* Dashboard summary cards */
+    .dashboard {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .dash-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .dash-card .value {
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .dash-card .label {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .dash-card.danger .value { color: var(--danger); }
+    .dash-card.ok .value { color: var(--success); }
+
+    /* Event filters */
+    .event-filters {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .event-filters select,
+    .event-filters input {
+      padding: 6px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 13px;
+    }
+    .chip.login  { background: rgba(37,99,235,0.1);  color: var(--brand); }
+    .chip.admin_action { background: rgba(234,179,8,0.15); color: #a16207; }
+    @media (prefers-color-scheme: dark) {
+      .chip.admin_action { background: rgba(234,179,8,0.2); color: #fde68a; }
+    }
+    .chip.result-success     { background: rgba(22,163,74,0.12); color: var(--success); }
+    .chip.result-denied      { background: rgba(220,38,38,0.12); color: var(--danger); }
+    .chip.result-rate_limited { background: rgba(234,88,12,0.15); color: #c2410c; }
+    .chip.result-error       { background: rgba(107,114,128,0.2); color: var(--text-muted); }
+
+    @media (max-width: 900px) {
+      .dashboard { grid-template-columns: repeat(2, 1fr); }
+    }
     @media (max-width: 720px) {
       .admin-nav { display: flex; overflow-x: auto; }
       .admin-tab { white-space: nowrap; }
@@ -282,11 +340,48 @@
   </header>
 
   <main>
+    <div class="dashboard" aria-label="概览">
+      <div class="dash-card">
+        <div class="value">{{ .Dashboard.LoginsToday }}</div>
+        <div class="label">今日登录成功 (24h)</div>
+      </div>
+      <div class="dash-card">
+        <div class="value">{{ .Dashboard.LoginsWeek }}</div>
+        <div class="label">本周登录成功 (7d)</div>
+      </div>
+      <div class="dash-card {{ if gt .Dashboard.FailedRatePct 20 }}danger{{ end }}">
+        <div class="value">{{ .Dashboard.FailedRatePct }}% <span style="font-size:13px;color:var(--text-muted);font-weight:400;">({{ .Dashboard.FailedCount7d }})</span></div>
+        <div class="label">失败占比 (7d)</div>
+      </div>
+      <div class="dash-card ok">
+        <div class="value">{{ .Dashboard.ActiveDevices }}</div>
+        <div class="label">当前活跃设备</div>
+      </div>
+      <div class="dash-card">
+        <div class="value">{{ .Dashboard.ActiveGuestCodes }}</div>
+        <div class="label">有效访客码</div>
+      </div>
+      <div class="dash-card {{ if gt .Dashboard.BannedIPs 0 }}danger{{ end }}">
+        <div class="value">{{ .Dashboard.BannedIPs }}</div>
+        <div class="label">封禁 IP</div>
+      </div>
+      <div class="dash-card {{ if gt .Dashboard.BannedMACs 0 }}danger{{ end }}">
+        <div class="value">{{ .Dashboard.BannedMACs }}</div>
+        <div class="label">封禁 MAC</div>
+      </div>
+      <div class="dash-card">
+        <div class="value">{{ .Total }}</div>
+        <div class="label">全部访客码</div>
+      </div>
+    </div>
+
     <nav class="admin-nav" aria-label="管理分类">
       <button type="button" class="admin-tab active" data-section="section-codes">访客码</button>
       <button type="button" class="admin-tab" data-section="section-ikuai-policy">放行策略</button>
       <button type="button" class="admin-tab" data-section="section-macs">MAC 封禁</button>
       <button type="button" class="admin-tab" data-section="section-ratelimit">限流状态</button>
+      <button type="button" class="admin-tab" data-section="section-active-devices">活跃设备</button>
+      <button type="button" class="admin-tab" data-section="section-events">事件日志</button>
     </nav>
 
     <section id="section-codes" class="admin-section active">
@@ -401,6 +496,9 @@
           <input type="text" id="deny-mac-reason" class="search" placeholder="原因，可选">
           <button type="button" class="btn btn-danger btn-mini" onclick="createDeniedMACFromForm()">封禁</button>
         </div>
+        <a class="btn btn-mini" href="/admin/denylist/export.csv">导出 CSV</a>
+        <button type="button" class="btn btn-mini" onclick="document.getElementById('deny-import-file').click()">导入 CSV</button>
+        <input type="file" id="deny-import-file" accept=".csv,text/csv" style="display:none" onchange="importDenylistCSV(this)">
       </div>
 
       <div class="table-wrap">
@@ -453,6 +551,88 @@
           </thead>
           <tbody id="rl-tbody">
             <tr><td colspan="4" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 活跃设备 -->
+    <section id="section-active-devices" class="admin-section">
+      <div class="toolbar" style="margin-bottom: 16px;">
+        <div style="font-weight: 600; font-size: 16px; flex: 1;">活跃设备 <span id="ad-count" class="muted" style="font-weight:400;font-size:13px;"></span></div>
+        <div class="muted" style="font-size: 12px;">最近放行过且未超出窗口的设备, 重启清零</div>
+        <button type="button" class="btn btn-mini" onclick="refreshActiveDevices()">刷新</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 180px;">MAC</th>
+              <th>用户 / 访客</th>
+              <th style="width: 140px;">IP</th>
+              <th style="width: 100px;">方式</th>
+              <th style="width: 170px;">首次放行</th>
+              <th style="width: 170px;">最近活跃</th>
+              <th style="width: 140px;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="ad-tbody">
+            <tr><td colspan="7" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 事件日志 -->
+    <section id="section-events" class="admin-section">
+      <div class="toolbar" style="margin-bottom: 12px;">
+        <div style="font-weight: 600; font-size: 16px;">事件日志</div>
+        <div class="event-filters" style="flex:1; justify-content: flex-end;">
+          <select id="ev-kind">
+            <option value="">全部类型</option>
+            <option value="login">登录</option>
+            <option value="admin_action">管理</option>
+          </select>
+          <select id="ev-method">
+            <option value="">全部方式</option>
+            <option value="sso">SSO</option>
+            <option value="duo">Duo</option>
+            <option value="guest_code">访客码</option>
+            <option value="admin">后台</option>
+          </select>
+          <select id="ev-result">
+            <option value="">全部结果</option>
+            <option value="success">成功</option>
+            <option value="denied">拒绝</option>
+            <option value="rate_limited">限流</option>
+            <option value="error">错误</option>
+          </select>
+          <select id="ev-range">
+            <option value="86400">24h</option>
+            <option value="604800" selected>7d</option>
+            <option value="0">全部</option>
+          </select>
+          <input type="text" id="ev-subject" placeholder="对象关键字" style="width:160px">
+          <button type="button" class="btn btn-mini" onclick="refreshEvents()">刷新</button>
+          <button type="button" class="btn btn-mini" onclick="exportEventsCSV()">导出 CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 150px;">时间</th>
+              <th style="width: 80px;">类型</th>
+              <th>对象</th>
+              <th style="width: 90px;">方式</th>
+              <th style="width: 90px;">结果</th>
+              <th style="width: 160px;">MAC</th>
+              <th style="width: 120px;">IP</th>
+              <th>详情</th>
+            </tr>
+          </thead>
+          <tbody id="ev-tbody">
+            <tr><td colspan="8" class="empty">加载中…</td></tr>
           </tbody>
         </table>
       </div>
@@ -584,6 +764,8 @@
         t.classList.toggle('active', t.dataset.section === id);
       });
       if (id === 'section-ratelimit') refreshRL();
+      if (id === 'section-active-devices') refreshActiveDevices();
+      if (id === 'section-events') refreshEvents();
     }
     document.querySelectorAll('.admin-tab').forEach(function(t) {
       t.addEventListener('click', function() { showAdminSection(t.dataset.section); });
@@ -983,6 +1165,175 @@
     // 首次加载 + 每 15 秒自动刷新
     refreshRL();
     setInterval(refreshRL, 15000);
+
+    // ===== 活跃设备 =====
+
+    function relativeTime(unix) {
+      var diff = Math.floor(Date.now() / 1000) - unix;
+      if (diff < 60) return diff + ' 秒前';
+      if (diff < 3600) return Math.floor(diff / 60) + ' 分前';
+      if (diff < 86400) return Math.floor(diff / 3600) + ' 时前';
+      return Math.floor(diff / 86400) + ' 天前';
+    }
+
+    function fmtDateTime(unix) {
+      var d = new Date(unix * 1000);
+      var p = function(n) { return n < 10 ? '0' + n : '' + n; };
+      return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) + ' ' +
+             p(d.getHours()) + ':' + p(d.getMinutes());
+    }
+
+    function refreshActiveDevices() {
+      fetch('/admin/active-devices', { credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(b) {
+          if (!b.ok) return;
+          $('ad-count').textContent = '(' + b.count + ')';
+          var tbody = $('ad-tbody');
+          tbody.innerHTML = '';
+          if (!b.devices || b.devices.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="empty">当前没有活跃设备记录.</td></tr>';
+            return;
+          }
+          b.devices.forEach(function(d) {
+            var tr = document.createElement('tr');
+            var method = d.method || '';
+            var methodLabel = method === 'sso' ? 'SSO' :
+                              method === 'duo' ? 'Duo' :
+                              method === 'guest_code' ? '访客码' : method;
+            tr.innerHTML =
+              '<td class="code">' + escapeHTML(d.mac) + '</td>' +
+              '<td>' + escapeHTML(d.user_id || '-') + '</td>' +
+              '<td class="muted">' + escapeHTML(d.ip || '-') + '</td>' +
+              '<td class="muted">' + escapeHTML(methodLabel) + '</td>' +
+              '<td class="muted">' + escapeHTML(fmtDateTime(d.first_seen_unix)) + '</td>' +
+              '<td class="muted">' + escapeHTML(fmtDateTime(d.last_seen_unix)) +
+                ' <span style="font-size:11px">(' + escapeHTML(relativeTime(d.last_seen_unix)) + ')</span></td>' +
+              '<td></td>';
+            var td = tr.children[6];
+            var banBtn = document.createElement('button');
+            banBtn.className = 'btn btn-danger btn-mini';
+            banBtn.textContent = '封禁';
+            banBtn.addEventListener('click', function() {
+              if (!confirm('确认永久封禁 MAC: ' + d.mac + ' ?')) return;
+              createDeniedMAC(d.mac, '从活跃设备封禁', false);
+            });
+            td.appendChild(banBtn);
+            var rmBtn = document.createElement('button');
+            rmBtn.className = 'btn btn-mini';
+            rmBtn.style.marginLeft = '6px';
+            rmBtn.textContent = '移除';
+            rmBtn.addEventListener('click', function() {
+              var fd = new FormData();
+              fd.append('mac', d.mac);
+              fetch('/admin/active-devices/remove', { method: 'POST', body: fd, credentials: 'same-origin' })
+                .then(function(r) { return r.json(); })
+                .then(function(b) {
+                  if (b.ok) { toast('已移除'); refreshActiveDevices(); }
+                  else toast('移除失败');
+                });
+            });
+            td.appendChild(rmBtn);
+            tbody.appendChild(tr);
+          });
+        })
+        .catch(function() { /* noop */ });
+    }
+
+    // ===== 事件日志 =====
+
+    function buildEventQuery() {
+      var p = new URLSearchParams();
+      var k = $('ev-kind').value; if (k) p.set('kind', k);
+      var m = $('ev-method').value; if (m) p.set('method', m);
+      var res = $('ev-result').value; if (res) p.set('result', res);
+      var sub = $('ev-subject').value.trim(); if (sub) p.set('subject', sub);
+      var range = parseInt($('ev-range').value, 10);
+      if (range > 0) {
+        var since = Math.floor(Date.now() / 1000) - range;
+        p.set('since', since.toString());
+      }
+      p.set('limit', '500');
+      return p;
+    }
+
+    function refreshEvents() {
+      var p = buildEventQuery();
+      fetch('/admin/events/query?' + p.toString(), { credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(b) {
+          if (!b.ok) return;
+          var tbody = $('ev-tbody');
+          tbody.innerHTML = '';
+          if (!b.events || b.events.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="empty">当前过滤条件下没有事件.</td></tr>';
+            return;
+          }
+          var methodLabel = { sso: 'SSO', duo: 'Duo', guest_code: '访客码', admin: '后台' };
+          var resultLabel = { success: '成功', denied: '拒绝', rate_limited: '限流', error: '错误' };
+          var kindLabel = { login: '登录', admin_action: '管理' };
+          b.events.forEach(function(e) {
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+              '<td class="muted">' + escapeHTML(e.time_iso) + '</td>' +
+              '<td><span class="chip ' + escapeHTML(e.kind) + '">' + escapeHTML(kindLabel[e.kind] || e.kind) + '</span></td>' +
+              '<td>' + escapeHTML(e.subject || '-') + '</td>' +
+              '<td class="muted">' + escapeHTML(methodLabel[e.method] || e.method || '-') + '</td>' +
+              '<td><span class="chip result-' + escapeHTML(e.result) + '">' + escapeHTML(resultLabel[e.result] || e.result) + '</span></td>' +
+              '<td class="muted">' + escapeHTML(e.mac || '-') + '</td>' +
+              '<td class="muted">' + escapeHTML(e.ip || '-') + '</td>' +
+              '<td class="muted">' + escapeHTML(e.detail || '') + '</td>';
+            tbody.appendChild(tr);
+          });
+        })
+        .catch(function() { /* noop */ });
+    }
+
+    function exportEventsCSV() {
+      var p = buildEventQuery();
+      p.delete('limit');
+      window.location = '/admin/events/export.csv?' + p.toString();
+    }
+
+    ['ev-kind', 'ev-method', 'ev-result', 'ev-range'].forEach(function(id) {
+      $(id).addEventListener('change', refreshEvents);
+    });
+    $('ev-subject').addEventListener('input', function() {
+      clearTimeout(window.__evSubjectT);
+      window.__evSubjectT = setTimeout(refreshEvents, 300);
+    });
+
+    // 事件 / 活跃设备 每 30 秒自动刷新 (只在对应 tab 活动时才刷)
+    setInterval(function() {
+      var ev = document.getElementById('section-events');
+      var ad = document.getElementById('section-active-devices');
+      if (ev && ev.classList.contains('active')) refreshEvents();
+      if (ad && ad.classList.contains('active')) refreshActiveDevices();
+    }, 30000);
+
+    // ===== Denylist CSV 导入 =====
+
+    function importDenylistCSV(input) {
+      if (!input.files || !input.files[0]) return;
+      var fd = new FormData();
+      fd.append('file', input.files[0]);
+      fetch('/admin/denylist/import', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, body: b }; }); })
+        .then(function(res) {
+          input.value = ''; // 重置 file input, 允许再次选同一个文件
+          if (res.ok && res.body.ok) {
+            var msg = '导入完成: ' + res.body.imported + ' 条新增, ' + res.body.skipped + ' 条跳过';
+            if (res.body.errors && res.body.errors.length) {
+              msg += '\n错误: ' + res.body.errors.slice(0, 3).join('; ');
+            }
+            alert(msg);
+            location.reload();
+          } else {
+            toast('导入失败: ' + ((res.body && res.body.error) || 'error'));
+          }
+        })
+        .catch(function() { toast('网络异常'); });
+    }
   </script>
 </body>
 </html>

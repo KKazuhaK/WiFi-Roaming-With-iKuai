@@ -111,6 +111,7 @@ func (a *App) handleAuthProceed(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
 		log.Printf("拒绝已封禁 MAC auth/proceed: mac=%s ip=%s", sess.MAC, sess.UserIP)
+		a.logLogin("(unknown)", ResultDenied, "", sess.MAC, sess.UserIP, "mac_denylist")
 		a.renderError(w, r, lang, lang.s().RateLimitedPermanent, http.StatusForbidden)
 		return
 	}
