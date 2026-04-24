@@ -34,6 +34,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -56,6 +57,25 @@ const (
 	banHistoryPath  = dataDir + "/ratelimit-state.json"
 	eventLogPath    = dataDir + "/events.jsonl"
 )
+
+func ensureDataDirWritable(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create data dir %s: %w", dir, err)
+	}
+	f, err := os.CreateTemp(dir, ".write-test-*")
+	if err != nil {
+		return fmt.Errorf("write test in %s: %w", dir, err)
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("close write test %s: %w", name, err)
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("remove write test %s: %w", name, err)
+	}
+	return nil
+}
 
 type App struct {
 	cfg          Config
@@ -112,6 +132,10 @@ func main() {
 		log.Printf("admin console: enabled, admin=%v", cfg.AdminEmails)
 	} else {
 		log.Printf("admin console: disabled")
+	}
+
+	if err := ensureDataDirWritable(dataDir); err != nil {
+		log.Fatalf("data dir is not writable: %v", err)
 	}
 
 	guestStore, err := newGuestCodeStore(guestCodesPath)
@@ -467,6 +491,11 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 		return
 	}
+	method := MethodSSO
+	if kind == proceedDuo {
+		method = MethodDuo
+	}
+	a.logLogin(email, ResultStarted, method, sess.MAC, sess.UserIP, "auth_start")
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": "/auth/proceed?token=" + token})
 }
 
@@ -1773,14 +1802,13 @@ func (a *App) buildDashboard(allCodes []*GuestCode) DashboardStats {
 	stats.LoginsWeek = a.eventLog.Count(EventQueryFilter{
 		Kind: KindLogin, Result: ResultSuccess, Since: weekAgo,
 	})
-	week := a.eventLog.Count(EventQueryFilter{Kind: KindLogin, Since: weekAgo})
-	failedWeek := week - stats.LoginsWeek
-	if failedWeek < 0 {
-		failedWeek = 0
-	}
+	failedWeek := a.eventLog.Count(EventQueryFilter{Kind: KindLogin, Result: ResultDenied, Since: weekAgo}) +
+		a.eventLog.Count(EventQueryFilter{Kind: KindLogin, Result: ResultRateLimited, Since: weekAgo}) +
+		a.eventLog.Count(EventQueryFilter{Kind: KindLogin, Result: ResultError, Since: weekAgo})
 	stats.FailedCount7d = failedWeek
-	if week > 0 {
-		stats.FailedRatePct = int(float64(failedWeek) * 100 / float64(week))
+	terminalWeek := stats.LoginsWeek + failedWeek
+	if terminalWeek > 0 {
+		stats.FailedRatePct = int(float64(failedWeek) * 100 / float64(terminalWeek))
 	}
 	return stats
 }

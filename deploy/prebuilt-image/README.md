@@ -133,8 +133,10 @@ cookie 跨部署不互通。如果 Windows 手头没 openssl, PowerShell 里:
 
 ### `data/` 目录
 
-File Station 里在项目目录 **新增資料夾** → 命名 `data`。权限默认就行, 容器会以 root 写
-`guest-codes.json` / `denylist.json` / `ikuai-policy.json` / `events.jsonl` 进去。
+File Station 里在项目目录 **新增資料夾** → 命名 `data`。容器启动入口会先修正 `data`
+目录所有权, 再降权给 `portal` 用户写
+`guest-codes.json` / `denylist.json` / `ikuai-policy.json` / `events.jsonl`。
+如果底层文件系统不允许改所有权或写入, Portal 会在启动时直接报 `/data` 不可写。
 
 ---
 

@@ -46,6 +46,11 @@
     }
     header .title { font-weight: 600; font-size: 16px; flex: 1; }
     header .upn { color: var(--text-muted); font-size: 13px; }
+    .account-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
     .lang-switch { display: inline-flex; gap: 8px; font-size: 12px; }
     .lang-link {
       color: var(--text-muted);
@@ -328,9 +333,17 @@
       .chip.admin_action { background: rgba(234,179,8,0.2); color: #fde68a; }
     }
     .chip.result-success     { background: rgba(22,163,74,0.12); color: var(--success); }
+    .chip.result-started     { background: rgba(37,99,235,0.1); color: var(--brand); }
     .chip.result-denied      { background: rgba(220,38,38,0.12); color: var(--danger); }
     .chip.result-rate_limited { background: rgba(234,88,12,0.15); color: #c2410c; }
     .chip.result-error       { background: rgba(107,114,128,0.2); color: var(--text-muted); }
+    .row-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: nowrap;
+      white-space: nowrap;
+    }
 
     @media (max-width: 720px) {
       .admin-nav { display: flex; overflow-x: auto; }
@@ -394,22 +407,24 @@
 
   <header>
     <div class="title">{{ T .Lang "admin.pageTitle" .Brand.Name }}</div>
-    <div class="upn">{{ .AdminUPN }}</div>
     <div class="lang-switch">
       <a data-lang="zh-cn" href="?lang=zh-cn" class="lang-link{{ if eq .Lang "zh-cn" }} active{{ end }}">{{ T .Lang "lang.zhCn" }}</a>
       <a data-lang="zh-tw" href="?lang=zh-tw" class="lang-link{{ if eq .Lang "zh-tw" }} active{{ end }}">{{ T .Lang "lang.zhTw" }}</a>
       <a data-lang="en"    href="?lang=en"    class="lang-link{{ if eq .Lang "en"    }} active{{ end }}">{{ T .Lang "lang.en" }}</a>
     </div>
-    <form action="/admin/logout" method="post" style="margin:0">
-      <button type="submit" class="btn-logout">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
-          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-          <path d="M16 17l5-5-5-5"></path>
-          <path d="M21 12H9"></path>
-        </svg>
-        <span>{{ T .Lang "admin.header.logout" }}</span>
-      </button>
-    </form>
+    <div class="account-actions">
+      <div class="upn">{{ .AdminUPN }}</div>
+      <form action="/admin/logout" method="post" style="margin:0">
+        <button type="submit" class="btn-logout">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            <path d="M16 17l5-5-5-5"></path>
+            <path d="M21 12H9"></path>
+          </svg>
+          <span>{{ T .Lang "admin.header.logout" }}</span>
+        </button>
+      </form>
+    </div>
   </header>
 
   <main>
@@ -589,7 +604,7 @@
               <th>{{ T .Lang "admin.macs.col.reason" }}</th>
               <th style="width: 180px;">{{ T .Lang "admin.macs.col.createdAt" }}</th>
               <th style="width: 220px;">{{ T .Lang "admin.macs.col.createdBy" }}</th>
-              <th style="width: 160px;">{{ T .Lang "admin.macs.col.actions" }}</th>
+              <th style="width: 190px;">{{ T .Lang "admin.macs.col.actions" }}</th>
             </tr>
           </thead>
           <tbody>
@@ -626,7 +641,7 @@
               <th style="width: 120px;">{{ T .Lang "admin.rl.col.type" }}</th>
               <th>{{ T .Lang "admin.rl.col.key" }}</th>
               <th style="width: 160px;">{{ T .Lang "admin.rl.col.status" }}</th>
-              <th style="width: 160px;">{{ T .Lang "admin.macs.col.actions" }}</th>
+              <th style="width: 190px;">{{ T .Lang "admin.macs.col.actions" }}</th>
             </tr>
           </thead>
           <tbody id="rl-tbody">
@@ -655,6 +670,7 @@
           </select>
           <select id="ev-result">
             <option value="">{{ T .Lang "admin.events.result.all" }}</option>
+            <option value="started">{{ T .Lang "admin.events.result.started" }}</option>
             <option value="success">{{ T .Lang "admin.events.result.success" }}</option>
             <option value="denied">{{ T .Lang "admin.events.result.denied" }}</option>
             <option value="rate_limited">{{ T .Lang "admin.events.result.rateLimited" }}</option>
@@ -1317,17 +1333,19 @@
         btn.className = 'btn btn-danger btn-mini';
         btn.innerHTML = '<svg class="icon"><use href="#i-trash-2"/></svg>' + T('admin.rl.btn.reset');
         btn.addEventListener('click', function() { resetRL(r.resetType, r.resetKey); });
-        tr.children[3].appendChild(btn);
+        var actions = document.createElement('div');
+        actions.className = 'row-actions';
+        actions.appendChild(btn);
+        tr.children[3].appendChild(actions);
         if (r.canDenyMAC) {
           var denyBtn = document.createElement('button');
           denyBtn.className = 'btn btn-danger btn-mini';
-          denyBtn.style.marginLeft = '6px';
           denyBtn.innerHTML = '<svg class="icon"><use href="#i-ban"/></svg>' + T('admin.rl.btn.banMac');
           denyBtn.addEventListener('click', function() {
             if (!confirm(T('admin.confirm.banMacFromRow', r.resetKey))) return;
             createDeniedMAC(r.resetKey, T('admin.rl.row.guestMac'), true);
           });
-          tr.children[3].appendChild(denyBtn);
+          actions.appendChild(denyBtn);
         }
         tbody.appendChild(tr);
       });
@@ -1414,7 +1432,7 @@
             return;
           }
           var methodLabel = { sso: T('admin.events.method.sso'), duo: T('admin.events.method.duo'), guest_code: T('admin.events.method.guestCode'), admin: T('admin.events.method.admin') };
-          var resultLabel = { success: T('admin.events.result.success'), denied: T('admin.events.result.denied'), rate_limited: T('admin.events.result.rateLimited'), error: T('admin.events.result.error') };
+          var resultLabel = { started: T('admin.events.result.started'), success: T('admin.events.result.success'), denied: T('admin.events.result.denied'), rate_limited: T('admin.events.result.rateLimited'), error: T('admin.events.result.error') };
           var kindLabel = { login: T('admin.events.kind.login'), admin_action: T('admin.events.kind.adminAction') };
           // 缓存当前批次, 详情按钮点了直接从这里取, 不用再查 server.
           window.__lastEvents = b.events;
@@ -1454,7 +1472,7 @@
       var e = (window.__lastEvents || [])[idx];
       if (!e) return;
       var methodLabel = { sso: T('admin.events.method.sso'), duo: T('admin.events.method.duo'), guest_code: T('admin.events.method.guestCode'), admin: T('admin.events.method.admin') };
-      var resultLabel = { success: T('admin.events.result.success'), denied: T('admin.events.result.denied'), rate_limited: T('admin.events.result.rateLimited'), error: T('admin.events.result.error') };
+      var resultLabel = { started: T('admin.events.result.started'), success: T('admin.events.result.success'), denied: T('admin.events.result.denied'), rate_limited: T('admin.events.result.rateLimited'), error: T('admin.events.result.error') };
       var kindLabel = { login: T('admin.events.kind.login'), admin_action: T('admin.events.kind.adminAction') };
       var rows = [
         [T('admin.events.col.time'), e.time_iso],

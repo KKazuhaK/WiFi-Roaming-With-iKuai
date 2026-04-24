@@ -24,13 +24,16 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # 用 alpine 而非 scratch: 方便排查时 docker exec 进去看一眼.
 # 如果追求极致安全可换成 gcr.io/distroless/static:nonroot
 FROM alpine:3.19
-RUN apk add --no-cache ca-certificates tzdata && \
+RUN apk add --no-cache ca-certificates tzdata su-exec && \
     addgroup -S portal && adduser -S portal -G portal
 
 WORKDIR /app
 COPY --from=build /out/portal /app/portal
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN mkdir -p /data && chown portal:portal /data && chmod +x /app/docker-entrypoint.sh
 
-USER portal
+VOLUME ["/data"]
 # 容器里还是监听 28080, 和宿主机对齐, 少一层心智负担.
 EXPOSE 28080
-ENTRYPOINT ["/app/portal"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/portal"]

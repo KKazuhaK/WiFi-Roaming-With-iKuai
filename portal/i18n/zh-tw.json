@@ -161,6 +161,7 @@
   "admin.events.method.duo": "Duo",
   "admin.events.method.guestCode": "訪客碼",
   "admin.events.method.admin": "後台",
+  "admin.events.result.started": "已發起",
   "admin.events.result.success": "成功",
   "admin.events.result.denied": "拒絕",
   "admin.events.result.rateLimited": "限流",
