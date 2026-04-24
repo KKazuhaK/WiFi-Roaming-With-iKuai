@@ -590,8 +590,8 @@
           <input type="text" id="deny-mac-reason" class="search" placeholder="{{ T .Lang "admin.macs.placeholder.reason" }}">
           <button type="button" class="btn btn-danger btn-mini" onclick="createDeniedMACFromForm()"><svg class="icon"><use href="#i-ban"/></svg>{{ T .Lang "admin.macs.btn.ban" }}</button>
         </div>
-        <a class="btn btn-mini" href="/admin/denylist/export.csv"><svg class="icon"><use href="#i-download"/></svg>{{ T .Lang "admin.macs.btn.exportCsv" }}</a>
-        <button type="button" class="btn btn-mini" onclick="document.getElementById('deny-import-file').click()"><svg class="icon"><use href="#i-upload"/></svg>{{ T .Lang "admin.macs.btn.importCsv" }}</button>
+        <a class="btn btn-mini" href="/admin/denylist/export.csv"><svg class="icon"><use href="#i-upload"/></svg>{{ T .Lang "admin.macs.btn.exportCsv" }}</a>
+        <button type="button" class="btn btn-mini" onclick="document.getElementById('deny-import-file').click()"><svg class="icon"><use href="#i-download"/></svg>{{ T .Lang "admin.macs.btn.importCsv" }}</button>
         <input type="file" id="deny-import-file" accept=".csv,text/csv" style="display:none" onchange="importDenylistCSV(this)">
         <button type="button" class="btn btn-danger btn-mini" onclick="unbanAllMACs()"><svg class="icon"><use href="#i-trash-2"/></svg>{{ T .Lang "admin.macs.btn.unbanAll" }}</button>
       </div>
