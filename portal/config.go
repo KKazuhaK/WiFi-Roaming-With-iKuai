@@ -22,7 +22,9 @@ type Config struct {
 	ClientSecret string // Client Secret Value，敏感
 
 	// --- iKuai 自定义认证 ---
-	IKuaiAppKey string // iKuai 云面板 "生成" 出的 appkey，敏感
+	IKuaiAppKey     string // iKuai 云面板 "生成" 出的 appkey，敏感
+	IKuaiWebAuthURL string // iKuai 放行接口，默认按官方文档 https://portal.ikuai8-wifi.com/Action/webauth-up
+	//                        开成 env 是因为不同固件/部署可能要换 host (走路由器 LAN IP) 或换 scheme
 
 	// --- Portal 自身 ---
 	SessionSecret []byte // HMAC 签 cookie 用的随机密钥，32 字节，敏感
@@ -47,6 +49,9 @@ func loadConfig() Config {
 		ClientSecret: mustEnv("CLIENT_SECRET"),
 		IKuaiAppKey:  mustEnv("IKUAI_APPKEY"),
 		PublicURL:    mustEnv("PUBLIC_URL"),
+
+		IKuaiWebAuthURL: envOr("IKUAI_WEBAUTH_URL",
+			"https://portal.ikuai8-wifi.com/Action/webauth-up"),
 
 		ListenAddr:   envOr("LISTEN_ADDR", "127.0.0.1:28080"),
 		BrandName:    envOr("BRAND_NAME", "Kazuha Hub"),
