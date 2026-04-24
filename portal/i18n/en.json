@@ -1,0 +1,52 @@
+{
+  "_meta.locale": "en",
+
+  "login.title": "Connect to %s Roaming",
+  "login.subtitle": "Sign in with your %s account to connect",
+  "login.btn.sso": "Sign in with %s SSO",
+  "login.btn.guest": "Guest code sign-in",
+
+  "login.email.hint": "Enter your account to continue",
+  "login.email.label": "Account",
+  "login.email.continue": "Continue",
+
+  "login.guest.hint": "Enter the guest code provided by your administrator",
+  "login.guest.label": "Guest code",
+  "login.guest.verify": "Verify",
+  "login.guest.invalid": "Invalid guest code. Please double-check and retry.",
+
+  "errors.invalidEmail": "Invalid account format",
+  "errors.invalidDomain": "Account not allowed. Use an allowed account.",
+  "errors.accountDenied": "This account is denied by admin. Please contact your administrator.",
+  "errors.rateLimited": "Too many attempts. Please wait a bit and try again.",
+  "errors.rateLimitedRetry": "Too many attempts. Please try again in %s.",
+  "errors.rateLimitedPermanent": "This connection has been blocked after repeated security violations. Please contact your administrator.",
+  "errors.notAuthorized": "This account is not authorized. Please contact your admin.",
+  "errors.guestBlocked": "Sorry, external guest accounts are not allowed to connect to WiFi.",
+  "errors.sessionLost": "Session lost. Please reopen the login page from your WiFi dialog.",
+  "errors.expired": "Sign-in timed out. Please try again.",
+  "errors.title": "Connection Failed",
+  "errors.generic": "Could not complete authentication. Please try again later or contact your admin.",
+  "errors.adminDisabled": "Admin console is not configured (ADMIN_EMAILS).",
+  "errors.notAdminMember": "Your account is not on the admin list. Please contact your administrator.",
+
+  "common.footer": "© %s · WiFi",
+  "common.back": "Back",
+  "common.cancel": "Cancel",
+  "common.retry": "Retry",
+  "common.or": "or",
+
+  "units.seconds": "seconds",
+  "units.minutes": "minutes",
+  "units.hours": "hours",
+
+  "lang.zhCn": "简体",
+  "lang.zhTw": "繁體",
+  "lang.en": "English",
+
+  "misc.connecting": "Redirecting to sign-in...",
+  "misc.successTitle": "Connected",
+  "misc.successMsg": "You are now connected to %s. This session is valid for 8 hours.",
+  "misc.labelDevice": "Device",
+  "misc.labelAccount": "Account"
+}

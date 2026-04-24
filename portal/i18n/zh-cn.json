@@ -1,0 +1,52 @@
+{
+  "_meta.locale": "zh-cn",
+
+  "login.title": "连接至 %s Roaming 网络",
+  "login.subtitle": "登录 %s 账号即可接入网络",
+  "login.btn.sso": "使用 %s SSO 登录",
+  "login.btn.guest": "访客码登录",
+
+  "login.email.hint": "输入你的账号以继续登录",
+  "login.email.label": "账号",
+  "login.email.continue": "继续",
+
+  "login.guest.hint": "请输入管理员发给你的访客码",
+  "login.guest.label": "访客码",
+  "login.guest.verify": "验证",
+  "login.guest.invalid": "访客码无效, 请核对后重试",
+
+  "errors.invalidEmail": "账号格式不正确",
+  "errors.invalidDomain": "账号不在允许范围内, 请使用允许的账号",
+  "errors.accountDenied": "此账号被管理员标记为拒绝, 请联系管理员",
+  "errors.rateLimited": "操作过于频繁, 请稍后再试",
+  "errors.rateLimitedRetry": "操作过于频繁, 请在 %s 后再试",
+  "errors.rateLimitedPermanent": "由于多次触发安全限制, 当前连接已被封禁. 请联系管理员解除.",
+  "errors.notAuthorized": "此账号不在允许范围内。请联系管理员。",
+  "errors.guestBlocked": "抱歉，外部访客账号暂不允许连接 WiFi。",
+  "errors.sessionLost": "会话已丢失，请重新从 WiFi 界面打开登录页。",
+  "errors.expired": "登录超时，请重新尝试。",
+  "errors.title": "连接失败",
+  "errors.generic": "暂时无法完成认证，请稍后重试。如问题持续请联系管理员。",
+  "errors.adminDisabled": "Admin 后台未配置 (ADMIN_EMAILS)。",
+  "errors.notAdminMember": "你的账号不在 admin 列表, 请联系管理员。",
+
+  "common.footer": "© %s · WiFi",
+  "common.back": "返回",
+  "common.cancel": "取消",
+  "common.retry": "重试",
+  "common.or": "或",
+
+  "units.seconds": "秒",
+  "units.minutes": "分钟",
+  "units.hours": "小时",
+
+  "lang.zhCn": "简体",
+  "lang.zhTw": "繁體",
+  "lang.en": "English",
+
+  "misc.connecting": "正在跳转到登录...",
+  "misc.successTitle": "已连接",
+  "misc.successMsg": "你已成功接入 %s。本次会话有效期 8 小时。",
+  "misc.labelDevice": "设备",
+  "misc.labelAccount": "账号"
+}

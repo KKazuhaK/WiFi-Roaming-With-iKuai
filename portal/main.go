@@ -85,6 +85,8 @@ type App struct {
 }
 
 func main() {
+	loadTranslations()
+
 	cfg := loadConfig()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -127,7 +129,10 @@ func main() {
 		log.Fatalf("iKuai 放行策略初始化失败: %v", err)
 	}
 
-	tmpl, err := template.ParseFS(templateFS, "templates/*.html")
+	tmpl, err := template.New("").Funcs(template.FuncMap{
+		"T":        T,
+		"jsonI18N": jsonI18N,
+	}).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		log.Fatalf("模板加载失败: %v", err)
 	}
@@ -303,23 +308,23 @@ func (a *App) handlePortal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !ok {
-		a.renderError(w, r, lang, lang.s().SessionLostMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
 	}
 	if _, denied := a.denylist.IsMACDenied(dev.MAC); denied {
 		log.Printf("拒绝已封禁 MAC 访问 portal: mac=%s ip=%s", dev.MAC, dev.IP)
-		a.renderError(w, r, lang, lang.s().RateLimitedPermanent, http.StatusForbidden)
+		a.renderError(w, r, lang, T(lang, "errors.rateLimitedPermanent"), http.StatusForbidden)
 		return
 	}
 	sess, err := newSession(dev.IP, dev.MAC, string(lang))
 	if err != nil {
 		log.Printf("newSession 失败: %v", err)
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusInternalServerError)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
 	if err := writeSessionCookie(w, a.cfg.SessionSecret, sess, true); err != nil {
 		log.Printf("写 cookie 失败: %v", err)
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusInternalServerError)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
 	a.renderLogin(w, r, lang, dev)
@@ -585,7 +590,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
 	if err != nil {
-		a.renderError(w, r, lang, lang.s().SessionLostMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
 	}
 	hint := strings.TrimSpace(r.URL.Query().Get("hint"))
@@ -600,7 +605,7 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
 	if err != nil {
-		a.renderError(w, r, lang, lang.s().SessionLostMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
 	}
 	if sess.Lang != "" {
@@ -608,17 +613,17 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
 		log.Printf("Entra 返回错误: %s - %s", errParam, r.URL.Query().Get("error_description"))
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
 	if got := r.URL.Query().Get("state"); got != sess.State {
 		log.Printf("Entra state 不匹配")
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -626,7 +631,7 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	user, err := a.oidc.Exchange(ctx, a.cfg, code, sess.Nonce)
 	if err != nil {
 		log.Printf("OIDC Exchange 失败: %v", err)
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusUnauthorized)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusUnauthorized)
 		return
 	}
 	if sess.Purpose == "admin" {
@@ -636,13 +641,13 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if user.IsGuest() {
 		log.Printf("拒绝 Guest: %s", user.UPN)
 		a.logLogin(user.UPN, ResultDenied, MethodSSO, sess.MAC, sess.UserIP, "guest_blocked")
-		a.renderError(w, r, lang, lang.s().GuestBlockedMsg, http.StatusForbidden)
+		a.renderError(w, r, lang, T(lang, "errors.guestBlocked"), http.StatusForbidden)
 		return
 	}
 	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
 		log.Printf("拒绝已封禁 MAC SSO 放行: upn=%s mac=%s ip=%s", user.UPN, sess.MAC, sess.UserIP)
 		a.logLogin(user.UPN, ResultDenied, MethodSSO, sess.MAC, sess.UserIP, "mac_denylist")
-		a.renderError(w, r, lang, lang.s().RateLimitedPermanent, http.StatusForbidden)
+		a.renderError(w, r, lang, T(lang, "errors.rateLimitedPermanent"), http.StatusForbidden)
 		return
 	}
 	log.Printf("放行成员(SSO): upn=%s name=%q client_ip=%s user_ip=%s mac=%s",
@@ -661,12 +666,12 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
 	if a.duoUniversal == nil {
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusServiceUnavailable)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusServiceUnavailable)
 		return
 	}
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
 	if err != nil {
-		a.renderError(w, r, lang, lang.s().SessionLostMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
 	}
 	if sess.Lang != "" {
@@ -674,12 +679,12 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if got := r.URL.Query().Get("state"); got != sess.State {
 		log.Printf("Duo state 不匹配")
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
 		log.Printf("Duo 返回错误: %s", errParam)
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
 	// Duo Universal Prompt 回调参数名在不同版本 / 租户不一致:
@@ -690,24 +695,24 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if duoCode == "" {
 		log.Printf("Duo callback 缺 code/duo_code 参数, query=%q", r.URL.RawQuery)
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
 	if sess.Email == "" {
 		log.Printf("Duo callback: session 里没 email")
-		a.renderError(w, r, lang, lang.s().SessionLostMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
 	}
 	username, err := a.duoUniversal.Exchange(duoCode, sess.Email)
 	if err != nil {
 		log.Printf("Duo Exchange 失败 for %s: %v", sess.Email, err)
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusUnauthorized)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusUnauthorized)
 		return
 	}
 	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
 		log.Printf("拒绝已封禁 MAC Duo 放行: upn=%s mac=%s ip=%s", username, sess.MAC, sess.UserIP)
 		a.logLogin(username, ResultDenied, MethodDuo, sess.MAC, sess.UserIP, "mac_denylist")
-		a.renderError(w, r, lang, lang.s().RateLimitedPermanent, http.StatusForbidden)
+		a.renderError(w, r, lang, T(lang, "errors.rateLimitedPermanent"), http.StatusForbidden)
 		return
 	}
 	log.Printf("放行成员(Duo快捷): upn=%s client_ip=%s user_ip=%s mac=%s",
@@ -813,16 +818,16 @@ func guestPolicyTimeout(expiresAt time.Time) int {
 func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
 	if !a.cfg.IsAdminEnabled() {
-		a.renderError(w, r, lang, "Admin 后台未配置 (ADMIN_EMAILS)", http.StatusNotFound)
+		a.renderError(w, r, lang, T(lang, "errors.adminDisabled"), http.StatusNotFound)
 		return
 	}
 	sess, err := newAdminPreloginSession(string(lang))
 	if err != nil {
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusInternalServerError)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
 	if err := writeSessionCookie(w, a.cfg.SessionSecret, sess, true); err != nil {
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusInternalServerError)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
 	// admin 登录不预填邮箱
@@ -833,7 +838,7 @@ func (a *App) finishAdminLogin(w http.ResponseWriter, r *http.Request, lang Lang
 	if user.IsGuest() || !user.IsAdmin(a.cfg) {
 		log.Printf("admin 登录被拒: upn=%s groups=%v", user.UPN, user.Groups)
 		a.logAdminAction(user.UPN, ResultDenied, "admin login rejected (not in allow-list)")
-		a.renderError(w, r, lang, "你的账号不在 admin 列表, 请联系管理员。", http.StatusForbidden)
+		a.renderError(w, r, lang, T(lang, "errors.notAdminMember"), http.StatusForbidden)
 		return
 	}
 	adminSess := AdminSession{
@@ -841,7 +846,7 @@ func (a *App) finishAdminLogin(w http.ResponseWriter, r *http.Request, lang Lang
 		Exp: time.Now().Add(adminSessionTTL).Unix(),
 	}
 	if err := writeAdminCookie(w, a.cfg.SessionSecret, adminSess, true); err != nil {
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusInternalServerError)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
 	clearSessionCookie(w, true)
@@ -1527,8 +1532,7 @@ func parseExpiry(r *http.Request, gc *GuestCode) error {
 // --- 渲染 ---
 
 type pageData struct {
-	Lang               string
-	S                  Strings
+	Lang               Lang
 	Brand              brandData
 	Message            string
 	NowYear            int
@@ -1566,8 +1570,7 @@ func (a *App) firstAllowedDomain() string {
 
 func (a *App) renderLogin(w http.ResponseWriter, r *http.Request, lang Lang, dev DeviceInfo) {
 	data := pageData{
-		Lang:               string(lang),
-		S:                  lang.s(),
+		Lang:               lang,
 		Brand:              a.makeBrand(),
 		NowYear:            time.Now().Year(),
 		GuestEnabled:       a.cfg.IsAdminEnabled(),
@@ -1583,8 +1586,7 @@ func (a *App) renderLogin(w http.ResponseWriter, r *http.Request, lang Lang, dev
 
 func (a *App) renderError(w http.ResponseWriter, r *http.Request, lang Lang, msg string, code int) {
 	data := pageData{
-		Lang:    string(lang),
-		S:       lang.s(),
+		Lang:    lang,
 		Brand:   a.makeBrand(),
 		Message: msg,
 		NowYear: time.Now().Year(),

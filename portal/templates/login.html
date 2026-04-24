@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="robots" content="noindex, nofollow">
-  <title>{{ printf .S.Title .Brand.Name }}</title>
+  <title>{{ T .Lang "login.title" .Brand.Name }}</title>
   <style>
     :root {
       --brand-color: {{ .Brand.Color }};
@@ -184,8 +184,8 @@
     <img class="brand-logo light" src="/static/logo+title-circle.png"          alt="{{ .Brand.Name }}">
     <img class="brand-logo dark"  src="/static/logo+title-circle-darkmode.png" alt="{{ .Brand.Name }}">
 
-    <h1>{{ printf .S.Title .Brand.Name }}</h1>
-    <p class="subtitle">{{ printf .S.Subtitle .Brand.Name }}</p>
+    <h1>{{ T .Lang "login.title" .Brand.Name }}</h1>
+    <p class="subtitle">{{ T .Lang "login.subtitle" .Brand.Name }}</p>
 
     <!-- Step 1: 选择登录方式 -->
     <div id="step-choice" class="step active">
@@ -195,7 +195,7 @@
           <path d="m10 17 5-5-5-5"></path>
           <path d="M15 12H3"></path>
         </svg>
-        <span>{{ printf .S.SignInButton .Brand.Name }}</span>
+        <span>{{ T .Lang "login.btn.sso" .Brand.Name }}</span>
       </button>
       {{ if .GuestEnabled }}
       <button id="btn-to-guest" type="button" class="btn btn-secondary">
@@ -204,34 +204,34 @@
           <path d="m21 2-9.6 9.6"></path>
           <circle cx="7.5" cy="15.5" r="5.5"></circle>
         </svg>
-        <span>{{ .S.GuestButton }}</span>
+        <span>{{ T .Lang "login.btn.guest" }}</span>
       </button>
       {{ end }}
     </div>
 
     <!-- Step 2: 邮箱输入 -->
     <div id="step-email" class="step">
-      <p class="hint">{{ .S.EmailHint }}</p>
+      <p class="hint">{{ T .Lang "login.email.hint" }}</p>
       <input id="email-input" type="email" autocomplete="email"
-             aria-label="{{ .S.EmailLabel }}"
+             aria-label="{{ T .Lang "login.email.label" }}"
              placeholder="you@{{ .AllowedDomainsHint }}"
              class="input">
       <div id="email-error" class="error-inline" style="display:none"></div>
-      <button id="btn-email-continue" type="button" class="btn btn-primary">{{ .S.ContinueButton }}</button>
-      <button id="btn-back-from-email" type="button" class="btn-link">← {{ .S.Back }}</button>
+      <button id="btn-email-continue" type="button" class="btn btn-primary">{{ T .Lang "login.email.continue" }}</button>
+      <button id="btn-back-from-email" type="button" class="btn-link">← {{ T .Lang "common.back" }}</button>
     </div>
 
     {{ if .GuestEnabled }}
     <!-- Step 3: 访客码 -->
     <div id="step-guest-code" class="step">
-      <p class="hint">{{ .S.GuestCodeHint }}</p>
+      <p class="hint">{{ T .Lang "login.guest.hint" }}</p>
       <input id="guest-code-input" type="text" autocomplete="off"
-             aria-label="{{ .S.GuestCodeLabel }}"
-             placeholder="{{ .S.GuestCodeLabel }}"
+             aria-label="{{ T .Lang "login.guest.label" }}"
+             placeholder="{{ T .Lang "login.guest.label" }}"
              class="input">
       <div id="guest-code-error" class="error-inline" style="display:none"></div>
-      <button id="btn-guest-verify" type="button" class="btn btn-primary">{{ .S.GuestCodeVerify }}</button>
-      <button id="btn-back-from-guest" type="button" class="btn-link">← {{ .S.Back }}</button>
+      <button id="btn-guest-verify" type="button" class="btn btn-primary">{{ T .Lang "login.guest.verify" }}</button>
+      <button id="btn-back-from-guest" type="button" class="btn-link">← {{ T .Lang "common.back" }}</button>
     </div>
     {{ end }}
 
@@ -239,29 +239,29 @@
          保留 iKuai 传来的 user_ip/mac 快照, 避免随机 MAC 设备跳 MAC 后仍
          用上一次缓存. 禁 JS 时 href 降级为纯 ?lang=xxx (靠 cookie 兜底). -->
     <div class="lang-switch">
-      <a data-lang="zh-cn" href="?lang=zh-cn" class="{{ if eq .Lang "zh-cn" }}active{{ end }}">{{ .S.LangZHCNLabel }}</a>
-      <a data-lang="zh-tw" href="?lang=zh-tw" class="{{ if eq .Lang "zh-tw" }}active{{ end }}">{{ .S.LangZHTWLabel }}</a>
-      <a data-lang="en"    href="?lang=en"    class="{{ if eq .Lang "en" }}active{{ end }}">{{ .S.LangENLabel }}</a>
+      <a data-lang="zh-cn" href="?lang=zh-cn" class="{{ if eq .Lang "zh-cn" }}active{{ end }}">{{ T .Lang "lang.zhCn" }}</a>
+      <a data-lang="zh-tw" href="?lang=zh-tw" class="{{ if eq .Lang "zh-tw" }}active{{ end }}">{{ T .Lang "lang.zhTw" }}</a>
+      <a data-lang="en"    href="?lang=en"    class="{{ if eq .Lang "en" }}active{{ end }}">{{ T .Lang "lang.en" }}</a>
     </div>
 
-    <div class="footer">{{ printf .S.Footer .Brand.Name }} · {{ .NowYear }}</div>
+    <div class="footer">{{ T .Lang "common.footer" .Brand.Name }} · {{ .NowYear }}</div>
   </main>
 
   <script>
     (function() {
       'use strict';
       var S = {
-        invalidEmail:        {{ .S.InvalidEmail }},
-        invalidDomain:       {{ .S.InvalidDomain }},
-        accountDenied:       {{ .S.AccountDenied }},
-        rateLimited:         {{ .S.RateLimited }},
-        rateLimitedRetry:    {{ .S.RateLimitedRetry }},
-        rateLimitedPermanent: {{ .S.RateLimitedPermanent }},
-        invalidCode:         {{ .S.GuestCodeInvalid }},
-        netError:            {{ .S.ErrorGenericMsg }},
-        unitSeconds:         {{ .S.UnitSeconds }},
-        unitMinutes:         {{ .S.UnitMinutes }},
-        unitHours:           {{ .S.UnitHours }}
+        invalidEmail:        {{ T .Lang "errors.invalidEmail" }},
+        invalidDomain:       {{ T .Lang "errors.invalidDomain" }},
+        accountDenied:       {{ T .Lang "errors.accountDenied" }},
+        rateLimited:         {{ T .Lang "errors.rateLimited" }},
+        rateLimitedRetry:    {{ T .Lang "errors.rateLimitedRetry" }},
+        rateLimitedPermanent: {{ T .Lang "errors.rateLimitedPermanent" }},
+        invalidCode:         {{ T .Lang "login.guest.invalid" }},
+        netError:            {{ T .Lang "errors.generic" }},
+        unitSeconds:         {{ T .Lang "units.seconds" }},
+        unitMinutes:         {{ T .Lang "units.minutes" }},
+        unitHours:           {{ T .Lang "units.hours" }}
       };
 
       // 格式化重试等待时间: 几秒显示秒, 几分钟显示分钟, 几小时显示小时.

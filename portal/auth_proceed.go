@@ -103,7 +103,7 @@ func (a *App) handleAuthProceed(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
 	if err != nil {
-		a.renderError(w, r, lang, lang.s().SessionLostMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
 	}
 	if sess.Lang != "" {
@@ -112,22 +112,22 @@ func (a *App) handleAuthProceed(w http.ResponseWriter, r *http.Request) {
 	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
 		log.Printf("拒绝已封禁 MAC auth/proceed: mac=%s ip=%s", sess.MAC, sess.UserIP)
 		a.logLogin("(unknown)", ResultDenied, "", sess.MAC, sess.UserIP, "mac_denylist")
-		a.renderError(w, r, lang, lang.s().RateLimitedPermanent, http.StatusForbidden)
+		a.renderError(w, r, lang, T(lang, "errors.rateLimitedPermanent"), http.StatusForbidden)
 		return
 	}
 	token := r.URL.Query().Get("token")
 	if token == "" {
-		a.renderError(w, r, lang, lang.s().ExpiredMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.expired"), http.StatusBadRequest)
 		return
 	}
 	entry, ok := a.proceedStore.take(token)
 	if !ok {
-		a.renderError(w, r, lang, lang.s().ExpiredMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.expired"), http.StatusBadRequest)
 		return
 	}
 	if entry.SessionState != sess.State {
 		log.Printf("/auth/proceed state 不匹配 (token=%s)", token[:8])
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusBadRequest)
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
 	http.Redirect(w, r, entry.URL, http.StatusFound)

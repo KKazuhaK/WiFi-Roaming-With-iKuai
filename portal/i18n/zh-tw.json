@@ -1,0 +1,52 @@
+{
+  "_meta.locale": "zh-tw",
+
+  "login.title": "連接至 %s Roaming 網路",
+  "login.subtitle": "登入 %s 帳號即可接入網路",
+  "login.btn.sso": "使用 %s SSO 登入",
+  "login.btn.guest": "訪客碼登入",
+
+  "login.email.hint": "輸入你的帳號以繼續登入",
+  "login.email.label": "帳號",
+  "login.email.continue": "繼續",
+
+  "login.guest.hint": "請輸入管理員發給你的訪客碼",
+  "login.guest.label": "訪客碼",
+  "login.guest.verify": "驗證",
+  "login.guest.invalid": "訪客碼無效, 請核對後重試",
+
+  "errors.invalidEmail": "帳號格式不正確",
+  "errors.invalidDomain": "帳號不在允許範圍內, 請使用允許的帳號",
+  "errors.accountDenied": "此帳號被管理員標記為拒絕, 請聯絡管理員",
+  "errors.rateLimited": "操作過於頻繁, 請稍後再試",
+  "errors.rateLimitedRetry": "操作過於頻繁, 請在 %s 後再試",
+  "errors.rateLimitedPermanent": "由於多次觸發安全限制, 目前連線已被封禁. 請聯絡管理員解除.",
+  "errors.notAuthorized": "此帳號不在允許範圍內。請聯絡管理員。",
+  "errors.guestBlocked": "抱歉，外部訪客帳號暫不允許連接 WiFi。",
+  "errors.sessionLost": "工作階段已遺失，請重新從 WiFi 介面開啟登入頁。",
+  "errors.expired": "登入逾時，請重新嘗試。",
+  "errors.title": "連線失敗",
+  "errors.generic": "暫時無法完成驗證，請稍後重試。如問題持續請聯絡管理員。",
+  "errors.adminDisabled": "Admin 後台未設定 (ADMIN_EMAILS)。",
+  "errors.notAdminMember": "你的帳號不在 admin 清單, 請聯絡管理員。",
+
+  "common.footer": "© %s · WiFi",
+  "common.back": "返回",
+  "common.cancel": "取消",
+  "common.retry": "重試",
+  "common.or": "或",
+
+  "units.seconds": "秒",
+  "units.minutes": "分鐘",
+  "units.hours": "小時",
+
+  "lang.zhCn": "简体",
+  "lang.zhTw": "繁體",
+  "lang.en": "English",
+
+  "misc.connecting": "正在跳轉到登入...",
+  "misc.successTitle": "已連線",
+  "misc.successMsg": "你已成功接入 %s。本次工作階段有效期 8 小時。",
+  "misc.labelDevice": "裝置",
+  "misc.labelAccount": "帳號"
+}
