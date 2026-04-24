@@ -23,7 +23,6 @@ type Config struct {
 	// --- iKuai 自定义认证 ---
 	IKuaiAppKey         string // 敏感
 	IKuaiWebAuthURL     string
-	IKuaiCustomName     string
 	IKuaiReleaseType    string
 	IKuaiUserIDPrefix   string
 	IKuaiPolicyDefaults map[IKuaiAuthProfile]IKuaiPolicy
@@ -96,7 +95,6 @@ func loadConfig() Config {
 
 		IKuaiWebAuthURL: envOr("IKUAI_WEBAUTH_URL",
 			"https://portal.ikuai8-wifi.com/Action/webauth-up"),
-		IKuaiCustomName:     envOr("IKUAI_CUSTOM_NAME", "kazuha-hub"),
 		IKuaiReleaseType:    envOr("IKUAI_RELEASE_TYPE", "1"),
 		IKuaiUserIDPrefix:   envOr("IKUAI_USER_ID_PREFIX", ""),
 		IKuaiPolicyDefaults: defaultIKuaiPoliciesFromEnv(),

@@ -19,7 +19,7 @@ package main
 //   user_id     — iKuai 审计日志 "账号" 列. 格式由 IKUAI_USER_ID_PREFIX 控制:
 //                  前缀空 → user_id = UPN                 (例: you@example.org)
 //                  前缀非空 → user_id = {prefix}-{UPN}     (例: Kazuha_Hub-you@example.org)
-//   custom_name — IKUAI_CUSTOM_NAME env, 区分多个对接的 portal
+//   custom_name — 设为与 user_id 相同, 兼容部分 iKuai 固件在在线用户页优先显示 custom_name
 //   release_type = IKUAI_RELEASE_TYPE env, 默认 "1"
 //   timeout      — iKuai 认证超时时间, 单位分钟, 0 = 不过期
 //   comment      — iKuai 侧备注, 可用来标识 auth 来源, 不要放敏感信息
@@ -93,7 +93,9 @@ func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string, policy IKuaiPol
 	params := url.Values{}
 	params.Set("type", "20") // 20 = web 认证
 	params.Set("user_id", userID)
-	params.Set("custom_name", cfg.IKuaiCustomName)
+	// 部分 iKuai 固件在在线用户页显示 custom_name 而非 user_id,
+	// 这里保持二者一致, 避免页面只显示固定 portal 名称.
+	params.Set("custom_name", userID)
 	params.Set("user_ip", dev.IP)
 	params.Set("timestamp", timestamp)
 	params.Set("mac", dev.MAC)
