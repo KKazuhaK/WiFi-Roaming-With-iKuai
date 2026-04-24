@@ -13,6 +13,20 @@
 架构、设计决策、Phase 进度见 [`project-notes.md`](./project-notes.md)。
 这份 README 只讲 **怎么把 Portal 跑起来**。
 
+## 两种部署模式
+
+| | **A. 公网 VPS** (本 README) | **B. 站点内网 LAN 盒子** |
+|---|---|---|
+| 位置 | 公网 VPS + 域名直指 | 每个站点一台 LAN 盒子, iKuai DNS 劫持指向它 |
+| TLS | aaPanel 自动 ACME HTTP-01 | Caddy 自动 ACME DNS-01 (Cloudflare) |
+| 反代 | aaPanel 的 Nginx | Caddy |
+| 公网攻击面 | 有, 靠 App 层三道限流 + 可选 Nginx 白名单 | **无**, 域名外网根本不解析过去 |
+| admin 远程访问 | ✓ | ✗ (只能在 WiFi 网内) |
+| 每站点成本 | 一台 VPS 够所有站点 | 每站点一台小机器 |
+
+两种模式**同一份 Portal 代码**, 只是部署拓扑不同。公网模式看下面继续读, 内网模式见
+[`deploy/intranet/README.md`](./deploy/intranet/README.md)。
+
 ---
 
 ## 目录
@@ -40,8 +54,14 @@ WiFi-Roaming-With-iKuai/
 │   ├── .env.example           # 环境变量模板, 不含真值
 │   └── go.mod
 └── deploy/
-    ├── docker-compose.yml     # VPS 上跑的是这个
-    └── aapanel-nginx-snippet.conf  # 如需手工调 Nginx 的参考
+    ├── docker-compose.yml           # 模式 A: VPS + aaPanel Nginx
+    ├── aapanel-nginx-snippet.conf   # 模式 A: 可选的 Nginx IP 白名单片段
+    └── intranet/                    # 模式 B: 站点内网方案 (独立 README)
+        ├── README.md
+        ├── docker-compose.yml
+        ├── Dockerfile.caddy
+        ├── Caddyfile
+        └── .env.example
 ```
 
 ---
