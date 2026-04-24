@@ -589,7 +589,8 @@
         ' + ' + th.email_long + '/' + fmtDurationSecs(th.email_long_s) +
         ' | MAC ' + th.mac + '/' + fmtDurationSecs(th.mac_s) +
         ' | IP ' + th.ip + '/' + fmtDurationSecs(th.ip_s) +
-        ' ban ' + fmtDurationSecs(th.ip_ban_s);
+        ' · 首封 ' + fmtDurationSecs(th.ip_ban_s) +
+        ', 第 ' + th.ip_ban_escalate + ' 次永久';
 
       var now = body.now_unix;
       var rows = [];
@@ -597,13 +598,35 @@
       // IP 封禁 (最紧急, 排最前)
       (body.ip_bans || []).forEach(function(b) {
         var remain = b.expires_unix - now;
+        var label = b.permanent
+          ? 'IP 永久封禁 (第 ' + (b.ban_count || '?') + ' 次)'
+          : 'IP 封禁 (第 ' + (b.ban_count || '?') + ' 次)';
+        var statusTxt = b.permanent
+          ? '永久 · 需手动解除'
+          : '到期 ' + fmtTime(b.expires_unix) + ' (剩 ' + fmtDurationSecs(Math.max(0, remain)) + ')';
         rows.push({
-          type: 'IP 封禁',
+          type: label,
           typeClass: 'expired',
           key: b.ip,
-          status: '到期 ' + fmtTime(b.expires_unix) + ' (剩 ' + fmtDurationSecs(Math.max(0, remain)) + ')',
+          status: statusTxt,
           resetType: 'ip_ban',
           resetKey: b.ip
+        });
+      });
+
+      // 曾被封但当前没在封的 IP — 显示历史次数, 方便 admin 观察"累犯"
+      var activeIPs = {};
+      (body.ip_bans || []).forEach(function(b) { activeIPs[b.ip] = 1; });
+      Object.keys(body.ban_history || {}).forEach(function(ip) {
+        if (activeIPs[ip]) return;
+        var count = body.ban_history[ip];
+        rows.push({
+          type: '历史封禁',
+          typeClass: 'used',
+          key: ip,
+          status: '曾被封 ' + count + ' 次 (当前未封)',
+          resetType: 'ip_ban',
+          resetKey: ip
         });
       });
 

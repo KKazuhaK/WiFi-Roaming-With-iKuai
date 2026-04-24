@@ -58,8 +58,9 @@ type App struct {
 	// 规则 5: /auth/guest-code 按 MAC 失败计数, 成功清零. 防暴力猜码.
 	guestCodeFails *failCounter
 	// 规则 6: 单 IP 跨端点累计失败, 超限封禁. 防同 IP 广撒网.
-	ipFails *failCounter
-	ipBans  *ipBanList
+	ipFails    *failCounter
+	ipBans     *ipBanList
+	banHistory *banHistory // IP 被封过几次 (持久化), 用于升级到永久封禁
 
 	// 账号枚举防护: /auth/start 返回 opaque token, /auth/proceed 才 302.
 	proceedStore *proceedTokenStore
@@ -108,6 +109,11 @@ func main() {
 		log.Fatalf("模板加载失败: %v", err)
 	}
 
+	banHist, err := newBanHistory(cfg.RatelimitStatePath)
+	if err != nil {
+		log.Fatalf("ban history 初始化失败: %v", err)
+	}
+
 	app := &App{
 		cfg:            cfg,
 		oidc:           oidcClient,
@@ -119,6 +125,7 @@ func main() {
 		guestCodeFails: newFailCounter(cfg.GuestCodeMacWindow),
 		ipFails:        newFailCounter(cfg.IPFailsWindow),
 		ipBans:         newIPBanList(),
+		banHistory:     banHist,
 		proceedStore:   newProceedTokenStore(cfg.AuthProceedTTL),
 	}
 	go app.authEmailFails.gcLoop()
@@ -126,11 +133,14 @@ func main() {
 	go app.ipFails.gcLoop()
 	go app.ipBans.gcLoop()
 	go app.proceedStore.gcLoop()
-	log.Printf("限流: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s → ban %s",
+	log.Printf("限流: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s → 首次封禁 %s, 第 %d 次起永久",
 		cfg.AuthEmailFailsShort, cfg.AuthEmailWindowShort,
 		cfg.AuthEmailFailsLong, cfg.AuthEmailWindowLong,
 		cfg.GuestCodeMacFails, cfg.GuestCodeMacWindow,
-		cfg.IPFailsLimit, cfg.IPFailsWindow, cfg.IPBanDuration)
+		cfg.IPFailsLimit, cfg.IPFailsWindow, cfg.IPBanDuration, cfg.IPBanEscalateAt)
+	if cfg.RatelimitStatePath != "" {
+		log.Printf("ban history 持久化: 已启用, path=%s", cfg.RatelimitStatePath)
+	}
 
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -270,7 +280,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	// 规则 6 入口: IP 是否在封禁期.
 	ip := clientIP(r)
 	if a.ipBans.isBanned(ip) {
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
+		a.writeRateLimited(w, "ip_ban", ip)
 		return
 	}
 
@@ -302,7 +312,16 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		log.Printf("auth/start 邮箱限流: %s short=%d long=%d ip=%s",
 			email, shortN, longN, ip)
 		a.recordIPFailure(ip, "rate_limited_email")
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
+		// 哪个窗口先满选哪个的 retry_after
+		rule := "email_long"
+		if shortN >= a.cfg.AuthEmailFailsShort {
+			rule = "email_short"
+		}
+		// 如果 recordIPFailure 这次刚好触发了 IP 封禁, 优先告诉客户端那个 (更严重).
+		if a.ipBans.isBanned(ip) {
+			rule = "ip_ban"
+		}
+		a.writeRateLimited(w, rule, ip)
 		return
 	}
 
@@ -369,15 +388,62 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": "/auth/proceed?token=" + token})
 }
 
+// writeRateLimited 发 429 响应, 带足以让前端渲染"稍后再试"/"联系管理员"的信息:
+//   - rule: ip_ban / email_short / email_long / mac
+//   - retry_after_seconds: 建议重试等待秒数
+//   - permanent: true 时前端显示联系管理员, 不显示倒计时
+//   - unban_at_unix: 解封 unix 时间 (仅 ip_ban 用)
+func (a *App) writeRateLimited(w http.ResponseWriter, rule, ip string) {
+	body := map[string]any{
+		"error": "rate_limited",
+		"rule":  rule,
+	}
+	switch rule {
+	case "ip_ban":
+		if exp, ok := a.ipBans.expiryOf(ip); ok {
+			if IsPermanent(exp) {
+				body["permanent"] = true
+			} else {
+				body["retry_after_seconds"] = int(time.Until(exp).Seconds())
+				body["unban_at_unix"] = exp.Unix()
+			}
+		}
+	case "email_short":
+		body["retry_after_seconds"] = int(a.cfg.AuthEmailWindowShort.Seconds())
+	case "email_long":
+		body["retry_after_seconds"] = int(a.cfg.AuthEmailWindowLong.Seconds())
+	case "mac":
+		body["retry_after_seconds"] = int(a.cfg.GuestCodeMacWindow.Seconds())
+	}
+	writeJSON(w, http.StatusTooManyRequests, body)
+}
+
 // recordIPFailure 累加 IP 失败计数, 触发阈值就封禁.
+// 升级模型: 第 1 次到 (IPBanEscalateAt-1) 次封禁 → IPBanDuration 时长;
+// 第 IPBanEscalateAt 次及以上 → 永久封禁 (要 admin 手动解).
 // reason 只进日志, 便于排查.
 func (a *App) recordIPFailure(ip, reason string) {
 	a.ipFails.record(ip)
 	n := a.ipFails.countIn(ip, a.cfg.IPFailsWindow)
-	if n >= a.cfg.IPFailsLimit {
-		a.ipBans.ban(ip, a.cfg.IPBanDuration)
-		log.Printf("IP 失败超限, 封禁 %s: %s (累计=%d 窗口=%s 原因=%s)",
-			a.cfg.IPBanDuration, ip, n, a.cfg.IPFailsWindow, reason)
+	if n < a.cfg.IPFailsLimit {
+		return
+	}
+	// 已经在封了就别重复封 (避免每次请求都续期 + 计数乱升级).
+	if a.ipBans.isBanned(ip) {
+		return
+	}
+	banCount := a.banHistory.increment(ip)
+	var duration time.Duration
+	if banCount >= a.cfg.IPBanEscalateAt {
+		duration = time.Until(PermanentBanUntil) // 算出到"永久"标记点的时长
+		a.ipBans.ban(ip, duration)
+		log.Printf("IP 失败超限, **永久封禁** (第 %d 次): %s (累计=%d 窗口=%s 原因=%s)",
+			banCount, ip, n, a.cfg.IPFailsWindow, reason)
+	} else {
+		duration = a.cfg.IPBanDuration
+		a.ipBans.ban(ip, duration)
+		log.Printf("IP 失败超限, 封禁 %s (第 %d 次): %s (累计=%d 窗口=%s 原因=%s)",
+			duration, banCount, ip, n, a.cfg.IPFailsWindow, reason)
 	}
 }
 
@@ -526,7 +592,7 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := clientIP(r)
 	if a.ipBans.isBanned(ip) {
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
+		a.writeRateLimited(w, "ip_ban", ip)
 		return
 	}
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
@@ -540,7 +606,11 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	if a.guestCodeFails.countIn(sess.MAC, a.cfg.GuestCodeMacWindow) >= a.cfg.GuestCodeMacFails {
 		log.Printf("guest-code 按 MAC 限流: mac=%s ip=%s", sess.MAC, ip)
 		a.recordIPFailure(ip, "rate_limited_mac")
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
+		rule := "mac"
+		if a.ipBans.isBanned(ip) {
+			rule = "ip_ban"
+		}
+		a.writeRateLimited(w, rule, ip)
 		return
 	}
 	code := strings.TrimSpace(r.FormValue("code"))
@@ -789,23 +859,45 @@ func (a *App) handleRateLimitStatus(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.requireAdmin(w, r, true); !ok {
 		return
 	}
+	// 把 ban history 的计数合并到 ip_bans 快照里, 让前端直接在一行里显示 "第 N 次".
+	// 对当前封禁中的 IP, 也顺手标出是不是"永久".
+	bans := a.ipBans.snapshot()
+	banCounts := a.banHistory.snapshot()
+	type enrichedBan struct {
+		IP          string `json:"ip"`
+		ExpiresAt   int64  `json:"expires_unix"`
+		BanCount    int    `json:"ban_count"`
+		Permanent   bool   `json:"permanent"`
+	}
+	enriched := make([]enrichedBan, 0, len(bans))
+	for _, b := range bans {
+		t := time.Unix(b.ExpiresAt, 0)
+		enriched = append(enriched, enrichedBan{
+			IP:        b.IP,
+			ExpiresAt: b.ExpiresAt,
+			BanCount:  banCounts[b.IP],
+			Permanent: IsPermanent(t),
+		})
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":              true,
-		"ip_bans":         a.ipBans.snapshot(),
+		"ip_bans":         enriched,
+		"ban_history":     banCounts, // 包含所有曾经被封过的 IP (包括当前没在封的)
 		"email_fails":     a.authEmailFails.snapshot(),
 		"guest_mac_fails": a.guestCodeFails.snapshot(),
 		"ip_fails":        a.ipFails.snapshot(),
 		"now_unix":        time.Now().Unix(),
 		"thresholds": map[string]any{
-			"email_short":    a.cfg.AuthEmailFailsShort,
-			"email_short_s":  int(a.cfg.AuthEmailWindowShort.Seconds()),
-			"email_long":     a.cfg.AuthEmailFailsLong,
-			"email_long_s":   int(a.cfg.AuthEmailWindowLong.Seconds()),
-			"mac":            a.cfg.GuestCodeMacFails,
-			"mac_s":          int(a.cfg.GuestCodeMacWindow.Seconds()),
-			"ip":             a.cfg.IPFailsLimit,
-			"ip_s":           int(a.cfg.IPFailsWindow.Seconds()),
-			"ip_ban_s":       int(a.cfg.IPBanDuration.Seconds()),
+			"email_short":      a.cfg.AuthEmailFailsShort,
+			"email_short_s":    int(a.cfg.AuthEmailWindowShort.Seconds()),
+			"email_long":       a.cfg.AuthEmailFailsLong,
+			"email_long_s":     int(a.cfg.AuthEmailWindowLong.Seconds()),
+			"mac":              a.cfg.GuestCodeMacFails,
+			"mac_s":            int(a.cfg.GuestCodeMacWindow.Seconds()),
+			"ip":               a.cfg.IPFailsLimit,
+			"ip_s":             int(a.cfg.IPFailsWindow.Seconds()),
+			"ip_ban_s":         int(a.cfg.IPBanDuration.Seconds()),
+			"ip_ban_escalate":  a.cfg.IPBanEscalateAt,
 		},
 	})
 }
@@ -831,7 +923,8 @@ func (a *App) handleRateLimitReset(w http.ResponseWriter, r *http.Request) {
 	switch t {
 	case "ip_ban":
 		a.ipBans.unban(key)
-		a.ipFails.reset(key) // 同时清 IP 累计计数, 避免刚解封又立刻触发
+		a.ipFails.reset(key)       // 同时清 IP 累计计数, 避免刚解封又立刻触发
+		a.banHistory.reset(key)    // 清除历史封禁次数, 不然下次失败直接进 "永久" 分支
 	case "ip_fails":
 		a.ipFails.reset(key)
 	case "email":

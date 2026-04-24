@@ -75,12 +75,19 @@ type Config struct {
 	// 规则 5: /auth/guest-code 按 MAC 失败计数, 成功清零.
 	GuestCodeMacFails  int           // 默认 10
 	GuestCodeMacWindow time.Duration // 默认 1h
-	// 规则 6: 单 IP 跨端点累计失败, 超限封禁.
-	IPFailsLimit  int           // 默认 30
-	IPFailsWindow time.Duration // 默认 1h
-	IPBanDuration time.Duration // 默认 1h
+	// 规则 6: 单 IP 跨端点累计失败, 超限封禁. 带升级模型:
+	//   第 1 次触发: 封 IPBanDuration (默认 3 分钟, 温和提示用户稍后再试)
+	//   第 IPBanEscalateAt 次及以上 (默认 2): 永久封禁, 需要 admin 手动解除
+	// IP 被封过多少次由 banHistory 跟踪, 持久化到 RatelimitStatePath (可选).
+	IPFailsLimit     int           // 默认 30
+	IPFailsWindow    time.Duration // 默认 1h
+	IPBanDuration    time.Duration // 首次封禁时长, 默认 3m
+	IPBanEscalateAt  int           // 第 N 次触发永久封禁, 默认 2
 	// 账号枚举防护: /auth/start 返回 opaque token, 浏览器访问 /auth/proceed 再内跳.
 	AuthProceedTTL time.Duration // token 存活 (default 5m)
+	// 限流历史 (IP 封禁计数) 持久化文件路径. 空 = 纯内存, 重启清零.
+	// 推荐设成 /data/ratelimit-state.json, 跟 GUEST_CODES_PATH 一起挂进 volume.
+	RatelimitStatePath string
 }
 
 func loadConfig() Config {
@@ -124,8 +131,10 @@ func loadConfig() Config {
 		GuestCodeMacWindow:   envOrDuration("GUEST_CODE_MAC_WINDOW", time.Hour),
 		IPFailsLimit:         envOrInt("IP_FAILS_LIMIT", 30),
 		IPFailsWindow:        envOrDuration("IP_FAILS_WINDOW", time.Hour),
-		IPBanDuration:        envOrDuration("IP_BAN_DURATION", time.Hour),
+		IPBanDuration:        envOrDuration("IP_BAN_DURATION", 3*time.Minute),
+		IPBanEscalateAt:      envOrInt("IP_BAN_ESCALATE_AT", 2),
 		AuthProceedTTL:       envOrDuration("AUTH_PROCEED_TTL", 5*time.Minute),
+		RatelimitStatePath:   strings.TrimSpace(envOr("RATELIMIT_STATE_PATH", "")),
 	}
 
 	secretHex := mustEnv("SESSION_SECRET")
