@@ -9,6 +9,8 @@
 
 | 项 | 值 |
 |---|---|
+| 代码仓库 | https://github.com/KKazuhaK/WiFi-Roaming-With-iKuai (Private) |
+| CI | GitHub Actions (`.github/workflows/build.yml`: go vet + build + Docker 镜像构建) |
 | 基础域名 | `kazuhahub.com` |
 | Portal 域名 | `wifi.login.kazuhahub.com` |
 | Portal 语言 | Go |
@@ -58,14 +60,16 @@
 
 **Phase 1 完成 ✓**
 
-### Phase 2 · VPS 基础环境（并行，你在做）
-- [ ] 2A Cloudflare 加 A 记录 `wifi.login.kazuhahub.com` → VPS IP（灰云）
-- [ ] 2B aaPanel 添加站点
-- [ ] 2C aaPanel 配反代到 `http://127.0.0.1:28080`
-- [ ] 2D aaPanel 申请 Let's Encrypt + 启用强制 HTTPS
-- [ ] 2E 验证 `curl -I https://wifi.login.kazuhahub.com` 返回 502
+### Phase 2 · VPS 基础环境
+- [x] 2A Cloudflare 加 A 记录 `wifi.login.kazuhahub.com` → VPS IP（灰云）
+- [x] 2B aaPanel 添加站点
+- [x] 2C aaPanel 配反代到 `http://127.0.0.1:28080`（Sent Domain=`$host`, Cache=off）
+- [x] 2D aaPanel 申请 Let's Encrypt 通配符证书 `*.login.kazuhahub.com`（R12）+ HSTS
+- [x] 2E 验证 `curl -I https://wifi.login.kazuhahub.com` 返回 `HTTP/2 502` ✓
 
-### Phase 3 · Portal 代码（并行，已交付）
+**Phase 2 完成 ✓**
+
+### Phase 3 · Portal 代码 + 部署
 - [x] Go 源码：main / config / session / oidc / ikuai / i18n
 - [x] 中英双语模板 login.html / error.html
 - [x] Dockerfile（多阶段，Alpine 运行时）
@@ -73,8 +77,31 @@
 - [x] .env.example（所有变量含说明）
 - [x] README.md 部署指南
 - [x] 静态代码审查通过（无编译错误，无关键安全/逻辑 bug）
-- [ ] Phase 2 完工后：`docker compose up -d --build` 实际编译 + 起服务
-- [ ] Entra OIDC 端到端自测（假 IKUAI_APPKEY 先跑通 Entra 这段）
+- [x] VPS 部署：`/opt/wifi-portal`, `docker compose up -d --build` 成功
+- [x] 容器 healthy, 绑 127.0.0.1:28080
+- [x] curl /healthz → 200 ok
+- [x] curl /portal 无参数 → 400 session lost
+- [x] curl /portal?user_ip=&mac= → 200 + Set-Cookie (HttpOnly/Secure/SameSite=Lax/Max-Age=900)
+- [x] Entra OIDC 浏览器端到端 ✓
+      - 登录页正常渲染（中英双语切换、K 头像、设备 IP/MAC 显示）
+      - Entra 登录 → 回调 → `放行成员: upn=me@kazuha.org` → 302 到 iKuai 云 portal
+      - 浏览器在 iKuai 云 portal 那侧报 `ERR_SSL_VERSION_OR_CIPHER_MISMATCH`（iKuai 的老 TLS），
+        不是我们的 bug；真实场景 iKuai 路由器会在 LAN 内拦截不落到公网
+
+**Phase 3 完成 ✓**
+
+### Phase 3 后小改动
+- 把 iKuai 放行接口 URL 从硬编码常量挪到 `IKUAI_WEBAUTH_URL` 环境变量，
+  默认按官方文档 `https://portal.ikuai8-wifi.com/Action/webauth-up`。
+  Phase 4 真实部署时如果固件要 http 或路由器 LAN IP，改 .env 即可不用重 build。
+- 官方文档里示例还有 `user_id` / `custom_name` / `release_type=1` 这几个可选参数，
+  目前不发，等 Phase 4 真实场景验证需要再加。
+
+### Phase 3 已知小坑（供备案）
+- 首次 build 失败: Dockerfile `COPY go.mod ./ + go mod download` 在无 go.sum 时不够，
+  在 VPS 一次性 `docker run --rm -v ...:/src -w /src golang:1.22-alpine go mod tidy`
+  生成 portal/go.sum 之后 build 成功。
+- **待办**: 把 VPS 上生成的 `portal/go.sum` 拉回来 commit 进仓库，保证 CI / 后续机器 build 可复现。
 
 ---
 

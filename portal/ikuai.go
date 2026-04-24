@@ -10,11 +10,15 @@ package main
 //
 // 文档里 token 公式 (MD5):
 //   md5("user_ip={ip}&timestamp={ts}&mac={mac}&upload=0&download=0&key={appkey}")
-// 放行 URL:
+// 放行 URL (按官方文档):
 //   https://portal.ikuai8-wifi.com/Action/webauth-up
 //     ?type=20&user_ip={ip}&timestamp={ts}&mac={mac}&upload=0&download=0&token={hex}
 //
 // 注意:
+//   - 官方文档明确用 https. 从 VPS 外部 curl HTTPS 遇到 TLS handshake fail,
+//     是因为 CF 边缘对外不开老 TLS cipher, 但真实场景设备在 iKuai WiFi 网里,
+//     iKuai 路由器会在 LAN 层拦截这个请求, 不会真出公网. 所以默认保持 https 跟文档一致.
+//   - 如果 Phase 4 发现某种固件只吃 http, 改 IKUAI_WEBAUTH_URL env 即可, 不用重 build.
 //   - iKuai 不同固件版本 query 字段名不完全一样 (user_ip vs ip, user_mac vs mac 等)
 //     所以 IN 这一侧用 firstNonEmpty 兼容多种
 //   - 这里用 MD5 不是做安全哈希, 是 iKuai 指定的协议本身要求
@@ -29,9 +33,6 @@ import (
 	"strings"
 	"time"
 )
-
-// iKuai 云上放行接口的固定地址。写死, 不走环境变量。
-const ikuaiWebAuthEndpoint = "https://portal.ikuai8-wifi.com/Action/webauth-up"
 
 // DeviceInfo 是我们从 iKuai 那边拿到的上网设备信息。
 type DeviceInfo struct {
@@ -78,7 +79,7 @@ func buildWebAuthURL(cfg Config, dev DeviceInfo) string {
 	params.Set("download", "0") // 下行限速, 0 = 不限
 	params.Set("token", token)
 
-	return ikuaiWebAuthEndpoint + "?" + params.Encode()
+	return cfg.IKuaiWebAuthURL + "?" + params.Encode()
 }
 
 // --- helpers ---
