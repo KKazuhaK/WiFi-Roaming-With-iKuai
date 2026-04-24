@@ -39,6 +39,7 @@ type Strings struct {
 	InvalidEmail     string
 	InvalidDomain    string
 	AccountDenied    string // Duo / admin 拒绝账号
+	RateLimited      string // 触发限流, 防 MFA 轰炸
 	NotAuthorizedMsg string
 	GuestBlockedMsg  string
 	SessionLostMsg   string
@@ -84,6 +85,7 @@ var stringsZHCN = Strings{
 	InvalidEmail:     "邮箱格式不正确",
 	InvalidDomain:    "邮箱域名不在允许列表, 请使用组织邮箱",
 	AccountDenied:    "此账号被管理员标记为拒绝, 请联系管理员",
+	RateLimited:      "操作过于频繁, 请稍后再试",
 	NotAuthorizedMsg: "此账号不在允许范围内。请联系管理员。",
 	GuestBlockedMsg:  "抱歉，外部访客账号暂不允许连接 WiFi。",
 	SessionLostMsg:   "会话已丢失，请重新从 WiFi 界面打开登录页。",
@@ -126,6 +128,7 @@ var stringsZHTW = Strings{
 	InvalidEmail:     "郵箱格式不正確",
 	InvalidDomain:    "郵箱域名不在允許列表, 請使用組織郵箱",
 	AccountDenied:    "此帳號被管理員標記為拒絕, 請聯絡管理員",
+	RateLimited:      "操作過於頻繁, 請稍後再試",
 	NotAuthorizedMsg: "此帳號不在允許範圍內。請聯絡管理員。",
 	GuestBlockedMsg:  "抱歉，外部訪客帳號暫不允許連接 WiFi。",
 	SessionLostMsg:   "工作階段已遺失，請重新從 WiFi 介面開啟登入頁。",
@@ -168,6 +171,7 @@ var stringsEN = Strings{
 	InvalidEmail:     "Invalid email format",
 	InvalidDomain:    "Email domain not allowed. Use your organization email.",
 	AccountDenied:    "This account is denied by admin. Please contact your administrator.",
+	RateLimited:      "Too many attempts. Please wait a bit and try again.",
 	NotAuthorizedMsg: "This account is not authorized. Please contact your admin.",
 	GuestBlockedMsg:  "Sorry, external guest accounts are not allowed to connect to WiFi.",
 	SessionLostMsg:   "Session lost. Please reopen the login page from your WiFi dialog.",

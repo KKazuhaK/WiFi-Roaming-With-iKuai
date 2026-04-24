@@ -246,6 +246,7 @@
         invalidEmail:  {{ .S.InvalidEmail }},
         invalidDomain: {{ .S.InvalidDomain }},
         accountDenied: {{ .S.AccountDenied }},
+        rateLimited:   {{ .S.RateLimited }},
         invalidCode:   {{ .S.GuestCodeInvalid }},
         netError:      {{ .S.ErrorGenericMsg }}
       };
@@ -307,6 +308,7 @@
             if (code === 'invalid_email') errEl.textContent = S.invalidEmail;
             else if (code === 'invalid_domain') errEl.textContent = S.invalidDomain;
             else if (code === 'account_denied') errEl.textContent = S.accountDenied;
+            else if (code === 'rate_limited') errEl.textContent = S.rateLimited;
             else errEl.textContent = S.netError;
             errEl.style.display = 'block';
             $('btn-email-continue').disabled = false;
