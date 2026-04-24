@@ -139,6 +139,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.healthz)
+	mux.HandleFunc("/robots.txt", app.robotsTxt)
 	mux.HandleFunc("/portal", app.handlePortal)
 	mux.HandleFunc("/auth/start", app.handleAuthStart)
 	mux.HandleFunc("/auth/proceed", app.handleAuthProceed)
@@ -206,6 +207,14 @@ func (a *App) healthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok\n"))
+}
+
+// robotsTxt: 挡正经爬虫. 恶意爬虫不理 robots, 那一层交给限流.
+// 模板里也打了 <meta name="robots" content="noindex, nofollow">, 这里是第二道.
+func (a *App) robotsTxt(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
 }
 
 // --- WiFi 登录 ---
