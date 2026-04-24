@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -124,11 +125,11 @@ func (c *OIDCClient) Exchange(ctx context.Context, cfg Config, code, expectedNon
 		return nil, fmt.Errorf("tenant 不匹配: 期待 %s, 实际 %s", cfg.TenantID, claims.TID)
 	}
 	if _, overage := claims.ClaimNames["groups"]; overage && len(claims.Groups) == 0 {
-		// 用户组太多触发 overage. admin 准入如果靠 group, 这种用户会被拒.
-		// 如果 admin 是靠 UPN 白名单, 那跟 groups 无关, 不影响.
-		// 打印一行日志方便排查 "明明在 admin 组里为什么拒我".
-		// (没用 log.Printf 是为了不把 oidc.go 跟 log 耦合 — 留给上层)
-		_ = overage
+		// 用户组太多触发 overage, Entra 只发 _claim_names 指向 Graph API,
+		// 没把真实的组 ID 放 id_token 里. 我们不调 Graph, 所以这种用户靠组
+		// 准入 admin 会失败; 靠 UPN 白名单的 admin 不受影响.
+		// 打一行日志, 排查 "明明在 admin 组里为什么拒我" 时有迹可循.
+		log.Printf("OIDC: user %q groups claim overage, admin-via-group 不可用; 改用 ADMIN_EMAILS 或接 Graph API", claims.UPN)
 	}
 	upn := claims.UPN
 	if upn == "" {

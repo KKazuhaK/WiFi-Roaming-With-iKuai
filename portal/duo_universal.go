@@ -115,7 +115,10 @@ func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string,
 		return "", fmt.Errorf("duo token: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("duo token read body: %w", err)
+	}
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("duo token http %d: %s", resp.StatusCode, truncate(string(body), 200))
 	}
