@@ -204,6 +204,25 @@ func (s *GuestCodeStore) Delete(code string) bool {
 	return true
 }
 
+// Edit 修改一个码的可变元数据 (过期时间 / MaxUses / 备注). 不允许改 Code
+// 本身 (那等于删了重建). 不存在 → 返回 false. 已经使用过的码也允许编辑 —
+// 改 ExpiresAt 影响后续放行的 iKuai timeout, 已经在线的设备的 timeout 不
+// 受影响 (那是 iKuai 侧的 token, portal 改不了).
+func (s *GuestCodeStore) Edit(code string, expiresAt time.Time, maxUses int, note string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := strings.ToLower(strings.TrimSpace(code))
+	c, ok := s.codes[k]
+	if !ok {
+		return false
+	}
+	c.ExpiresAt = expiresAt
+	c.MaxUses = maxUses
+	c.Note = note
+	s.saveLocked()
+	return true
+}
+
 // DeleteExpired 删所有过期码, 返回删除数量.
 func (s *GuestCodeStore) DeleteExpired() int {
 	s.mu.Lock()
