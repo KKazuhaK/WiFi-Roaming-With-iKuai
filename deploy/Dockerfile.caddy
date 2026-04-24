@@ -11,3 +11,9 @@ RUN xcaddy build \
 
 FROM caddy:2
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+
+# 把 Caddyfile 烤进镜像, 这样 "预构建镜像 + tarball 上传" 的部署路径
+# (Synology / iKuai UI) 不用额外挂 bind mount — 镜像自带配置.
+# 源码部署路径 (VPS / LAN 盒子) 也不受影响: compose 里的 bind mount 会把本地的
+# Caddyfile 盖在镜像里那份之上, 内容相同所以行为一致.
+COPY Caddyfile /etc/caddy/Caddyfile

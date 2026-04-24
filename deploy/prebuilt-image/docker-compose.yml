@@ -1,0 +1,65 @@
+# docker-compose.yml (预构建镜像版本)
+#
+# 跟 deploy/docker-compose.yml 的区别:
+#   - 没有 build: 指令, 只有 image: — 假设镜像已经 docker load 进来了
+#   - 没有 Caddyfile 的 bind mount — Caddyfile 已经烤进 Caddy 镜像
+#   - 没有 portal 源码的任何引用 — 适合 UI-only 的 Synology / iKuai 部署
+#
+# 使用前提: 先按同目录 README 把 tarball 上传 + docker load 两个镜像:
+#   kazuha/wifi-portal:latest
+#   kazuha/caddy-cloudflare:latest
+#
+# 放在 /volume1/docker/wifi-portal/ (Synology) 或 /mnt/xxx/wifi-portal/ (iKuai),
+# 同一目录里放 .env 文件, 然后 Container Manager / iKuai UI 创建专案指向这里.
+
+services:
+  portal:
+    image: kazuha/wifi-portal:latest
+    container_name: wifi-portal
+    restart: unless-stopped
+    env_file:
+      - .env
+    # 访客码持久化. 想跨重建保住数据就保留这行.
+    # 数据落在项目目录的 ./data/guest-codes.json, 直接 File Station 能看 / 备份.
+    volumes:
+      - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:28080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  caddy:
+    image: kazuha/caddy-cloudflare:latest
+    container_name: wifi-portal-caddy
+    restart: unless-stopped
+    ports:
+      # 默认 28081, 想改走 443 就改这里 + .env 里 PORTAL_HTTPS_PORT + PUBLIC_URL.
+      # 注意 Synology DSM 自己占着 443, 别改.
+      - "${PORTAL_HTTPS_PORT:-28081}:${PORTAL_HTTPS_PORT:-28081}"
+    environment:
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
+      - PORTAL_HOSTNAME=${PORTAL_HOSTNAME:-wifi.login.kazuhahub.com}
+      - PORTAL_HTTPS_PORT=${PORTAL_HTTPS_PORT:-28081}
+      - ACME_EMAIL=${ACME_EMAIL:-}
+    volumes:
+      # 证书 + Caddy 运行状态持久化, 跨重启不重新申请
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - portal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy-data:
+  caddy-config:

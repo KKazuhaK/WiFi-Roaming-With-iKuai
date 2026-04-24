@@ -14,23 +14,24 @@
 
 ## 三种部署模式
 
-| | **A — 外部反代** | **B — LAN 盒子** | **C — iKuai 内置 Docker** |
+| | **A — 外部反代** | **B — LAN 盒子** | **C — 预构建镜像 UI** |
 |---|---|---|---|
-| 适合场景 | 公网 VPS, aaPanel/Nginx 管 TLS | 站点内网 LAN 盒子 | iKuai 自己 (省一台硬件) |
-| 硬件 | 一台 VPS 服务所有站点 | 每站点一台 Pi / NAS / mini-PC | 每站点 iKuai 自己 |
-| TLS | 外部反代 (HTTP-01 / 手动 ACME) | Caddy DNS-01 (Cloudflare) | Caddy DNS-01 |
-| 部署方式 | `docker compose up` | `docker compose up` | iKuai UI 点点点 + tarball |
+| 适合场景 | 公网 VPS, aaPanel/Nginx 管 TLS | 站点内网 Pi / mini-PC | Synology NAS / iKuai UI (Docker 但没 CLI) |
+| 源码 on 设备 | ✓ (git clone) | ✓ | **×** 只上传镜像 tarball |
+| 主要 UI | CLI | CLI | 网页点击 |
+| TLS | 外部反代 | Caddy DNS-01 | Caddy DNS-01 |
 | 公网攻击面 | 有, 靠 App 层三道限流 | **无**, iKuai DNS 劫持 | **无** |
 | admin 远程访问 | ✓ | ✗ (要在 WiFi 网里) | ✗ |
-| 运维成本 | 低 | 低 | 中偏高 |
 
 **A/B 共用同一份** [`deploy/docker-compose.yml`](./deploy/docker-compose.yml),
 靠 `.env` 里的 `COMPOSE_PROFILES` 切换:
 - 留空 → 模式 A, 只跑 Portal, 外部反代处理 TLS
 - `COMPOSE_PROFILES=caddy` → 模式 B, 额外起 Caddy 做 DNS-01 TLS
 
-**C 独立走 iKuai UI 手动配容器**, 步骤看 [`deploy/ikuai-docker/README.md`](./deploy/ikuai-docker/README.md)。
-三种可以混合部署, `SESSION_SECRET` 共享 → admin 一次登录全通。
+**C 用 [`deploy/prebuilt-image/`](./deploy/prebuilt-image/) 下独立的 compose**,
+跳过 build 直接拉已加载的镜像。步骤看 [`deploy/prebuilt-image/README.md`](./deploy/prebuilt-image/README.md)。
+
+三种可以混合部署, `SESSION_SECRET` 共享 → admin 一次登录所有 /admin 都认。
 
 ---
 
@@ -59,10 +60,11 @@ WiFi-Roaming-With-iKuai/
 │   └── go.mod
 └── deploy/
     ├── docker-compose.yml           # 模式 A/B 共用
-    ├── Caddyfile                    # 只有模式 B 会读
+    ├── Caddyfile                    # 会烤进 Caddy 镜像, 源码部署也作 bind-mount
     ├── Dockerfile.caddy             # 模式 B / C 要 build
     ├── aapanel-nginx-snippet.conf   # 只有模式 A 要参考
-    └── ikuai-docker/                # 模式 C: 部署到 iKuai 自带 Docker
+    └── prebuilt-image/              # 模式 C: tarball 导入 + UI 部署
+        ├── docker-compose.yml       # 只有 image:, 不 build
         └── README.md
 ```
 
