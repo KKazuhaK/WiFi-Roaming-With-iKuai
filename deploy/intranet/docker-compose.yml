@@ -28,17 +28,17 @@ services:
     container_name: wifi-portal-caddy
     restart: unless-stopped
 
-    # 443 对 LAN 开放, 80 给 ACME HTTP-01 fallback + HTTP→HTTPS redirect.
-    # 想进一步收紧可以只绑 LAN 网口 IP (比如 "192.168.1.5:443:443"),
-    # 不过一般家用 LAN 无所谓.
+    # HTTPS 端口默认 28081 (.env 里 PORTAL_HTTPS_PORT 可改). 不开 80 — DNS-01
+    # 不需要 HTTP challenge 端口. 想进一步收紧可以只绑 LAN 网口 IP
+    # (比如 "192.168.1.5:28081:28081"), 不过一般家用 LAN 无所谓.
     ports:
-      - "80:80"
-      - "443:443"
+      - "${PORTAL_HTTPS_PORT:-28081}:${PORTAL_HTTPS_PORT:-28081}"
 
     environment:
-      # Caddy 读这俩来做 DNS-01 和账户注册
+      # Caddy 读这几个来做 DNS-01 和绑端口
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
       - PORTAL_HOSTNAME=${PORTAL_HOSTNAME:-wifi.login.kazuhahub.com}
+      - PORTAL_HTTPS_PORT=${PORTAL_HTTPS_PORT:-28081}
       - ACME_EMAIL=${ACME_EMAIL}
 
     volumes:

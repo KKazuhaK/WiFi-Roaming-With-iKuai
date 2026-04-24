@@ -10,9 +10,10 @@
     email {$ACME_EMAIL}
 }
 
-{$PORTAL_HOSTNAME} {
+{$PORTAL_HOSTNAME}:{$PORTAL_HTTPS_PORT} {
     # DNS-01 via Cloudflare. CLOUDFLARE_API_TOKEN 只需要 Zone:DNS:Edit 权限
     # + Zone:Zone:Read, 限定到 kazuhahub.com 这一个 zone.
+    # DNS-01 不需要 80/443 公网可达, 所以我们能跑在任意高端口.
     tls {
         dns cloudflare {env.CLOUDFLARE_API_TOKEN}
     }
