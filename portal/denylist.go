@@ -72,7 +72,7 @@ func (s *DenylistStore) loadFromDisk() error {
 		item.MAC = norm
 		s.macs[norm] = item
 	}
-	log.Printf("MAC denylist: loaded %d entries from %s", s.persistPath, len(s.macs))
+	log.Printf("MAC denylist: loaded %d entries from %s", len(s.macs), s.persistPath)
 	return nil
 }
 

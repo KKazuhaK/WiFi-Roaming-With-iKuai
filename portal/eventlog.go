@@ -124,7 +124,7 @@ func (e *EventLog) loadFromDisk() error {
 	sort.SliceStable(e.events, func(i, j int) bool {
 		return e.events[i].Time.Before(e.events[j].Time)
 	})
-	log.Printf("event log: loaded %d entries from %s (skipped %d malformed)", e.persistPath, loaded, broken)
+	log.Printf("event log: loaded %d entries from %s (skipped %d malformed)", loaded, e.persistPath, broken)
 	return nil
 }
 

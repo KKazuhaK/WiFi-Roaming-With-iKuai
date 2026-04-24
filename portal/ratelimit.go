@@ -277,7 +277,7 @@ func newBanHistory(persistPath string) (*banHistory, error) {
 	if err := json.Unmarshal(data, &b.counts); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", persistPath, err)
 	}
-	log.Printf("ban history: loaded %d IP cooldown entries from %s", persistPath, len(b.counts))
+	log.Printf("ban history: loaded %d IP cooldown entries from %s", len(b.counts), persistPath)
 	return b, nil
 }
 
