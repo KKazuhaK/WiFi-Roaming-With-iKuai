@@ -209,6 +209,7 @@ func main() {
 	mux.HandleFunc("/admin/codes/delete", app.handleCodeDelete)
 	mux.HandleFunc("/admin/codes/delete-bulk", app.handleCodeDeleteBulk)
 	mux.HandleFunc("/admin/codes/delete-expired", app.handleCodeDeleteExpired)
+	mux.HandleFunc("/admin/codes/edit", app.handleCodeEdit)
 	mux.HandleFunc("/admin/ratelimit/status", app.handleRateLimitStatus)
 	mux.HandleFunc("/admin/ratelimit/reset", app.handleRateLimitReset)
 	mux.HandleFunc("/admin/ratelimit/reset-all", app.handleRateLimitResetAll)
@@ -1087,6 +1088,41 @@ func (a *App) handleCodeDeleteBulk(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCodeEdit: POST /admin/codes/edit
+// form: code=<existing>, expires_at | duration_min, max_uses, note
+// 改一个已存在码的 ExpiresAt / MaxUses / Note. Code 本身不能改 (要改就删了重建).
+// 已经使用过的码也允许编辑, 但已经在线的设备的 iKuai timeout 改不了 — 仅影响后续放行.
+func (a *App) handleCodeEdit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	admin, ok := a.requireAdmin(w, r, true)
+	if !ok {
+		return
+	}
+	code := strings.TrimSpace(r.FormValue("code"))
+	if code == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_code"})
+		return
+	}
+	// 复用 parseExpiry: 它读 expires_at 或 duration_min, 写到一个临时 GuestCode 上.
+	probe := &GuestCode{CreatedAt: time.Now()}
+	if err := parseExpiry(r, probe); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	maxUses := parseMaxUses(r.FormValue("max_uses"))
+	note := strings.TrimSpace(r.FormValue("note"))
+	if !a.guestCodes.Edit(code, probe.ExpiresAt, maxUses, note) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+		return
+	}
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess,
+		"edit code=..."+tailN(code, 4))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // handleRateLimitStatus GET /admin/ratelimit/status
 // 返回当前限流状态快照 (被封 IP + 邮箱 / MAC 失败计数), 供 admin UI 渲染.
 func (a *App) handleRateLimitStatus(w http.ResponseWriter, r *http.Request) {
@@ -1625,17 +1661,18 @@ type DashboardStats struct {
 }
 
 type adminCodeRow struct {
-	Code        string
-	CreatedAt   string
-	ExpiresAt   string
-	Duration    string
-	Status      string
-	UseCount    int
-	MaxUses     int // 0 = 不限
-	LastUsedAt  string
-	LastUsedMAC string
-	LastUsedIP  string
-	Note        string
+	Code           string
+	CreatedAt      string
+	ExpiresAt      string // 显示用 "2006-01-02 15:04"
+	ExpiresAtInput string // datetime-local input 用 "2006-01-02T15:04"
+	Duration       string
+	Status         string
+	UseCount       int
+	MaxUses        int // 0 = 不限
+	LastUsedAt     string
+	LastUsedMAC    string
+	LastUsedIP     string
+	Note           string
 }
 
 type adminDeniedMACRow struct {
@@ -1651,12 +1688,13 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 	rows := make([]adminCodeRow, 0, len(raw))
 	for _, c := range raw {
 		row := adminCodeRow{
-			Code:      c.Code,
-			CreatedAt: c.CreatedAt.Local().Format("2006-01-02 15:04"),
-			ExpiresAt: c.ExpiresAt.Local().Format("2006-01-02 15:04"),
-			Status:    c.Status(),
-			UseCount:  c.UseCount(),
-			MaxUses:   c.MaxUses,
+			Code:           c.Code,
+			CreatedAt:      c.CreatedAt.Local().Format("2006-01-02 15:04"),
+			ExpiresAt:      c.ExpiresAt.Local().Format("2006-01-02 15:04"),
+			ExpiresAtInput: c.ExpiresAt.Local().Format("2006-01-02T15:04"),
+			Status:         c.Status(),
+			UseCount:       c.UseCount(),
+			MaxUses:        c.MaxUses,
 			Note:      c.Note,
 		}
 		d := c.ExpiresAt.Sub(c.CreatedAt)
