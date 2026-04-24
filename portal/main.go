@@ -176,6 +176,15 @@ func (a *App) handlePortal(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
 	dev, ok := extractDeviceInfo(r, a.cfg)
 	if !ok {
+		// 语言切换 / 刷新等二次访问 query 里没 iKuai 字段, 回退用已有 cookie.
+		// 只要 cookie 有效且存了 IP/MAC, 就不当 session lost.
+		if existing, err := readSessionCookie(r, a.cfg.SessionSecret); err == nil &&
+			existing.UserIP != "" && existing.MAC != "" {
+			dev = DeviceInfo{IP: existing.UserIP, MAC: existing.MAC}
+			ok = true
+		}
+	}
+	if !ok {
 		a.renderError(w, r, lang, lang.s().SessionLostMsg, http.StatusBadRequest)
 		return
 	}
