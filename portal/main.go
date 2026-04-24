@@ -1477,13 +1477,13 @@ func (a *App) handleDenylistImportCSV(w http.ResponseWriter, r *http.Request) {
 		if len(row) == 0 {
 			continue
 		}
-		// 跳过表头 (任一情况: 第一列恰好是 "mac" 字样 / 有 BOM 前缀)
-		if idx == 0 && len(row) > 0 &&
-			(strings.EqualFold(strings.TrimSpace(row[0]), "mac") ||
-				strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(row[0], "﻿")), "mac")) {
+		// 跳过表头 (第一列恰好是 "mac" 字样, 容忍 UTF-8 BOM).
+		// "\ufeff" 是 escape 而非字面 BOM 字符 — Go 源文件中间不允许有 BOM.
+		first := strings.TrimSpace(strings.TrimPrefix(row[0], "\ufeff"))
+		if idx == 0 && strings.EqualFold(first, "mac") {
 			continue
 		}
-		mac := strings.TrimSpace(strings.TrimPrefix(row[0], "﻿"))
+		mac := first
 		reason := ""
 		if len(row) > 1 {
 			reason = strings.TrimSpace(row[1])
