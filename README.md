@@ -1,6 +1,6 @@
 # Kazuha Hub Roaming
 
-统一的团队 WiFi 接入方案. 用户在 Captive Portal 输入**组织邮箱**:
+统一的 WiFi 接入方案. 用户在 Captive Portal 输入**账号**:
 
 - **Duo 用户** (已在 Duo 注册 Mobile) → 直接跳 Duo Universal Prompt 页, 选设备 / 批准推送 → 放行
 - **非 Duo 用户** (纯 MSA / FIDO 等) → 自动 fallback 到 Entra SSO 流程 → 放行

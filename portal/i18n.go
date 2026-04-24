@@ -24,8 +24,8 @@ type Strings struct {
 	SignInButton string // "使用 %s SSO 登录"
 	GuestButton  string // "访客码登录"
 
-	// 邮箱输入步骤
-	EmailHint      string // "输入你的组织邮箱以继续登录"
+	// 账号输入步骤
+	EmailHint      string // "输入你的账号以继续登录"
 	EmailLabel     string
 	ContinueButton string // "继续"
 
@@ -80,8 +80,8 @@ var stringsZHCN = Strings{
 	SignInButton: "使用 %s SSO 登录",
 	GuestButton:  "访客码登录",
 
-	EmailHint:      "输入你的组织邮箱以继续登录",
-	EmailLabel:     "组织邮箱",
+	EmailHint:      "输入你的账号以继续登录",
+	EmailLabel:     "账号",
 	ContinueButton: "继续",
 
 	GuestCodeHint:    "请输入管理员发给你的访客码",
@@ -89,8 +89,8 @@ var stringsZHCN = Strings{
 	GuestCodeVerify:  "验证",
 	GuestCodeInvalid: "访客码无效, 请核对后重试",
 
-	InvalidEmail:     "邮箱格式不正确",
-	InvalidDomain:    "邮箱域名不在允许列表, 请使用组织邮箱",
+	InvalidEmail:     "账号格式不正确",
+	InvalidDomain:    "账号不在允许范围内, 请使用允许的账号",
 	AccountDenied:    "此账号被管理员标记为拒绝, 请联系管理员",
 	RateLimited:      "操作过于频繁, 请稍后再试",
 	RateLimitedRetry: "操作过于频繁, 请在 %s 后再试",
@@ -129,8 +129,8 @@ var stringsZHTW = Strings{
 	SignInButton: "使用 %s SSO 登入",
 	GuestButton:  "訪客碼登入",
 
-	EmailHint:      "輸入你的組織郵箱以繼續登入",
-	EmailLabel:     "組織郵箱",
+	EmailHint:      "輸入你的帳號以繼續登入",
+	EmailLabel:     "帳號",
 	ContinueButton: "繼續",
 
 	GuestCodeHint:    "請輸入管理員發給你的訪客碼",
@@ -138,8 +138,8 @@ var stringsZHTW = Strings{
 	GuestCodeVerify:  "驗證",
 	GuestCodeInvalid: "訪客碼無效, 請核對後重試",
 
-	InvalidEmail:     "郵箱格式不正確",
-	InvalidDomain:    "郵箱域名不在允許列表, 請使用組織郵箱",
+	InvalidEmail:     "帳號格式不正確",
+	InvalidDomain:    "帳號不在允許範圍內, 請使用允許的帳號",
 	AccountDenied:    "此帳號被管理員標記為拒絕, 請聯絡管理員",
 	RateLimited:      "操作過於頻繁, 請稍後再試",
 	RateLimitedRetry: "操作過於頻繁, 請在 %s 後再試",
@@ -178,8 +178,8 @@ var stringsEN = Strings{
 	SignInButton: "Sign in with %s SSO",
 	GuestButton:  "Guest code sign-in",
 
-	EmailHint:      "Enter your organization email to continue",
-	EmailLabel:     "Organization email",
+	EmailHint:      "Enter your account to continue",
+	EmailLabel:     "Account",
 	ContinueButton: "Continue",
 
 	GuestCodeHint:    "Enter the guest code provided by your administrator",
@@ -187,8 +187,8 @@ var stringsEN = Strings{
 	GuestCodeVerify:  "Verify",
 	GuestCodeInvalid: "Invalid guest code. Please double-check and retry.",
 
-	InvalidEmail:     "Invalid email format",
-	InvalidDomain:    "Email domain not allowed. Use your organization email.",
+	InvalidEmail:     "Invalid account format",
+	InvalidDomain:    "Account not allowed. Use an allowed account.",
 	AccountDenied:    "This account is denied by admin. Please contact your administrator.",
 	RateLimited:      "Too many attempts. Please wait a bit and try again.",
 	RateLimitedRetry: "Too many attempts. Please try again in %s.",
