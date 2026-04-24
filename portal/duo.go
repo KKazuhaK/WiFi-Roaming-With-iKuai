@@ -1,21 +1,14 @@
 package main
 
 // duo.go
-// Duo Auth API v2 客户端. 仅实现我们需要的三个端点:
-//   POST /auth/v2/preauth      探测用户状态: auth / allow / enroll / deny
-//   POST /auth/v2/auth         触发推送 (factor=push, async=1) -> 返回 txid
-//   GET  /auth/v2/auth_status  轮询 txid 的结果 (waiting / allow / deny)
+// Duo Auth API v2 — 只保留 preauth 一个用途 (探测用户是否在 Duo 里).
+// 实际 2FA 交互交给 Duo Universal Prompt (duo_universal.go), 不再用这条 API 直接发推送.
 //
-// 签名算法 (Duo 规定):
+// 签名算法:
 //   canon = date + "\n" + METHOD + "\n" + lowercase(host) + "\n" + path + "\n" + canonicalParams
 //   sig   = HMAC-SHA1(skey, canon).hex
-//   Authorization: Basic base64(ikey + ":" + sig)
-//   Date: RFC 2822 格式
-//
-// 注意:
-//   - canonicalParams 的 URL 编码用 RFC 3986 (空格用 %20 不用 +)
-//     Go 的 url.QueryEscape 对空格用 +, 需要手动替换
-//   - SKEY 是敏感秘钥, 只从 env 读, 不写日志
+//   Authorization: Basic base64(ikey:sig)
+//   Date: RFC 2822
 
 import (
 	"crypto/hmac"
@@ -32,11 +25,10 @@ import (
 	"time"
 )
 
-// DuoClient 封装签名 + 发请求.
 type DuoClient struct {
 	ikey    string
 	skey    string
-	apiHost string // 小写, 不带 scheme
+	apiHost string
 	http    *http.Client
 }
 
@@ -45,11 +37,10 @@ func newDuoClient(cfg Config) *DuoClient {
 		ikey:    cfg.DuoIKey,
 		skey:    cfg.DuoSKey,
 		apiHost: strings.ToLower(cfg.DuoAPIHost),
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http:    &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
-// duoEnvelope 是 Duo 所有 API 响应的外壳.
 type duoEnvelope struct {
 	Stat     string          `json:"stat"`
 	Code     int             `json:"code,omitempty"`
@@ -57,9 +48,7 @@ type duoEnvelope struct {
 	Response json.RawMessage `json:"response"`
 }
 
-// --- preauth ---
-
-// PreauthResult: "result" 有 4 种取值: auth / allow / enroll / deny.
+// PreauthResult: "result" 取值 auth / allow / enroll / deny.
 type PreauthResult struct {
 	Result    string          `json:"result"`
 	StatusMsg string          `json:"status_msg"`
@@ -72,23 +61,15 @@ type PreauthDevice struct {
 	Capabilities []string `json:"capabilities"`
 }
 
-// HasPushCapable 是否至少一个设备支持 push.
-func (p *PreauthResult) HasPushCapable() bool {
-	for _, d := range p.Devices {
-		for _, c := range d.Capabilities {
-			if c == "push" {
-				return true
-			}
-		}
-	}
-	return false
+func (p *PreauthResult) HasUniversalPromptCapable() bool {
+	// Universal Prompt 几乎所有 factor 都能用 (push / passcode / phone / WebAuthn),
+	// 只要用户有任何一个注册过的设备就行. devices 数组非空意味着注册过.
+	return len(p.Devices) > 0
 }
 
-// Preauth 查询用户在 Duo 里的状态和可用因素.
 func (c *DuoClient) Preauth(username string) (*PreauthResult, error) {
 	params := url.Values{}
 	params.Set("username", username)
-
 	var res PreauthResult
 	if err := c.call("POST", "/auth/v2/preauth", params, &res); err != nil {
 		return nil, err
@@ -96,53 +77,7 @@ func (c *DuoClient) Preauth(username string) (*PreauthResult, error) {
 	return &res, nil
 }
 
-// --- auth ---
-
-type authTxResult struct {
-	TxID string `json:"txid"`
-}
-
-// AuthPushAsync 发起异步 push 认证. device=auto 让 Duo 挑默认设备.
-// pushInfo 是 URL 编码的 key=value&key=value, 会显示在手机批准页上.
-func (c *DuoClient) AuthPushAsync(username, pushInfo string) (string, error) {
-	params := url.Values{}
-	params.Set("username", username)
-	params.Set("factor", "push")
-	params.Set("device", "auto")
-	params.Set("async", "1")
-	if pushInfo != "" {
-		params.Set("pushinfo", pushInfo)
-	}
-
-	var res authTxResult
-	if err := c.call("POST", "/auth/v2/auth", params, &res); err != nil {
-		return "", err
-	}
-	return res.TxID, nil
-}
-
-// --- auth_status ---
-
-// AuthStatusResult: result = allow / deny / waiting.
-// deny 时 Status 可能是 user_cancelled / timeout / fraud 等.
-type AuthStatusResult struct {
-	Result    string `json:"result"`
-	Status    string `json:"status"`
-	StatusMsg string `json:"status_msg"`
-}
-
-func (c *DuoClient) AuthStatus(txid string) (*AuthStatusResult, error) {
-	params := url.Values{}
-	params.Set("txid", txid)
-
-	var res AuthStatusResult
-	if err := c.call("GET", "/auth/v2/auth_status", params, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
-// --- 内部: 签名 + 发 HTTP ---
+// --- 内部 ---
 
 func (c *DuoClient) call(method, path string, params url.Values, out any) error {
 	date := time.Now().UTC().Format(time.RFC1123Z)
@@ -157,14 +92,13 @@ func (c *DuoClient) call(method, path string, params url.Values, out any) error 
 	fullURL := "https://" + c.apiHost + path
 	var req *http.Request
 	var err error
-
 	if method == "POST" {
 		req, err = http.NewRequest(method, fullURL, strings.NewReader(canonParams))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	} else { // GET
+	} else {
 		if canonParams != "" {
 			fullURL = fullURL + "?" + canonParams
 		}
@@ -182,12 +116,10 @@ func (c *DuoClient) call(method, path string, params url.Values, out any) error 
 		return fmt.Errorf("duo http: %w", err)
 	}
 	defer resp.Body.Close()
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("duo read body: %w", err)
 	}
-
 	var env duoEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
 		return fmt.Errorf("duo unmarshal: %w (http=%d body=%q)", err, resp.StatusCode, truncate(string(body), 200))
@@ -203,8 +135,6 @@ func (c *DuoClient) call(method, path string, params url.Values, out any) error 
 	return nil
 }
 
-// canonicalParams: key 升序, 每个 key 下 values 保持顺序,
-// key=value&key=value, 空格用 %20.
 func canonicalParams(params url.Values) string {
 	if len(params) == 0 {
 		return ""
@@ -223,7 +153,6 @@ func canonicalParams(params url.Values) string {
 	return strings.Join(parts, "&")
 }
 
-// rfc3986Escape: Go 的 url.QueryEscape 把空格编码成 +, Duo 要求 %20 (RFC 3986).
 func rfc3986Escape(s string) string {
 	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }

@@ -2,9 +2,9 @@ package main
 
 // session.go
 // 两种签名 cookie:
-//   - kz_wifi_sess   短命 (15 分钟), 撑 OIDC / Duo 一次 round-trip
+//   - kz_wifi_sess   短命 (15 分钟), 撑 OIDC round-trip (Entra 或 Duo Universal Prompt)
 //   - kz_admin_sess  较长 (4 小时), admin 登录后访问 /admin 用
-// 都是 HMAC-SHA256 签名的 JSON, 不加密 (内容不敏感).
+// 都是 HMAC-SHA256 签名的 JSON, 不加密.
 
 import (
 	"crypto/hmac"
@@ -27,10 +27,11 @@ const (
 	adminSessionTTL   = 4 * time.Hour
 )
 
-// Session 覆盖两种认证流程的短命状态.
-// Purpose 字段决定 /auth/callback 回来之后去哪里:
-//   - "" 或 "wifi"  → iKuai 放行 (/auth/callback 走老路径)
-//   - "admin"       → 验证 UPN 是 admin 后, 写 admin cookie, 跳 /admin
+// Session: state/nonce 可被 Entra 或 Duo 任一 OAuth 流程复用.
+// Email 在用户提交邮箱后填入 (/auth/start 写).
+// Purpose 决定 /auth/callback (Entra 回调) 或 /auth/duo-callback (Duo 回调) 之后干什么:
+//   ""/"wifi"  → 放行 iKuai
+//   "admin"    → 验 admin UPN 后写 admin cookie
 type Session struct {
 	UserIP  string `json:"user_ip,omitempty"`
 	MAC     string `json:"mac,omitempty"`
@@ -39,8 +40,7 @@ type Session struct {
 	Exp     int64  `json:"exp"`
 	Lang    string `json:"lang,omitempty"`
 	Email   string `json:"email,omitempty"`
-	DuoTxID string `json:"duo_txid,omitempty"`
-	Purpose string `json:"purpose,omitempty"` // "wifi" | "admin"
+	Purpose string `json:"purpose,omitempty"`
 }
 
 func newSession(userIP, mac, lang string) (Session, error) {
@@ -63,8 +63,7 @@ func newSession(userIP, mac, lang string) (Session, error) {
 	}, nil
 }
 
-// newAdminPreloginSession 用于 /admin/login → Entra 这段 round-trip.
-// 不带 IP/MAC, Purpose="admin".
+// newAdminPreloginSession: /admin/login → Entra 的 round-trip, 不带 IP/MAC.
 func newAdminPreloginSession(lang string) (Session, error) {
 	state, err := randomHex(16)
 	if err != nil {
@@ -141,7 +140,7 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	})
 }
 
-// --- admin session (独立 cookie) ---
+// --- admin session ---
 
 type AdminSession struct {
 	UPN string `json:"upn"`

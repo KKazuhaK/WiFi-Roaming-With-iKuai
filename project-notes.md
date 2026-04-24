@@ -108,6 +108,15 @@
   - 内存存储: 容器重启数据丢 (小团队可接受), 要持久化再加 JSON 落盘
   - 用户侧访客码登录: user_id=guest-<随机8hex>, 不把真实访客码泄进 iKuai 审计日志
 
+- Duo 流程重构: Auth API push → Universal Prompt (OIDC)
+  - 旧: 服务端直接向默认设备发推送, 用户在我们 Portal 上干等
+  - 新: 用户跳 Duo Universal Prompt 页, 自己选设备 / 批准 / 用备用 passcode 等
+  - 仍保留 Auth API 的 preauth 只做探测 (决定用户走 Duo 还是 Entra)
+  - 需要在 Duo Admin 开两个 application: Auth API + Web SDK
+  - Duo id_token 签名用 client_secret (HS512), 我们手写了 JWT 验签, 没引第三方 dep
+  - UI 简化: 只剩 "使用 SSO 登录" 和 "访客码登录" 两个按钮, 点 SSO → 邮箱输入 →
+    后端 preauth 决定路由 → 浏览器 302 到 Duo 或 Entra. 无 push 等待页.
+
 ### Phase 3 已知小坑（供备案）
 - 首次 build 失败: Dockerfile `COPY go.mod ./ + go mod download` 在无 go.sum 时不够，
   在 VPS 一次性 `docker run --rm -v ...:/src -w /src golang:1.22-alpine go mod tidy`

@@ -52,14 +52,14 @@
       margin: 0 auto 24px;
       max-width: 240px;
       max-height: 90px;
-      width: auto;
-      height: auto;
+      width: auto; height: auto;
     }
     .brand-logo.light { display: block; }
     @media (prefers-color-scheme: dark) {
       .brand-logo.light { display: none; }
       .brand-logo.dark  { display: block; }
     }
+
     h1 {
       font-size: 20px;
       margin: 0 0 8px;
@@ -74,7 +74,6 @@
       line-height: 1.5;
     }
 
-    /* --- 按钮 --- */
     .btn {
       display: flex;
       align-items: center;
@@ -93,10 +92,7 @@
     }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn + .btn { margin-top: 10px; }
-    .btn-primary {
-      background: var(--brand-color);
-      color: white;
-    }
+    .btn-primary { background: var(--brand-color); color: white; }
     .btn-primary:hover:not(:disabled) { opacity: 0.9; }
     .btn-primary:active:not(:disabled) { opacity: 0.8; }
     .btn-secondary {
@@ -109,8 +105,7 @@
       .btn-secondary:hover:not(:disabled) { background: rgba(255,255,255,0.05); }
     }
     .btn-icon {
-      width: 28px;
-      height: 28px;
+      width: 28px; height: 28px;
       border-radius: 50%;
       object-fit: cover;
       background: rgba(255,255,255,0.1);
@@ -132,11 +127,9 @@
     }
     .btn-link:hover { color: var(--brand-color); }
 
-    /* --- step 切换 --- */
     .step { display: none; }
     .step.active { display: block; }
 
-    /* --- email 输入 --- */
     .hint {
       color: var(--text-muted);
       font-size: 13px;
@@ -168,47 +161,6 @@
       text-align: center;
     }
 
-    /* --- 等待 spinner --- */
-    .spinner {
-      width: 48px;
-      height: 48px;
-      border: 3px solid var(--border);
-      border-top-color: var(--brand-color);
-      border-radius: 50%;
-      margin: 12px auto 20px;
-      animation: spin 1s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .waiting-main {
-      text-align: center;
-      font-weight: 500;
-      margin: 0 0 4px;
-    }
-    .waiting-sub {
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 13px;
-      margin: 0 0 12px;
-    }
-    .waiting-timer {
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 12px;
-      font-variant-numeric: tabular-nums;
-      margin: 0 0 20px;
-    }
-
-    /* --- 错误态 --- */
-    .error-big {
-      text-align: center;
-      color: var(--danger);
-      font-weight: 500;
-      margin: 8px 0 20px;
-      line-height: 1.5;
-      font-size: 15px;
-    }
-
-    /* --- footer / lang --- */
     .footer {
       margin-top: 32px;
       text-align: center;
@@ -236,17 +188,12 @@
     <h1>{{ printf .S.Title .Brand.Name }}</h1>
     <p class="subtitle">{{ printf .S.Subtitle .Brand.Name }}</p>
 
-    <!-- Step 1: 选择方式 -->
+    <!-- Step 1: 选择登录方式 -->
     <div id="step-choice" class="step active">
-      <a href="/login" class="btn btn-primary">
+      <button id="btn-to-sso" type="button" class="btn btn-primary">
         <img class="btn-icon" src="/static/HeadPicture.png" alt="">
         <span>{{ printf .S.SignInButton .Brand.Name }}</span>
-      </a>
-      {{ if .DuoEnabled }}
-      <button id="btn-to-duo" type="button" class="btn btn-secondary">
-        <span>{{ .S.DuoButton }}</span>
       </button>
-      {{ end }}
       {{ if .GuestEnabled }}
       <button id="btn-to-guest" type="button" class="btn btn-secondary">
         <span>{{ .S.GuestButton }}</span>
@@ -254,8 +201,20 @@
       {{ end }}
     </div>
 
+    <!-- Step 2: 邮箱输入 -->
+    <div id="step-email" class="step">
+      <p class="hint">{{ .S.EmailHint }}</p>
+      <input id="email-input" type="email" autocomplete="email"
+             aria-label="{{ .S.EmailLabel }}"
+             placeholder="you@{{ .AllowedDomainsHint }}"
+             class="input">
+      <div id="email-error" class="error-inline" style="display:none"></div>
+      <button id="btn-email-continue" type="button" class="btn btn-primary">{{ .S.ContinueButton }}</button>
+      <button id="btn-back-from-email" type="button" class="btn-link">← {{ .S.Back }}</button>
+    </div>
+
     {{ if .GuestEnabled }}
-    <!-- Step 5: 访客码输入 -->
+    <!-- Step 3: 访客码 -->
     <div id="step-guest-code" class="step">
       <p class="hint">{{ .S.GuestCodeHint }}</p>
       <input id="guest-code-input" type="text" autocomplete="off"
@@ -268,36 +227,6 @@
     </div>
     {{ end }}
 
-    {{ if .DuoEnabled }}
-    <!-- Step 2: 输入邮箱 -->
-    <div id="step-email" class="step">
-      <p class="hint">{{ .S.DuoEmailHint }}</p>
-      <input id="email-input" type="email" autocomplete="email"
-             aria-label="{{ .S.DuoEmailLabel }}"
-             placeholder="you@{{ .AllowedDomainsHint }}"
-             class="input">
-      <div id="email-error" class="error-inline" style="display:none"></div>
-      <button id="btn-send" type="button" class="btn btn-primary">{{ .S.DuoSendPush }}</button>
-      <button id="btn-back-to-choice" type="button" class="btn-link">← {{ .S.Back }}</button>
-    </div>
-
-    <!-- Step 3: 等待 Duo 批准 -->
-    <div id="step-waiting" class="step">
-      <div class="spinner"></div>
-      <p class="waiting-main">{{ .S.DuoPushSent }}</p>
-      <p class="waiting-sub">{{ .S.DuoApproveOnApp }}</p>
-      <p class="waiting-timer" id="timer-text"></p>
-      <button id="btn-cancel" type="button" class="btn-link">{{ .S.Cancel }}</button>
-    </div>
-
-    <!-- Step 4: 错误 -->
-    <div id="step-error" class="step">
-      <div class="error-big" id="error-big">{{ .S.ErrorGenericMsg }}</div>
-      <button id="btn-retry" type="button" class="btn btn-primary">{{ .S.Retry }}</button>
-      <a href="/login" class="btn btn-secondary">{{ printf .S.SignInButton .Brand.Name }}</a>
-    </div>
-    {{ end }}
-
     <div class="lang-switch">
       <a href="?lang=zh-cn" class="{{ if eq .Lang "zh-cn" }}active{{ end }}">{{ .S.LangZHCNLabel }}</a>
       <a href="?lang=zh-tw" class="{{ if eq .Lang "zh-tw" }}active{{ end }}">{{ .S.LangZHTWLabel }}</a>
@@ -307,59 +236,35 @@
     <div class="footer">{{ printf .S.Footer .Brand.Name }} · {{ .NowYear }}</div>
   </main>
 
-  {{ if .DuoEnabled }}
   <script>
     (function() {
       'use strict';
       var S = {
-        remaining:      {{ .S.DuoRemaining }},
-        approved:       {{ .S.DuoApproved }},
-        denied:         {{ .S.DuoDenied }},
-        timeout:        {{ .S.DuoTimeout }},
-        error:          {{ .S.DuoError }},
-        invalidEmail:   {{ .S.DuoInvalidEmail }},
-        invalidDomain:  {{ .S.DuoInvalidDomain }},
-        deniedAccount:  {{ .S.DuoDeniedAccount }}
+        invalidEmail:  {{ .S.InvalidEmail }},
+        invalidDomain: {{ .S.InvalidDomain }},
+        accountDenied: {{ .S.AccountDenied }},
+        invalidCode:   {{ .S.GuestCodeInvalid }},
+        netError:      {{ .S.ErrorGenericMsg }}
       };
-      var pushTimeoutSec = {{ .PushTimeout }};
-      var pollInterval = null;
-      var timerInterval = null;
-      var remainingSec = 0;
-
       function $(id) { return document.getElementById(id); }
       function show(id) {
         var steps = document.querySelectorAll('.step');
         for (var i = 0; i < steps.length; i++) steps[i].classList.remove('active');
         $(id).classList.add('active');
       }
-      function showError(msg) {
-        $('error-big').textContent = msg;
-        show('step-error');
-      }
-      function stopTimers() {
-        if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
-        if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-      }
-      function updateTimer() {
-        $('timer-text').textContent = S.remaining.replace('%d', String(remainingSec));
-      }
 
-      // Step 1 → 2
-      $('btn-to-duo').addEventListener('click', function() {
+      // Step 1 → 2: SSO 主按钮 = 进入邮箱输入
+      $('btn-to-sso').addEventListener('click', function() {
         show('step-email');
         setTimeout(function() { $('email-input').focus(); }, 60);
       });
-
-      // Step 2 → 1
-      $('btn-back-to-choice').addEventListener('click', function() {
+      $('btn-back-from-email').addEventListener('click', function() {
         show('step-choice');
       });
-
-      // Step 2 回车 = 发送
       $('email-input').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') submitEmail();
       });
-      $('btn-send').addEventListener('click', submitEmail);
+      $('btn-email-continue').addEventListener('click', submitEmail);
 
       function submitEmail() {
         var email = $('email-input').value.trim().toLowerCase();
@@ -370,115 +275,40 @@
           errEl.style.display = 'block';
           return;
         }
-        $('btn-send').disabled = true;
+        $('btn-email-continue').disabled = true;
 
         var fd = new FormData();
         fd.append('email', email);
-        fetch('/auth/duo-start', { method: 'POST', body: fd, credentials: 'same-origin' })
-          .then(function(r) { return r.json().then(function(body) { return { ok: r.ok, body: body }; }); })
+        fetch('/auth/start', { method: 'POST', body: fd, credentials: 'same-origin' })
+          .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, status: r.status, body: b }; }); })
           .then(function(res) {
-            if (!res.ok) {
-              var code = (res.body && res.body.error) || 'error';
-              if (code === 'invalid_email') errEl.textContent = S.invalidEmail;
-              else if (code === 'invalid_domain') errEl.textContent = S.invalidDomain;
-              else if (code === 'session_lost') errEl.textContent = S.error;
-              else errEl.textContent = S.error;
-              errEl.style.display = 'block';
-              $('btn-send').disabled = false;
+            if (res.ok && res.body && res.body.redirect) {
+              window.location.href = res.body.redirect;
               return;
             }
-            var data = res.body || {};
-            if (data.mode === 'sso') {
-              window.location.href = '/login';
-              return;
-            }
-            if (data.mode === 'deny') {
-              showError(S.deniedAccount);
-              return;
-            }
-            if (data.mode === 'push') {
-              show('step-waiting');
-              remainingSec = data.timeout || pushTimeoutSec;
-              updateTimer();
-              timerInterval = setInterval(function() {
-                remainingSec--;
-                updateTimer();
-                if (remainingSec <= 0) {
-                  stopTimers();
-                  showError(S.timeout);
-                }
-              }, 1000);
-              pollInterval = setInterval(pollStatus, 2000);
-              // 先打一次免得第一次等 2 秒
-              setTimeout(pollStatus, 500);
-              return;
-            }
-            // 未知 mode
-            showError(S.error);
-          })
-          .catch(function() {
-            errEl.textContent = S.error;
+            var code = (res.body && res.body.error) || 'error';
+            if (code === 'invalid_email') errEl.textContent = S.invalidEmail;
+            else if (code === 'invalid_domain') errEl.textContent = S.invalidDomain;
+            else if (code === 'account_denied') errEl.textContent = S.accountDenied;
+            else errEl.textContent = S.netError;
             errEl.style.display = 'block';
-            $('btn-send').disabled = false;
-          });
-      }
-
-      function pollStatus() {
-        fetch('/auth/duo-status', { credentials: 'same-origin' })
-          .then(function(r) { return r.json(); })
-          .then(function(data) {
-            if (data.state === 'approved') {
-              stopTimers();
-              document.querySelector('.waiting-main').textContent = S.approved;
-              window.location.href = '/auth/duo-finish';
-            } else if (data.state === 'denied') {
-              stopTimers();
-              showError(S.denied);
-            } else if (data.state === 'error') {
-              stopTimers();
-              showError(S.error);
-            }
-            // waiting: keep polling
+            $('btn-email-continue').disabled = false;
           })
           .catch(function() {
-            // 网络抖动, 继续轮询
+            errEl.textContent = S.netError;
+            errEl.style.display = 'block';
+            $('btn-email-continue').disabled = false;
           });
       }
 
-      $('btn-cancel').addEventListener('click', function() {
-        stopTimers();
-        $('btn-send').disabled = false;
-        show('step-email');
-      });
-
-      $('btn-retry').addEventListener('click', function() {
-        $('btn-send').disabled = false;
-        show('step-choice');
-      });
-    })();
-  </script>
-  {{ end }}
-
-  {{ if .GuestEnabled }}
-  <script>
-    (function() {
-      'use strict';
-      var S = {
-        invalidCode: {{ .S.GuestCodeInvalid }},
-        netError:    {{ .S.ErrorGenericMsg }}
-      };
-      function $(id) { return document.getElementById(id); }
-      function showStep(id) {
-        var steps = document.querySelectorAll('.step');
-        for (var i = 0; i < steps.length; i++) steps[i].classList.remove('active');
-        $(id).classList.add('active');
-      }
+      {{ if .GuestEnabled }}
+      // Step 1 → 3: 访客码
       $('btn-to-guest').addEventListener('click', function() {
-        showStep('step-guest-code');
+        show('step-guest-code');
         setTimeout(function() { $('guest-code-input').focus(); }, 60);
       });
       $('btn-back-from-guest').addEventListener('click', function() {
-        showStep('step-choice');
+        show('step-choice');
       });
       $('guest-code-input').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') verifyGuestCode();
@@ -500,7 +330,7 @@
         fetch('/auth/guest-code', { method: 'POST', body: fd, credentials: 'same-origin' })
           .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, body: b }; }); })
           .then(function(res) {
-            if (res.ok && res.body.redirect) {
+            if (res.ok && res.body && res.body.redirect) {
               window.location.href = res.body.redirect;
             } else {
               errEl.textContent = S.invalidCode;
@@ -514,8 +344,8 @@
             $('btn-guest-verify').disabled = false;
           });
       }
+      {{ end }}
     })();
   </script>
-  {{ end }}
 </body>
 </html>

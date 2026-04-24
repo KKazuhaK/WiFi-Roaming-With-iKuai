@@ -1,7 +1,14 @@
 # Kazuha Hub Roaming
 
-统一的团队 WiFi 接入方案：多个物理地点共享同一 SSID `Kazuha Hub Roaming`，
-成员用 Entra ID 账号 (MFA 强制) 登录一次即可上网，Guest 账号自动拒绝。
+统一的团队 WiFi 接入方案. 用户在 Captive Portal 输入**组织邮箱**:
+
+- **Duo 用户** (已在 Duo 注册 Mobile) → 直接跳 Duo Universal Prompt 页, 选设备 / 批准推送 → 放行
+- **非 Duo 用户** (纯 MSA / FIDO 等) → 自动 fallback 到 Entra SSO 流程 → 放行
+- **外部 Guest 账号** (UPN 含 `#EXT#`) → 拒绝
+- **访客** (没有组织账号) → 点"访客码登录", 输入管理员发的一次性码 → 放行
+
+所有四类**共用同一个 SSID `Kazuha Hub Roaming`**. 每条流程最终都通过 iKuai 自定义认证
+(`type=20`) 把设备 MAC / IP 放进路由器白名单.
 
 架构、设计决策、Phase 进度见 [`project-notes.md`](./project-notes.md)。
 这份 README 只讲 **怎么把 Portal 跑起来**。
@@ -17,12 +24,15 @@ WiFi-Roaming-With-iKuai/
 ├── portal/                    # Go 源码 + Dockerfile + 前端模板
 │   ├── main.go                # HTTP 路由
 │   ├── config.go              # 环境变量读取
-│   ├── session.go             # HMAC 签名 cookie
+│   ├── session.go             # HMAC 签名 cookie (wifi + admin)
 │   ├── oidc.go                # Entra OIDC 流程
+│   ├── duo.go                 # Duo Auth API 客户端 (preauth 探测)
+│   ├── duo_universal.go       # Duo Universal Prompt (OIDC) 客户端
+│   ├── admin.go               # 访客码内存存储 + 随机生成
 │   ├── ikuai.go               # iKuai 放行 token 生成
-│   ├── i18n.go                # 中英双语字符串
-│   ├── templates/             # 登录页 / 错误页 HTML
-│   ├── static/                # logo 等静态资源
+│   ├── i18n.go                # 三语字符串 (zh-cn/zh-tw/en)
+│   ├── templates/             # login.html / error.html / admin.html
+│   ├── static/                # logo + 头像
 │   ├── Dockerfile
 │   ├── .dockerignore
 │   ├── .env.example           # 环境变量模板, 不含真值
@@ -83,15 +93,42 @@ vim .env               # 或 nano
 | `TENANT_ID` | `00000000-0000-0000-0000-000000000000` |
 | `CLIENT_ID` | `00000000-0000-0000-0000-000000000000` |
 | `CLIENT_SECRET` | 你本地密码管理器里 `portal-prod-2026-v2` 的 Value |
-| `IKUAI_APPKEY` | Phase 4 做 iKuai 配置时才会有, 先填占位 `PLACEHOLDER` |
+| `IKUAI_APPKEY` | iKuai 云面板 "生成" 得到 (Phase 4) |
+| `IKUAI_USER_ID_PREFIX` | 审计日志账号列前缀, 默认 `Kazuha_Hub` → `Kazuha_Hub-<upn>` |
 | `PUBLIC_URL` | `https://wifi.login.example.com` |
 | `SESSION_SECRET` | 运行 `openssl rand -hex 32` 生成一次, 贴进来 |
 | `BRAND_NAME` | `Kazuha Hub` 或你喜欢的 |
 | `BRAND_COLOR` | 默认 `#2563eb`, 可改 |
-| `BRAND_LOGO_URL` | 留空显示首字母, 有 logo 则填 URL |
+| `BRAND_LOGO_URL` | 留空用 `static/logo+title-circle{,-darkmode}.png` |
+| `DUO_IKEY` / `DUO_SKEY` | **Duo Auth API** application (preauth 探测用) |
+| `DUO_CLIENT_ID` / `DUO_CLIENT_SECRET` | **Duo Web SDK** application (Universal Prompt) |
+| `DUO_API_HOST` | 两个 Duo application 共用, 形如 `api-XXXXXXXX.duosecurity.com` |
+| `ALLOWED_EMAIL_DOMAINS` | 启用 Duo 时必填, 逗号分隔 (`example.org,example.com,example.net`) |
+| `ADMIN_EMAILS` | 访客码管理后台 (`/admin`) 准入白名单, 逗号分隔 |
 
-> ⚠️ `IKUAI_APPKEY` 先占位是为了让 Portal 能起来做 Entra 流程验证. Phase 4 配完
-> iKuai 再换成真实 appkey 并 `docker compose restart portal`。
+### Duo 两种 Application 怎么建
+
+本项目分流流程需要 Duo Admin Panel 里**两个** Application:
+
+1. **"Auth API"** — 仅用于 preauth (问 Duo "这用户在吗?"), 不发推送.
+   - 取 `Integration key` / `Secret key` → `DUO_IKEY` / `DUO_SKEY`
+
+2. **"Web SDK"** — Universal Prompt OIDC, 真正的 2FA 交互.
+   - 配置时 Redirect URI 必须填 `https://wifi.login.example.com/auth/duo-callback`
+   - 取 `Client ID` / `Client secret` → `DUO_CLIENT_ID` / `DUO_CLIENT_SECRET`
+
+两个 Application 的 API hostname 相同 → `DUO_API_HOST`. 五个 Duo 字段要么全填要么全空.
+
+### 访客码 Admin
+
+`ADMIN_EMAILS` 列出的那些账号, 用 Entra SSO 登录 `/admin` 可以:
+- 单条添加 (自动生成 10 位数字, 或自定义)
+- 批量生成 (纯数字 / 纯字母 / 数字+字母, 任意长度)
+- 设置过期时间 (绝对) 或限时 (相对)
+- 筛选 (全部 / 已使用 / 未使用 / 已过期) + 搜索
+- 单条删除 / 批量删除失效
+
+访客码存在容器内存, 重启会丢, 重新生成即可.
 
 ### 步骤 3: 起服务
 
