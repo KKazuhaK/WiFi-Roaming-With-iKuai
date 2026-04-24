@@ -1,14 +1,10 @@
 package main
 
 // session.go
-// 无状态的签名 cookie 实现。
-// 覆盖两条认证流程的往返状态:
-//   a) Entra SSO: /portal → /login → Entra → /auth/callback 期间保留 state/nonce/IP/MAC
-//   b) Duo 免密: /portal → POST /auth/duo-start → 循环 /auth/duo-status → /auth/duo-finish 期间保留 IP/MAC/Email/TxID
-// 默认 15 分钟失效 (足以覆盖推送等待 60 秒 + 人类迟疑时间).
-// 用 HMAC-SHA256 签名, 不加密 — cookie 内容里没有真正敏感的数据 (都是短效一次性状态).
-//
-// Cookie 格式: <base64url(json)>.<hex(hmac)>
+// 两种签名 cookie:
+//   - kz_wifi_sess   短命 (15 分钟), 撑 OIDC / Duo 一次 round-trip
+//   - kz_admin_sess  较长 (4 小时), admin 登录后访问 /admin 用
+// 都是 HMAC-SHA256 签名的 JSON, 不加密 (内容不敏感).
 
 import (
 	"crypto/hmac"
@@ -27,26 +23,26 @@ import (
 const (
 	sessionCookieName = "kz_wifi_sess"
 	sessionTTL        = 15 * time.Minute
+	adminCookieName   = "kz_admin_sess"
+	adminSessionTTL   = 4 * time.Hour
 )
 
-// Session 在 Portal 的各个跳转之间存状态. 各字段按流程填:
-//
-//   /portal 写: UserIP, MAC, State, Nonce, Exp, Lang
-//   /auth/duo-start 追加: Email, DuoTxID
-//
-// DuoTxID / Email 在 Entra SSO 路径里始终为空, 在 Duo 免密路径里被填上.
+// Session 覆盖两种认证流程的短命状态.
+// Purpose 字段决定 /auth/callback 回来之后去哪里:
+//   - "" 或 "wifi"  → iKuai 放行 (/auth/callback 走老路径)
+//   - "admin"       → 验证 UPN 是 admin 后, 写 admin cookie, 跳 /admin
 type Session struct {
-	UserIP  string `json:"user_ip"`
-	MAC     string `json:"mac"`
+	UserIP  string `json:"user_ip,omitempty"`
+	MAC     string `json:"mac,omitempty"`
 	State   string `json:"state"`
 	Nonce   string `json:"nonce"`
 	Exp     int64  `json:"exp"`
-	Lang    string `json:"lang"`
+	Lang    string `json:"lang,omitempty"`
 	Email   string `json:"email,omitempty"`
 	DuoTxID string `json:"duo_txid,omitempty"`
+	Purpose string `json:"purpose,omitempty"` // "wifi" | "admin"
 }
 
-// newSession 创建一个带新鲜 state/nonce 的会话.
 func newSession(userIP, mac, lang string) (Session, error) {
 	state, err := randomHex(16)
 	if err != nil {
@@ -57,16 +53,36 @@ func newSession(userIP, mac, lang string) (Session, error) {
 		return Session{}, err
 	}
 	return Session{
-		UserIP: userIP,
-		MAC:    mac,
-		State:  state,
-		Nonce:  nonce,
-		Exp:    time.Now().Add(sessionTTL).Unix(),
-		Lang:   lang,
+		UserIP:  userIP,
+		MAC:     mac,
+		State:   state,
+		Nonce:   nonce,
+		Exp:     time.Now().Add(sessionTTL).Unix(),
+		Lang:    lang,
+		Purpose: "wifi",
 	}, nil
 }
 
-// writeSessionCookie 把 session 序列化 + 签名 + 写入 Set-Cookie header.
+// newAdminPreloginSession 用于 /admin/login → Entra 这段 round-trip.
+// 不带 IP/MAC, Purpose="admin".
+func newAdminPreloginSession(lang string) (Session, error) {
+	state, err := randomHex(16)
+	if err != nil {
+		return Session{}, err
+	}
+	nonce, err := randomHex(16)
+	if err != nil {
+		return Session{}, err
+	}
+	return Session{
+		State:   state,
+		Nonce:   nonce,
+		Exp:     time.Now().Add(sessionTTL).Unix(),
+		Lang:    lang,
+		Purpose: "admin",
+	}, nil
+}
+
 func writeSessionCookie(w http.ResponseWriter, secret []byte, s Session, secure bool) error {
 	body, err := json.Marshal(s)
 	if err != nil {
@@ -74,11 +90,9 @@ func writeSessionCookie(w http.ResponseWriter, secret []byte, s Session, secure 
 	}
 	payload := base64.RawURLEncoding.EncodeToString(body)
 	sig := sign(secret, payload)
-	value := payload + "." + sig
-
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
-		Value:    value,
+		Value:    payload + "." + sig,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   secure,
@@ -88,8 +102,6 @@ func writeSessionCookie(w http.ResponseWriter, secret []byte, s Session, secure 
 	return nil
 }
 
-// readSessionCookie 从请求里解 session.
-// 失败时一律返回同一个错误, 不透露细节.
 func readSessionCookie(r *http.Request, secret []byte) (Session, error) {
 	var s Session
 	c, err := r.Cookie(sessionCookieName)
@@ -101,8 +113,7 @@ func readSessionCookie(r *http.Request, secret []byte) (Session, error) {
 		return s, errors.New("malformed session")
 	}
 	payload, sig := parts[0], parts[1]
-	expect := sign(secret, payload)
-	if !hmac.Equal([]byte(expect), []byte(sig)) {
+	if !hmac.Equal([]byte(sign(secret, payload)), []byte(sig)) {
 		return s, errors.New("bad signature")
 	}
 	body, err := base64.RawURLEncoding.DecodeString(payload)
@@ -118,10 +129,73 @@ func readSessionCookie(r *http.Request, secret []byte) (Session, error) {
 	return s, nil
 }
 
-// clearSessionCookie 在流程完成后主动让 cookie 过期.
 func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+// --- admin session (独立 cookie) ---
+
+type AdminSession struct {
+	UPN string `json:"upn"`
+	Exp int64  `json:"exp"`
+}
+
+func writeAdminCookie(w http.ResponseWriter, secret []byte, s AdminSession, secure bool) error {
+	body, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	payload := base64.RawURLEncoding.EncodeToString(body)
+	sig := sign(secret, payload)
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminCookieName,
+		Value:    payload + "." + sig,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(adminSessionTTL.Seconds()),
+	})
+	return nil
+}
+
+func readAdminCookie(r *http.Request, secret []byte) (AdminSession, error) {
+	var s AdminSession
+	c, err := r.Cookie(adminCookieName)
+	if err != nil {
+		return s, errors.New("no admin cookie")
+	}
+	parts := strings.Split(c.Value, ".")
+	if len(parts) != 2 {
+		return s, errors.New("malformed")
+	}
+	if !hmac.Equal([]byte(sign(secret, parts[0])), []byte(parts[1])) {
+		return s, errors.New("bad signature")
+	}
+	body, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return s, errors.New("bad payload")
+	}
+	if err := json.Unmarshal(body, &s); err != nil {
+		return s, errors.New("bad json")
+	}
+	if time.Now().Unix() > s.Exp {
+		return s, errors.New("expired")
+	}
+	return s, nil
+}
+
+func clearAdminCookie(w http.ResponseWriter, secure bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
