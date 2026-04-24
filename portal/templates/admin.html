@@ -728,7 +728,7 @@
         <div class="form-field">
           <label>{{ T .Lang "admin.modal.add.duration.label" }}</label>
           <div class="form-inline">
-            <input type="number" name="duration_h" value="2" min="0"> <span>{{ T .Lang "admin.modal.add.unitH" }}</span>
+            <input type="number" name="duration_h" value="18" min="0"> <span>{{ T .Lang "admin.modal.add.unitH" }}</span>
             <input type="number" name="duration_m" value="0" min="0" max="59"> <span>{{ T .Lang "admin.modal.add.unitM" }}</span>
           </div>
         </div>
@@ -778,7 +778,7 @@
         <div class="form-field">
           <label>{{ T .Lang "admin.modal.add.duration.label" }}</label>
           <div class="form-inline">
-            <input type="number" name="duration_h" value="2" min="0"> <span>{{ T .Lang "admin.modal.add.unitH" }}</span>
+            <input type="number" name="duration_h" value="18" min="0"> <span>{{ T .Lang "admin.modal.add.unitH" }}</span>
             <input type="number" name="duration_m" value="0" min="0" max="59"> <span>{{ T .Lang "admin.modal.add.unitM" }}</span>
           </div>
         </div>
@@ -1106,7 +1106,7 @@
       $('edit-code').value = d.code;
       $('edit-code-display').textContent = d.code;
       $('edit-expires-at').value = d.expires;       // 已经是 datetime-local 格式
-      var durationMin = parseInt(d.durationMin || '120', 10);
+      var durationMin = parseInt(d.durationMin || '1080', 10);
       if (durationMin < 0) durationMin = 0;
       $('edit-duration-h').value = Math.floor(durationMin / 60);
       $('edit-duration-m').value = durationMin % 60;

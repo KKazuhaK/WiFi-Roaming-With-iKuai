@@ -1584,7 +1584,7 @@ func parseDurationMin(r *http.Request) int {
 	if mins >= 0 {
 		return mins
 	}
-	h := parseIntDefault(r.FormValue("duration_h"), 2)
+	h := parseIntDefault(r.FormValue("duration_h"), 18)
 	m := parseIntDefault(r.FormValue("duration_m"), 0)
 	if h < 0 {
 		h = 0
