@@ -31,12 +31,16 @@ services:
     ports:
       - "127.0.0.1:28080:28080"
 
-    # 访客码持久化: 把宿主机 ./data (相对 docker-compose.yml 所在目录)
-    # 挂进容器的 /data. 配合 .env 里的 GUEST_CODES_PATH=/data/guest-codes.json.
-    # 好处: 宿主机 /opt/wifi-portal/data/ 直接 cat / vim / 备份, 不用钻 docker volume.
-    # GUEST_CODES_PATH 留空时这个挂载什么事也不做.
-    volumes:
-      - ./data:/data
+    # 访客码持久化: 默认不挂 volume, 文件直接写在容器内部 /data/.
+    # 行为: docker compose restart / stop+start / VPS 重启都活;
+    #      docker compose up -d --build / down / rm 会丢 (容器被替换).
+    # 要跨重建也保住数据, 在 .env 基础上把下面两行取消注释:
+    #
+    # volumes:
+    #   - ./data:/data
+    #
+    # 然后 GUEST_CODES_PATH=/data/guest-codes.json 不变, 文件会出现在
+    # /opt/wifi-portal/data/guest-codes.json, 可直接 cat / vim / rsync.
 
     # 日志限制: 每文件 10MB * 最多 3 个 = 30MB 上限, 防小 VPS 爆磁盘.
     logging:
