@@ -12,7 +12,13 @@ package main
 //   md5("user_ip={ip}&timestamp={ts}&mac={mac}&upload=0&download=0&key={appkey}")
 // 放行 URL (按官方文档):
 //   https://portal.ikuai8-wifi.com/Action/webauth-up
-//     ?type=20&user_ip={ip}&timestamp={ts}&mac={mac}&upload=0&download=0&token={hex}
+//     ?type=20&user_id={id}&custom_name={name}&user_ip={ip}&timestamp={ts}
+//     &mac={mac}&upload=0&download=0&token={hex}&release_type=1
+//
+// user_id / custom_name / release_type 是透传参数 (不进 MD5 token 计算):
+//   user_id     — 我们用 Entra UPN, 方便 iKuai 审计日志里看是谁登录
+//   custom_name — 我们用 IKUAI_CUSTOM_NAME env (默认 "kazuha-hub"), 区分多个对接的 portal
+//   release_type = 1, 固定
 //
 // 注意:
 //   - 官方文档明确用 https. 从 VPS 外部 curl HTTPS 遇到 TLS handshake fail,
@@ -58,10 +64,12 @@ func extractDeviceInfo(r *http.Request, cfg Config) (DeviceInfo, bool) {
 }
 
 // buildWebAuthURL 生成给浏览器 302 过去的 iKuai 放行 URL。
-func buildWebAuthURL(cfg Config, dev DeviceInfo) string {
+// userID 会作为 user_id 透传, 一般传 Entra UPN (用于 iKuai 审计日志).
+func buildWebAuthURL(cfg Config, dev DeviceInfo, userID string) string {
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
 
 	// token 源串必须完全按 iKuai 规定的顺序和格式拼接
+	// 注意: user_id / custom_name / release_type 不进 token 计算, 只是透传
 	raw := fmt.Sprintf(
 		"user_ip=%s&timestamp=%s&mac=%s&upload=0&download=0&key=%s",
 		dev.IP, timestamp, dev.MAC, cfg.IKuaiAppKey,
@@ -72,12 +80,15 @@ func buildWebAuthURL(cfg Config, dev DeviceInfo) string {
 	// 构造最终 URL
 	params := url.Values{}
 	params.Set("type", "20") // 20 = web 认证
+	params.Set("user_id", userID)
+	params.Set("custom_name", cfg.IKuaiCustomName)
 	params.Set("user_ip", dev.IP)
 	params.Set("timestamp", timestamp)
 	params.Set("mac", dev.MAC)
 	params.Set("upload", "0")   // 上行限速, 0 = 不限
 	params.Set("download", "0") // 下行限速, 0 = 不限
 	params.Set("token", token)
+	params.Set("release_type", cfg.IKuaiReleaseType)
 
 	return cfg.IKuaiWebAuthURL + "?" + params.Encode()
 }
@@ -115,11 +126,4 @@ func normalizeMAC(mac string) string {
 	}
 	// 按 2 字符插冒号
 	var b strings.Builder
-	for i := 0; i < 12; i += 2 {
-		if i > 0 {
-			b.WriteByte(':')
-		}
-		b.WriteString(clean[i : i+2])
-	}
-	return b.String()
-}
+	for i

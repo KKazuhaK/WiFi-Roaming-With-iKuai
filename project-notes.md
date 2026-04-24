@@ -101,14 +101,22 @@
 - 首次 build 失败: Dockerfile `COPY go.mod ./ + go mod download` 在无 go.sum 时不够，
   在 VPS 一次性 `docker run --rm -v ...:/src -w /src golang:1.22-alpine go mod tidy`
   生成 portal/go.sum 之后 build 成功。
-- **待办**: 把 VPS 上生成的 `portal/go.sum` 拉回来 commit 进仓库，保证 CI / 后续机器 build 可复现。
+- [x] 已把 `portal/go.sum` commit 进仓库（5d6b8fd），CI / 新机器 build 现在可复现。
 
 ---
 
-## 下一步
+## Phase 4 · iKuai 接入（进行中）
 
-Phase 2：VPS 基础环境
-- DNS 解析 `wifi.login.kazuhahub.com` → VPS 公网 IP
-- aaPanel 加网站 + 申请 TLS 证书
-- aaPanel 配反向代理到 `127.0.0.1:28080`
-- 建项目目录 `/opt/wifi-portal`
+### 待用户确认
+- [ ] iKuai 管理方式：云托管 / 本地 LAN
+- [ ] appkey 生成位置
+- [ ] 路由器型号 + 固件版本（影响自定义认证菜单路径）
+
+### Phase 4 步骤（定好后再走）
+- [ ] 4.1 iKuai 后台生成 appkey
+- [ ] 4.2 VPS 改 `.env` 里 `IKUAI_APPKEY`, `docker compose restart portal`
+- [ ] 4.3 iKuai 配 Web 认证 → 自定义认证，Portal URL 填 `https://wifi.login.kazuhahub.com/portal`
+- [ ] 4.4 iKuai 绑 SSID `Kazuha Hub Roaming` 到此认证
+- [ ] 4.5 iKuai 免认证白名单加上 Entra 域名（见 README.md Phase 4 章节）
+- [ ] 4.6 真机连 WiFi 端到端测试：Entra 登录 → 放行 → 上网
+- [ ] 4.7 拒绝 Guest 真实测试（拿一个 `#EXT#` 账号验证拒绝页）
