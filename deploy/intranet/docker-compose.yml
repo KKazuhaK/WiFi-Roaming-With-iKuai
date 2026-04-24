@@ -61,7 +61,9 @@ services:
       context: ./portal
       dockerfile: Dockerfile
     image: kazuha/wifi-portal:latest
-    container_name: wifi-portal
+    # 跟 VPS 版 (deploy/docker-compose.yml, 也叫 wifi-portal) 明确区分, 这样同一台
+    # 机器同时跑两套部署也不撞. 本地同处一机的场景: 测试 / 迁移期 / 混合架构.
+    container_name: wifi-portal-intranet
     restart: unless-stopped
 
     # 注意: 这里**不**暴露端口到宿主机, Caddy 通过 compose 网络访问就够了.
