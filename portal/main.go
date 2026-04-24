@@ -232,7 +232,8 @@ func main() {
 	mux.HandleFunc("/admin/codes/batch", app.handleCodeBatch)
 	mux.HandleFunc("/admin/codes/delete", app.handleCodeDelete)
 	mux.HandleFunc("/admin/codes/delete-bulk", app.handleCodeDeleteBulk)
-	mux.HandleFunc("/admin/codes/delete-expired", app.handleCodeDeleteExpired)
+	mux.HandleFunc("/admin/codes/delete-inactive", app.handleCodeDeleteInactive)
+	mux.HandleFunc("/admin/codes/delete-expired", app.handleCodeDeleteInactive) // compatibility
 	mux.HandleFunc("/admin/codes/edit", app.handleCodeEdit)
 	mux.HandleFunc("/admin/ratelimit/status", app.handleRateLimitStatus)
 	mux.HandleFunc("/admin/ratelimit/reset", app.handleRateLimitReset)
@@ -1053,7 +1054,7 @@ func (a *App) handleCodeDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": deleted})
 }
 
-func (a *App) handleCodeDeleteExpired(w http.ResponseWriter, r *http.Request) {
+func (a *App) handleCodeDeleteInactive(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
@@ -1062,8 +1063,8 @@ func (a *App) handleCodeDeleteExpired(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	n := a.guestCodes.DeleteExpired()
-	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, fmt.Sprintf("delete-expired deleted=%d", n))
+	n := a.guestCodes.DeleteInactive()
+	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, fmt.Sprintf("delete-inactive deleted=%d", n))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": n})
 }
 

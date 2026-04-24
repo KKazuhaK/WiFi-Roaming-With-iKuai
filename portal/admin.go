@@ -242,14 +242,14 @@ func (s *GuestCodeStore) Edit(code string, expiresAt time.Time, durationMin, max
 	return true
 }
 
-// DeleteExpired 删所有过期码, 返回删除数量.
-func (s *GuestCodeStore) DeleteExpired() int {
+// DeleteInactive deletes codes that are no longer fresh in the admin UI:
+// already used or expired. It keeps only "unused" codes.
+func (s *GuestCodeStore) DeleteInactive() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
-	now := time.Now()
 	for k, c := range s.codes {
-		if !c.ExpiresAt.IsZero() && now.After(c.ExpiresAt) {
+		if c.Status() == "used" || c.Status() == "expired" {
 			delete(s.codes, k)
 			n++
 		}
@@ -258,6 +258,12 @@ func (s *GuestCodeStore) DeleteExpired() int {
 		s.saveLocked()
 	}
 	return n
+}
+
+// DeleteExpired is kept for older call sites; the admin action now treats
+// "inactive" as used or expired.
+func (s *GuestCodeStore) DeleteExpired() int {
+	return s.DeleteInactive()
 }
 
 // Validate: 找到、未过期、未达 MaxUses 就记一次使用, 返回 code 对象. nil = 无效.
