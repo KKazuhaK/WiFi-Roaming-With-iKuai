@@ -80,7 +80,7 @@
   "admin.codes.btn.delete": "Delete",
   "admin.codes.col.code": "Code",
   "admin.codes.col.status": "Status",
-  "admin.codes.col.duration": "Duration",
+  "admin.codes.col.duration": "Session duration",
   "admin.codes.col.expires": "Expires at",
   "admin.codes.col.usage": "Usage",
   "admin.codes.col.note": "Note",
@@ -91,17 +91,18 @@
   "admin.codes.usage.times": "%d times",
   "admin.codes.usage.dash": "—",
   "admin.codes.neverExpires": "Never",
+  "admin.codes.noSessionLimit": "Unlimited",
   "admin.codes.empty": "No guest codes yet. Click \"Add\" or \"Batch\" to create one.",
 
   "admin.policy.title": "iKuai allow policy",
-  "admin.policy.hint": "0 = unlimited; SSO/Duo timeout 0 = never expires; guest-code timeout auto-tracks code expiry",
+  "admin.policy.hint": "0 = unlimited; SSO/Duo timeout 0 = never expires; guest-code timeout is set by each code's session duration",
   "admin.policy.col.method": "Method",
   "admin.policy.col.upload": "Upload (KB/s)",
   "admin.policy.col.download": "Download (KB/s)",
   "admin.policy.col.timeout": "Timeout (min)",
   "admin.policy.col.comment": "Comment",
   "admin.policy.col.actions": "Actions",
-  "admin.policy.guestNote": "tracks remaining validity",
+  "admin.policy.guestNote": "set per guest code",
   "admin.policy.btn.save": "Save",
 
   "admin.macs.title": "MAC denylist",
@@ -181,7 +182,7 @@
   "admin.modal.add.code.placeholder": "leave blank to auto-generate 10 digits",
   "admin.modal.add.btn.autoGen": "Auto-generate",
   "admin.modal.add.expires.label": "Expires at (optional; blank = never expires)",
-  "admin.modal.add.duration.label": "Duration",
+  "admin.modal.add.duration.label": "Session duration (0 = unlimited)",
   "admin.modal.add.unitH": "h",
   "admin.modal.add.unitM": "min",
   "admin.modal.add.maxUses.label": "Max uses (0 = unlimited)",
@@ -203,7 +204,7 @@
   "admin.modal.result.btn.done": "Done",
 
   "admin.modal.edit.titleFmt": "Edit guest code",
-  "admin.modal.edit.subtext": "Devices already online keep their current iKuai timeout — editing only affects future grants.",
+  "admin.modal.edit.subtext": "Already-online devices keep their current iKuai timeout; edits only affect future activations.",
 
   "admin.common.cancel": "Cancel",
 

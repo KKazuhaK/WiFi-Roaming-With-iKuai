@@ -80,7 +80,7 @@
   "admin.codes.btn.delete": "刪除",
   "admin.codes.col.code": "上網碼",
   "admin.codes.col.status": "狀態",
-  "admin.codes.col.duration": "限時",
+  "admin.codes.col.duration": "單次限時",
   "admin.codes.col.expires": "過期時間",
   "admin.codes.col.usage": "使用記錄",
   "admin.codes.col.note": "備註",
@@ -91,17 +91,18 @@
   "admin.codes.usage.times": "%d 次",
   "admin.codes.usage.dash": "—",
   "admin.codes.neverExpires": "永不過期",
+  "admin.codes.noSessionLimit": "不限時",
   "admin.codes.empty": "還沒有訪客碼. 點\"新增\"或\"批次生成\"建立第一條.",
 
   "admin.policy.title": "iKuai 放行策略",
-  "admin.policy.hint": "0 = 不限速; SSO/Duo 逾時 0 = 不過期; 訪客碼逾時自動跟隨上網碼過期時間",
+  "admin.policy.hint": "0 = 不限速; SSO/Duo 逾時 0 = 不過期; 訪客碼逾時由每個碼的單次限時決定",
   "admin.policy.col.method": "認證方式",
   "admin.policy.col.upload": "上傳 (KB/s)",
   "admin.policy.col.download": "下載 (KB/s)",
   "admin.policy.col.timeout": "逾時 (分鐘)",
   "admin.policy.col.comment": "Comment",
   "admin.policy.col.actions": "操作",
-  "admin.policy.guestNote": "按上網碼剩餘有效期",
+  "admin.policy.guestNote": "按每個碼的單次限時",
   "admin.policy.btn.save": "儲存",
 
   "admin.macs.title": "MAC 封禁",
@@ -181,7 +182,7 @@
   "admin.modal.add.code.placeholder": "留空則自動生成 10 位數字",
   "admin.modal.add.btn.autoGen": "自動生成",
   "admin.modal.add.expires.label": "過期時間 (可選, 留空則永不過期)",
-  "admin.modal.add.duration.label": "限時",
+  "admin.modal.add.duration.label": "單次限時 (0 = 不限時)",
   "admin.modal.add.unitH": "小時",
   "admin.modal.add.unitM": "分",
   "admin.modal.add.maxUses.label": "可使用次數 (0 = 不限)",
@@ -203,7 +204,7 @@
   "admin.modal.result.btn.done": "完成",
 
   "admin.modal.edit.titleFmt": "編輯訪客碼",
-  "admin.modal.edit.subtext": "已經在線的裝置 iKuai 逾時不受影響 — 編輯只影響後續放行。",
+  "admin.modal.edit.subtext": "已經在線的裝置 iKuai 逾時不受影響，編輯只影響後續啟用。",
 
   "admin.common.cancel": "取消",
 
