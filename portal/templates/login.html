@@ -227,10 +227,13 @@
     </div>
     {{ end }}
 
+    <!-- 语言切换: href 在下面脚本里动态带上当前 URL 的 query string,
+         保留 iKuai 传来的 user_ip/mac 快照, 避免随机 MAC 设备跳 MAC 后仍
+         用上一次缓存. 禁 JS 时 href 降级为纯 ?lang=xxx (靠 cookie 兜底). -->
     <div class="lang-switch">
-      <a href="?lang=zh-cn" class="{{ if eq .Lang "zh-cn" }}active{{ end }}">{{ .S.LangZHCNLabel }}</a>
-      <a href="?lang=zh-tw" class="{{ if eq .Lang "zh-tw" }}active{{ end }}">{{ .S.LangZHTWLabel }}</a>
-      <a href="?lang=en"    class="{{ if eq .Lang "en" }}active{{ end }}">{{ .S.LangENLabel }}</a>
+      <a data-lang="zh-cn" href="?lang=zh-cn" class="{{ if eq .Lang "zh-cn" }}active{{ end }}">{{ .S.LangZHCNLabel }}</a>
+      <a data-lang="zh-tw" href="?lang=zh-tw" class="{{ if eq .Lang "zh-tw" }}active{{ end }}">{{ .S.LangZHTWLabel }}</a>
+      <a data-lang="en"    href="?lang=en"    class="{{ if eq .Lang "en" }}active{{ end }}">{{ .S.LangENLabel }}</a>
     </div>
 
     <div class="footer">{{ printf .S.Footer .Brand.Name }} · {{ .NowYear }}</div>
@@ -252,6 +255,20 @@
         for (var i = 0; i < steps.length; i++) steps[i].classList.remove('active');
         $(id).classList.add('active');
       }
+
+      // 给语言切换链接补上当前 URL 的 query string (iKuai 传的 user_ip/mac).
+      // 这样切语言不会丢 iKuai 的最新快照; 即使随机 MAC 跳过, 下一次 iKuai 302
+      // 会带新 MAC 把 URL 覆盖掉.
+      (function() {
+        var cur = new URL(window.location.href);
+        var links = document.querySelectorAll('.lang-switch a[data-lang]');
+        for (var i = 0; i < links.length; i++) {
+          var a = links[i];
+          var u = new URL(cur.href);
+          u.searchParams.set('lang', a.dataset.lang);
+          a.setAttribute('href', u.pathname + u.search);
+        }
+      })();
 
       // Step 1 → 2: SSO 主按钮 = 进入邮箱输入
       $('btn-to-sso').addEventListener('click', function() {
