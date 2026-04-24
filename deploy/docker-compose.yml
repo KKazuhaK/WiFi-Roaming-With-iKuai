@@ -89,10 +89,13 @@ services:
       - "${PORTAL_HTTPS_PORT:-28081}:${PORTAL_HTTPS_PORT:-28081}"
 
     environment:
-      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+      # 全部用 ${VAR:-} 默认空串, 即便 Mode A 的 .env 没有这几行也不会有
+      # "variable is not set" warning. Mode B 启用 profile 时必须把 CLOUDFLARE_API_TOKEN
+      # 和 ACME_EMAIL 填真实值, 否则 Caddy 申请证书会失败 (错误会直接报到日志里).
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
       - PORTAL_HOSTNAME=${PORTAL_HOSTNAME:-wifi.login.example.com}
       - PORTAL_HTTPS_PORT=${PORTAL_HTTPS_PORT:-28081}
-      - ACME_EMAIL=${ACME_EMAIL}
+      - ACME_EMAIL=${ACME_EMAIL:-}
 
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
