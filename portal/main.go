@@ -824,7 +824,7 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	log.Printf("grant guest: upn=%s code-suffix=%s client_ip=%s user_ip=%s mac=%s",
 		upn, tailN(c.Code, 4), clientIP(r), sess.UserIP, sess.MAC)
 	a.logLogin(upn, ResultSuccess, MethodGuestCode, sess.MAC, sess.UserIP,
-		"code=..."+tailN(c.Code, 4))
+		"code="+c.Code)
 	// 成功 → 清理同一设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess)
 	policy := a.ikuaiPolicies.Get(IKuaiProfileGuest)
