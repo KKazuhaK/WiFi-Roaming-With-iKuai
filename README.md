@@ -140,6 +140,7 @@ COMPOSE_PROFILES=caddy
 | `CLIENT_SECRET` | 你本地密码管理器里 `portal-prod-2026-v2` 的 Value |
 | `IKUAI_APPKEY` | iKuai 云面板 "生成" 得到 (Phase 4) |
 | `IKUAI_USER_ID_PREFIX` | 审计日志账号列前缀, 默认 `Kazuha_Hub` → `Kazuha_Hub-<upn>` |
+| `IKUAI_POLICY_PATH` | iKuai 放行策略持久化路径, 默认 `/data/ikuai-policy.json` |
 | `PUBLIC_URL` | 模式 A: `https://wifi.login.example.com` &nbsp;/&nbsp; 模式 B: `https://wifi.login.example.com:28081` (端口要对上) |
 | `SESSION_SECRET` | 运行 `openssl rand -hex 32` 生成一次, 贴进来. 多站点想共享 admin cookie 填同一个 |
 | `BRAND_NAME` | `Kazuha Hub` 或你喜欢的 |
@@ -226,16 +227,30 @@ ADMIN_GROUP_IDS=<刚才复制的 Object ID>
 - 设置每个码的**最大使用次数** (0 = 不限)
 - 筛选 (全部 / 已使用 / 未使用 / 已过期) + 搜索
 - 单条删除 / 批量删除失效
+- 按认证方式设置 iKuai 放行策略 (上传 / 下载 / 超时 / comment)
 - MAC 永久封禁 / 解除封禁
 - 从限流状态里的访客码 MAC 失败记录一键封禁设备
 
-**持久化 (可选)**: 默认只存内存, 容器重启数据丢。要跨 `restart` / 重建也保留,
-在 `.env` 里设 `GUEST_CODES_PATH=/data/guest-codes.json` 并在
-`docker-compose.yml` 里开 volume 挂载 (配置文件顶部有注释示例)。
+**持久化**: 访客码默认写到 `/data/guest-codes.json`。要跨镜像重建 / 删除容器保留,
+在 `docker-compose.yml` 里开 `/data` volume 挂载 (配置文件顶部有注释示例)。
 落盘采用原子写 (tmp + rename), 启动加载失败会 fatal 避免覆盖损坏文件。
 
-**MAC 封禁持久化 (可选)**: 管理员可以在 `/admin` 里永久封禁某个设备 MAC。
-要跨重建保留, 设 `DENYLIST_PATH=/data/denylist.json` 并使用同一个 `/data` volume。
+**MAC 封禁持久化**: 管理员可以在 `/admin` 里永久封禁某个设备 MAC。
+默认写到 `/data/denylist.json`; 要跨重建保留, 使用同一个 `/data` volume。
+
+**iKuai 放行策略持久化**: `/admin` 的"放行策略"页可分别设置 SSO 成员、
+Duo 成员、访客码的 `upload` / `download` / `timeout` / `comment`。启动默认值走 env:
+
+```
+IKUAI_SSO_UPLOAD=0       IKUAI_SSO_DOWNLOAD=0       IKUAI_SSO_TIMEOUT=0       IKUAI_SSO_COMMENT=
+IKUAI_DUO_UPLOAD=0       IKUAI_DUO_DOWNLOAD=0       IKUAI_DUO_TIMEOUT=0       IKUAI_DUO_COMMENT=
+IKUAI_GUEST_UPLOAD=0     IKUAI_GUEST_DOWNLOAD=0     IKUAI_GUEST_TIMEOUT=0     IKUAI_GUEST_COMMENT=
+```
+
+`upload` / `download` 单位是 KB, `0` = 不限速; `timeout` 单位是分钟, `0` = 不过期。
+默认写到 `/data/ikuai-policy.json`; 要让 Admin 修改跨重建保留, 使用同一个 `/data` volume。
+`comment` 会写进 iKuai 侧记录, 不要放敏感信息或完整访客码。
+访客码放行时会自动把 iKuai `timeout` 限制到该码的剩余有效分钟数内, 不会超过访客码限时。
 
 ### 步骤 3: 起服务
 

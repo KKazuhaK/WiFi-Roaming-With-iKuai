@@ -51,6 +51,7 @@ type App struct {
 	duoUniversal *DuoUniversalClient // Duo Universal Prompt (OIDC)
 	guestCodes   *GuestCodeStore
 	denylist     *DenylistStore
+	ikuaiPolicies *IKuaiPolicyStore
 	templates    *template.Template
 
 	// --- 限流 / 防滥用 ---
@@ -115,6 +116,16 @@ func main() {
 		log.Printf("MAC 封禁列表持久化: 未启用 (纯内存)")
 	}
 
+	ikuaiPolicyStore, err := newIKuaiPolicyStore(cfg.IKuaiPolicyDefaults, cfg.IKuaiPolicyPath)
+	if err != nil {
+		log.Fatalf("iKuai 放行策略初始化失败: %v", err)
+	}
+	if cfg.IKuaiPolicyPath != "" {
+		log.Printf("iKuai 放行策略持久化: 已启用, path=%s", cfg.IKuaiPolicyPath)
+	} else {
+		log.Printf("iKuai 放行策略持久化: 未启用 (纯内存, env 为启动默认值)")
+	}
+
 	tmpl, err := template.ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		log.Fatalf("模板加载失败: %v", err)
@@ -132,6 +143,7 @@ func main() {
 		duoUniversal:   duoUni,
 		guestCodes:     guestStore,
 		denylist:       denylistStore,
+		ikuaiPolicies:  ikuaiPolicyStore,
 		templates:      tmpl,
 		authEmailFails: newFailCounter(cfg.AuthEmailWindowLong),
 		guestCodeFails: newFailCounter(cfg.GuestCodeMacWindow),
@@ -189,6 +201,7 @@ func main() {
 	mux.HandleFunc("/admin/ratelimit/reset-all", app.handleRateLimitResetAll)
 	mux.HandleFunc("/admin/denylist/macs/create", app.handleDenyMACCreate)
 	mux.HandleFunc("/admin/denylist/macs/delete", app.handleDenyMACDelete)
+	mux.HandleFunc("/admin/ikuai-policy/update", app.handleIKuaiPolicyUpdate)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
 	srv := &http.Server{
@@ -620,7 +633,8 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 		user.UPN, user.Name, clientIP(r), sess.UserIP, sess.MAC)
 	// 成功认证后清理同一邮箱 / 设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess, user.UPN)
-	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, user.UPN)
+	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, user.UPN,
+		a.ikuaiPolicies.Get(IKuaiProfileSSO))
 	clearSessionCookie(w, true)
 	http.Redirect(w, r, ikuaiURL, http.StatusFound)
 }
@@ -682,7 +696,8 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 		username, clientIP(r), sess.UserIP, sess.MAC)
 	// 成功认证后清理同一邮箱 / 设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess, username)
-	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, username)
+	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, username,
+		a.ikuaiPolicies.Get(IKuaiProfileDuo))
 	clearSessionCookie(w, true)
 	http.Redirect(w, r, ikuaiURL, http.StatusFound)
 }
@@ -753,9 +768,23 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 		upn, tailN(c.Code, 4), clientIP(r), sess.UserIP, sess.MAC)
 	// 成功 → 清理同一设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess)
-	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, upn)
+	policy := a.ikuaiPolicies.Get(IKuaiProfileGuest)
+	policy.Timeout = capGuestPolicyTimeout(policy.Timeout, c.ExpiresAt)
+	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, upn,
+		policy)
 	clearSessionCookie(w, true)
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": ikuaiURL})
+}
+
+func capGuestPolicyTimeout(policyTimeout int, expiresAt time.Time) int {
+	remaining := int(time.Until(expiresAt).Seconds() / 60)
+	if remaining < 1 {
+		return 1
+	}
+	if policyTimeout == 0 || policyTimeout > remaining {
+		return remaining
+	}
+	return policyTimeout
 }
 
 // --- admin ---
@@ -1128,6 +1157,35 @@ func (a *App) handleDenyMACDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
 }
 
+func (a *App) handleIKuaiPolicyUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	admin, ok := a.requireAdmin(w, r, true)
+	if !ok {
+		return
+	}
+	profile, ok := parseIKuaiProfile(r.FormValue("profile"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_profile"})
+		return
+	}
+	policy := IKuaiPolicy{
+		Upload:   parseIntDefault(r.FormValue("upload"), 0),
+		Download: parseIntDefault(r.FormValue("download"), 0),
+		Timeout:  parseIntDefault(r.FormValue("timeout"), 0),
+		Comment:  strings.TrimSpace(r.FormValue("comment")),
+	}
+	if err := a.ikuaiPolicies.Set(profile, policy); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("admin %s 更新 iKuai 放行策略: profile=%s upload=%d download=%d timeout=%d comment=%q",
+		admin.UPN, profile, policy.Upload, policy.Download, policy.Timeout, policy.Comment)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func parseExpiry(r *http.Request, gc *GuestCode) error {
 	exp := strings.TrimSpace(r.FormValue("expires_at"))
 	if exp != "" {
@@ -1232,6 +1290,7 @@ type adminPageData struct {
 	NowYear    int
 	Codes      []adminCodeRow
 	DeniedMACs []adminDeniedMACRow
+	IKuaiPolicies []IKuaiPolicyRow
 	Total      int
 	Used       int
 	Unused     int
@@ -1301,6 +1360,7 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 		NowYear:    time.Now().Year(),
 		Codes:      rows,
 		DeniedMACs: deniedRows,
+		IKuaiPolicies: a.ikuaiPolicies.List(),
 		Total:      total,
 		Used:       used,
 		Unused:     unused,
