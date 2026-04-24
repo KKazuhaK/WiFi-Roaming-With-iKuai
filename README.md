@@ -18,11 +18,13 @@
 | | **A. 公网 VPS** (本 README) | **B. 站点内网 LAN 盒子** |
 |---|---|---|
 | 位置 | 公网 VPS + 域名直指 | 每个站点一台 LAN 盒子, iKuai DNS 劫持指向它 |
+| 端口 | 443 (aaPanel Nginx 处理) | 默认 28081 (可改 443 若端口没冲突) |
 | TLS | aaPanel 自动 ACME HTTP-01 | Caddy 自动 ACME DNS-01 (Cloudflare) |
 | 反代 | aaPanel 的 Nginx | Caddy |
 | 公网攻击面 | 有, 靠 App 层三道限流 + 可选 Nginx 白名单 | **无**, 域名外网根本不解析过去 |
 | admin 远程访问 | ✓ | ✗ (只能在 WiFi 网内) |
 | 每站点成本 | 一台 VPS 够所有站点 | 每站点一台小机器 |
+| Cross-site admin | cookie 自带跨站 | 填同一 SESSION_SECRET 即可跨站 |
 
 两种模式**同一份 Portal 代码**, 只是部署拓扑不同。公网模式看下面继续读, 内网模式见
 [`deploy/intranet/README.md`](./deploy/intranet/README.md)。
