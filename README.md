@@ -414,7 +414,7 @@ Portal 面向公网, 默认就带以下应用层防御, **不需要额外配置*
 
 | 规则 | 键 | 默认阈值 | 成功清零条件 | 命中动作 |
 |---|---|---|---|---|
-| **1** · `/auth/start` | email | 5 分钟 3 次 **或** 1 小时 10 次 | `/auth/callback` 或 `/auth/duo-callback` 成功 | 429 `rate_limited` |
+| **1** · `/auth/start` | email | 3 分钟 5 次 **或** 1 小时 20 次 | `/auth/callback` 或 `/auth/duo-callback` 成功 | 429 `rate_limited` |
 | **5** · `/auth/guest-code` | session cookie 里签名的 MAC | 1 小时 10 次 | 访客码正确 | 429 `rate_limited` |
 | **6** · 全端点兜底 | IP (X-Real-IP) | 1 小时累计 30 次任意失败 | 不自动, 封禁到期 | 封 1 小时, 所有 /auth/* 直接 429 |
 
@@ -431,18 +431,28 @@ Portal 面向公网, 默认就带以下应用层防御, **不需要额外配置*
 ### 阈值 env (全部可选, 默认已列在表里)
 
 ```
-AUTH_EMAIL_FAILS_SHORT=3         AUTH_EMAIL_WINDOW_SHORT=5m
-AUTH_EMAIL_FAILS_LONG=10         AUTH_EMAIL_WINDOW_LONG=1h
+AUTH_EMAIL_FAILS_SHORT=5         AUTH_EMAIL_WINDOW_SHORT=3m
+AUTH_EMAIL_FAILS_LONG=20         AUTH_EMAIL_WINDOW_LONG=1h
 GUEST_CODE_MAC_FAILS=10          GUEST_CODE_MAC_WINDOW=1h
 IP_FAILS_LIMIT=30                IP_FAILS_WINDOW=1h
 IP_BAN_DURATION=1h
 AUTH_PROCEED_TTL=5m              # opaque token 存活时间
 ```
 
+### Admin 限流面板
+
+误封了? `/admin` 页面底部有**限流状态**表, 列出:
+- 当前被封的 IP (规则 6)
+- 有失败计数的邮箱 (规则 1)
+- 有失败计数的 MAC (规则 5)
+- 有失败计数但还没触发封禁的 IP
+
+每行有**解除**按钮, 点一下立即清该 key 的相应计数 / 解封。每 15 秒自动刷新, 也能手动刷新。管理员操作会打日志 `admin <upn> 清除限流: type=... key=...`。
+
 ### 关键日志片段
 
 ```
-限流: email 3/5m0s + 10/1h0m0s, MAC 10/1h0m0s, IP 30/1h0m0s → ban 1h0m0s
+限流: email 5/3m0s + 20/1h0m0s, MAC 10/1h0m0s, IP 30/1h0m0s → ban 1h0m0s
 # ↑ 启动时打印, 确认阈值加载成功
 
 auth/start 邮箱限流: me@kazuha.org short=3 long=3 ip=1.2.3.4

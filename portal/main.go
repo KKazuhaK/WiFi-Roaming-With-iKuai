@@ -154,6 +154,8 @@ func main() {
 	mux.HandleFunc("/admin/codes/batch", app.handleCodeBatch)
 	mux.HandleFunc("/admin/codes/delete", app.handleCodeDelete)
 	mux.HandleFunc("/admin/codes/delete-expired", app.handleCodeDeleteExpired)
+	mux.HandleFunc("/admin/ratelimit/status", app.handleRateLimitStatus)
+	mux.HandleFunc("/admin/ratelimit/reset", app.handleRateLimitReset)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
 	srv := &http.Server{
@@ -779,6 +781,69 @@ func (a *App) handleCodeDeleteExpired(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": a.guestCodes.DeleteExpired()})
+}
+
+// handleRateLimitStatus GET /admin/ratelimit/status
+// 返回当前限流状态快照 (被封 IP + 邮箱 / MAC 失败计数), 供 admin UI 渲染.
+func (a *App) handleRateLimitStatus(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.requireAdmin(w, r, true); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"ip_bans":         a.ipBans.snapshot(),
+		"email_fails":     a.authEmailFails.snapshot(),
+		"guest_mac_fails": a.guestCodeFails.snapshot(),
+		"ip_fails":        a.ipFails.snapshot(),
+		"now_unix":        time.Now().Unix(),
+		"thresholds": map[string]any{
+			"email_short":    a.cfg.AuthEmailFailsShort,
+			"email_short_s":  int(a.cfg.AuthEmailWindowShort.Seconds()),
+			"email_long":     a.cfg.AuthEmailFailsLong,
+			"email_long_s":   int(a.cfg.AuthEmailWindowLong.Seconds()),
+			"mac":            a.cfg.GuestCodeMacFails,
+			"mac_s":          int(a.cfg.GuestCodeMacWindow.Seconds()),
+			"ip":             a.cfg.IPFailsLimit,
+			"ip_s":           int(a.cfg.IPFailsWindow.Seconds()),
+			"ip_ban_s":       int(a.cfg.IPBanDuration.Seconds()),
+		},
+	})
+}
+
+// handleRateLimitReset POST /admin/ratelimit/reset
+// form: type=ip_ban|ip_fails|email|mac, key=<value>
+// 对应清除 / 解封该 key 的限流状态.
+func (a *App) handleRateLimitReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	admin, ok := a.requireAdmin(w, r, true)
+	if !ok {
+		return
+	}
+	t := strings.TrimSpace(r.FormValue("type"))
+	key := strings.TrimSpace(r.FormValue("key"))
+	if key == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_key"})
+		return
+	}
+	switch t {
+	case "ip_ban":
+		a.ipBans.unban(key)
+		a.ipFails.reset(key) // 同时清 IP 累计计数, 避免刚解封又立刻触发
+	case "ip_fails":
+		a.ipFails.reset(key)
+	case "email":
+		a.authEmailFails.reset(strings.ToLower(key))
+	case "mac":
+		a.guestCodeFails.reset(key)
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_type"})
+		return
+	}
+	log.Printf("admin %s 清除限流: type=%s key=%s", admin.UPN, t, key)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func parseExpiry(r *http.Request, gc *GuestCode) error {

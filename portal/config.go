@@ -116,9 +116,9 @@ func loadConfig() Config {
 		AdminGroupIDs:  splitCSV(envOr("ADMIN_GROUP_IDS", "")),
 		GuestCodesPath: strings.TrimSpace(envOr("GUEST_CODES_PATH", "")),
 
-		AuthEmailFailsShort:  envOrInt("AUTH_EMAIL_FAILS_SHORT", 3),
-		AuthEmailWindowShort: envOrDuration("AUTH_EMAIL_WINDOW_SHORT", 5*time.Minute),
-		AuthEmailFailsLong:   envOrInt("AUTH_EMAIL_FAILS_LONG", 10),
+		AuthEmailFailsShort:  envOrInt("AUTH_EMAIL_FAILS_SHORT", 5),
+		AuthEmailWindowShort: envOrDuration("AUTH_EMAIL_WINDOW_SHORT", 3*time.Minute),
+		AuthEmailFailsLong:   envOrInt("AUTH_EMAIL_FAILS_LONG", 20),
 		AuthEmailWindowLong:  envOrDuration("AUTH_EMAIL_WINDOW_LONG", time.Hour),
 		GuestCodeMacFails:    envOrInt("GUEST_CODE_MAC_FAILS", 10),
 		GuestCodeMacWindow:   envOrDuration("GUEST_CODE_MAC_WINDOW", time.Hour),

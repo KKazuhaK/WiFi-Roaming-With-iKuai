@@ -285,6 +285,31 @@
         </tbody>
       </table>
     </div>
+
+    <!-- 限流状态 -->
+    <section style="margin-top: 32px;">
+      <div class="toolbar" style="margin-bottom: 16px;">
+        <div style="font-weight: 600; font-size: 16px; flex: 1;">限流状态</div>
+        <div id="rl-thresholds" class="muted" style="font-size: 12px;"></div>
+        <button type="button" class="btn btn-mini" onclick="refreshRL()">刷新</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 120px;">类型</th>
+              <th>Key</th>
+              <th style="width: 160px;">状态</th>
+              <th style="width: 100px;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="rl-tbody">
+            <tr><td colspan="4" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </main>
 
   <!-- 单条添加 -->
@@ -540,6 +565,147 @@
     document.querySelectorAll('.modal-backdrop').forEach(function(b) {
       b.addEventListener('click', function(e) { if (e.target === b) b.classList.remove('active'); });
     });
+
+    // ===== 限流管理 =====
+
+    function fmtDurationSecs(s) {
+      if (s <= 0) return '0 秒';
+      if (s < 60) return s + ' 秒';
+      if (s < 3600) return Math.round(s / 60) + ' 分';
+      var h = Math.floor(s / 3600);
+      var m = Math.round((s % 3600) / 60);
+      return m > 0 ? h + ' 时 ' + m + ' 分' : h + ' 时';
+    }
+
+    function fmtTime(unix) {
+      var d = new Date(unix * 1000);
+      return d.toLocaleTimeString('zh-CN', { hour12: false });
+    }
+
+    function renderRLStatus(body) {
+      var th = body.thresholds;
+      $('rl-thresholds').textContent =
+        '邮箱 ' + th.email_short + '/' + fmtDurationSecs(th.email_short_s) +
+        ' + ' + th.email_long + '/' + fmtDurationSecs(th.email_long_s) +
+        ' | MAC ' + th.mac + '/' + fmtDurationSecs(th.mac_s) +
+        ' | IP ' + th.ip + '/' + fmtDurationSecs(th.ip_s) +
+        ' ban ' + fmtDurationSecs(th.ip_ban_s);
+
+      var now = body.now_unix;
+      var rows = [];
+
+      // IP 封禁 (最紧急, 排最前)
+      (body.ip_bans || []).forEach(function(b) {
+        var remain = b.expires_unix - now;
+        rows.push({
+          type: 'IP 封禁',
+          typeClass: 'expired',
+          key: b.ip,
+          status: '到期 ' + fmtTime(b.expires_unix) + ' (剩 ' + fmtDurationSecs(Math.max(0, remain)) + ')',
+          resetType: 'ip_ban',
+          resetKey: b.ip
+        });
+      });
+
+      // 邮箱失败计数
+      (body.email_fails || []).forEach(function(e) {
+        var exceedShort = e.count >= th.email_short;
+        var exceedLong = e.count >= th.email_long;
+        rows.push({
+          type: '邮箱',
+          typeClass: exceedShort || exceedLong ? 'expired' : 'used',
+          key: e.key,
+          status: e.count + ' 次 · 最近 ' + fmtTime(e.latest_unix),
+          resetType: 'email',
+          resetKey: e.key
+        });
+      });
+
+      // MAC 失败计数
+      (body.guest_mac_fails || []).forEach(function(m) {
+        var exceed = m.count >= th.mac;
+        rows.push({
+          type: '访客码 MAC',
+          typeClass: exceed ? 'expired' : 'used',
+          key: m.key,
+          status: m.count + ' 次 · 最近 ' + fmtTime(m.latest_unix),
+          resetType: 'mac',
+          resetKey: m.key
+        });
+      });
+
+      // IP 失败计数 (非封禁)
+      (body.ip_fails || []).forEach(function(i) {
+        // 如果已经在 ip_bans 里出现过, 别重复列
+        var already = (body.ip_bans || []).some(function(b) { return b.ip === i.key; });
+        if (already) return;
+        var approaching = i.count >= Math.ceil(th.ip * 0.5);
+        rows.push({
+          type: 'IP 累计',
+          typeClass: approaching ? 'used' : 'unused',
+          key: i.key,
+          status: i.count + ' 次 · 最近 ' + fmtTime(i.latest_unix),
+          resetType: 'ip_fails',
+          resetKey: i.key
+        });
+      });
+
+      var tbody = $('rl-tbody');
+      tbody.innerHTML = '';
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">当前没有触发限流 / 封禁的条目.</td></tr>';
+        return;
+      }
+      rows.forEach(function(r) {
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td><span class="chip ' + r.typeClass + '">' + r.type + '</span></td>' +
+          '<td class="code">' + escapeHTML(r.key) + '</td>' +
+          '<td class="muted">' + escapeHTML(r.status) + '</td>' +
+          '<td></td>';
+        var btn = document.createElement('button');
+        btn.className = 'btn btn-danger btn-mini';
+        btn.textContent = '解除';
+        btn.addEventListener('click', function() { resetRL(r.resetType, r.resetKey); });
+        tr.children[3].appendChild(btn);
+        tbody.appendChild(tr);
+      });
+    }
+
+    function escapeHTML(s) {
+      var d = document.createElement('div');
+      d.textContent = String(s);
+      return d.innerHTML;
+    }
+
+    function refreshRL() {
+      fetch('/admin/ratelimit/status', { credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(b) { if (b.ok) renderRLStatus(b); })
+        .catch(function() { /* noop */ });
+    }
+
+    function resetRL(type, key) {
+      if (!confirm('确认清除 ' + type + ' 的限流状态: ' + key + ' ?')) return;
+      var fd = new FormData();
+      fd.append('type', type);
+      fd.append('key', key);
+      fetch('/admin/ratelimit/reset', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(b) {
+          if (b.ok) {
+            toast('已清除');
+            refreshRL();
+          } else {
+            toast('清除失败: ' + (b.error || 'unknown'));
+          }
+        })
+        .catch(function() { toast('网络异常'); });
+    }
+
+    // 首次加载 + 每 15 秒自动刷新
+    refreshRL();
+    setInterval(refreshRL, 15000);
   </script>
 </body>
 </html>
