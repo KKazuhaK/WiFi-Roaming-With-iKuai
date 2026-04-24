@@ -479,7 +479,7 @@
       <button type="button" class="btn btn-primary" onclick="openModal('modal-add')"><svg class="icon"><use href="#i-plus"/></svg>{{ T .Lang "admin.codes.btn.add" }}</button>
       <button type="button" class="btn" onclick="openModal('modal-batch')"><svg class="icon"><use href="#i-plus"/></svg>{{ T .Lang "admin.codes.btn.batch" }}</button>
       <button type="button" class="btn btn-danger" id="btn-bulk-delete" onclick="bulkDeleteCodes()" disabled><svg class="icon"><use href="#i-trash-2"/></svg>{{ T .Lang "admin.codes.btn.deleteSelected" }}(<span id="bulk-count">0</span>)</button>
-      <button type="button" class="btn btn-danger" onclick="deleteExpired()"><svg class="icon"><use href="#i-trash-2"/></svg>{{ T .Lang "admin.codes.btn.deleteExpired" }}</button>
+      <button type="button" class="btn btn-danger" onclick="deleteInactiveCodes()"><svg class="icon"><use href="#i-trash-2"/></svg>{{ T .Lang "admin.codes.btn.deleteExpired" }}</button>
     </div>
 
     <div class="table-wrap">
@@ -1061,9 +1061,9 @@
         });
     }
 
-    function deleteExpired() {
+    function deleteInactiveCodes() {
       if (!confirm(T('admin.confirm.deleteExpired'))) return;
-      fetch('/admin/codes/delete-expired', { method: 'POST', credentials: 'same-origin' })
+      fetch('/admin/codes/delete-inactive', { method: 'POST', credentials: 'same-origin' })
         .then(function(r) { return r.json(); })
         .then(function(body) {
           toast(T('admin.toast.expiredDeleted', body.deleted));
