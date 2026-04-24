@@ -51,6 +51,11 @@ type App struct {
 	duoUniversal *DuoUniversalClient // Duo Universal Prompt (OIDC)
 	guestCodes   *GuestCodeStore
 	templates    *template.Template
+	// 限流: 防 /auth/start 被脚本刷 → 触发 Duo Universal Prompt → MFA 轰炸.
+	// authRateByIP    每 IP    30 次/分钟  — 挡脚本蛮冲.
+	// authRateByEmail 每 email 10 次/小时  — 即使攻击者轮换 IP, 也限推送频率.
+	authRateByIP    *rateLimiter
+	authRateByEmail *rateLimiter
 }
 
 func main() {
@@ -97,13 +102,17 @@ func main() {
 	}
 
 	app := &App{
-		cfg:          cfg,
-		oidc:         oidcClient,
-		duo:          duoClient,
-		duoUniversal: duoUni,
-		guestCodes:   guestStore,
-		templates:    tmpl,
+		cfg:             cfg,
+		oidc:            oidcClient,
+		duo:             duoClient,
+		duoUniversal:    duoUni,
+		guestCodes:      guestStore,
+		templates:       tmpl,
+		authRateByIP:    newRateLimiter(30, time.Minute),
+		authRateByEmail: newRateLimiter(10, time.Hour),
 	}
+	go app.authRateByIP.gcLoop()
+	go app.authRateByEmail.gcLoop()
 
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -220,6 +229,13 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
+	// IP 层限流: 第一道闸, 在读 session / 解 body 之前挡脚本蛮冲.
+	ip := clientIP(r)
+	if !a.authRateByIP.allow(ip) {
+		log.Printf("auth/start 限流 (ip): %s", ip)
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
+		return
+	}
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_lost"})
@@ -235,6 +251,13 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	if a.cfg.IsDuoEnabled() && !isAllowedDomain(email, a.cfg.AllowedEmailDomains) {
 		log.Printf("拒绝域名不在白名单: %s", email)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_domain"})
+		return
+	}
+	// Email 层限流: 放在域名白名单之后, 避免攻击者用乱码邮箱浪费受害者配额.
+	// 这是防 MFA 轰炸的核心 — 即使攻击者轮换 IP, 也卡住单一受害者的推送频率.
+	if !a.authRateByEmail.allow(email) {
+		log.Printf("auth/start 限流 (email): %s ip=%s", email, ip)
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
 		return
 	}
 
