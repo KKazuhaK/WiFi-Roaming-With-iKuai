@@ -113,10 +113,8 @@ BRAND_COLOR=#2563eb
 ADMIN_EMAILS=me@kazuha.org
 #ADMIN_GROUP_IDS=<如果你配了 Entra 组, 填 GUID>
 
-# === 访客码 / MAC 封禁 / iKuai 放行策略持久化 ===
-GUEST_CODES_PATH=/data/guest-codes.json
-DENYLIST_PATH=/data/denylist.json
-IKUAI_POLICY_PATH=/data/ikuai-policy.json
+# 持久化数据 (访客码 / MAC 封禁 / iKuai 放行策略 / 事件日志) 默认全部写到容器内 /data/,
+# docker-compose.yml 里已经把 /data bind-mount 到 ./data/, 不需要在这里配置任何 *_PATH.
 
 # === Duo (可选) ===
 #DUO_IKEY=
@@ -135,7 +133,8 @@ cookie 跨部署不互通。如果 Windows 手头没 openssl, PowerShell 里:
 
 ### `data/` 目录
 
-File Station 里在项目目录 **新增資料夾** → 命名 `data`。权限默认就行, 容器会以 root 写 `guest-codes.json`、`denylist.json` 和 `ikuai-policy.json` 进去。
+File Station 里在项目目录 **新增資料夾** → 命名 `data`。权限默认就行, 容器会以 root 写
+`guest-codes.json` / `denylist.json` / `ikuai-policy.json` / `events.jsonl` 进去。
 
 ---
 
