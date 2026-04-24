@@ -227,6 +227,7 @@ func main() {
 	mux.HandleFunc("/auth/guest-code", app.handleGuestCode)
 	mux.HandleFunc("/admin", app.handleAdmin)
 	mux.HandleFunc("/admin/login", app.handleAdminLogin)
+	mux.HandleFunc("/admin/login/start", app.handleAdminLoginStart)
 	mux.HandleFunc("/admin/logout", app.handleAdminLogout)
 	mux.HandleFunc("/admin/codes/create", app.handleCodeCreate)
 	mux.HandleFunc("/admin/codes/batch", app.handleCodeBatch)
@@ -842,6 +843,23 @@ func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
 	if !a.cfg.IsAdminEnabled() {
 		a.renderError(w, r, lang, T(lang, "errors.adminDisabled"), http.StatusNotFound)
+		return
+	}
+	if _, err := readAdminCookie(r, a.cfg.SessionSecret); err == nil {
+		http.Redirect(w, r, "/admin", http.StatusFound)
+		return
+	}
+	a.renderAdminLogin(w, r, lang)
+}
+
+func (a *App) handleAdminLoginStart(w http.ResponseWriter, r *http.Request) {
+	lang := pickLang(r)
+	if !a.cfg.IsAdminEnabled() {
+		a.renderError(w, r, lang, T(lang, "errors.adminDisabled"), http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
 	sess, err := newAdminPreloginSession(string(lang))
@@ -1648,6 +1666,19 @@ func (a *App) renderLogin(w http.ResponseWriter, r *http.Request, lang Lang, dev
 	w.Header().Set("Cache-Control", "no-store")
 	if err := a.templates.ExecuteTemplate(w, "login.html", data); err != nil {
 		log.Printf("template render failed: %v", err)
+	}
+}
+
+func (a *App) renderAdminLogin(w http.ResponseWriter, r *http.Request, lang Lang) {
+	data := pageData{
+		Lang:    lang,
+		Brand:   a.makeBrand(),
+		NowYear: time.Now().Year(),
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := a.templates.ExecuteTemplate(w, "admin_login.html", data); err != nil {
+		log.Printf("admin login template render failed: %v", err)
 	}
 }
 

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="{{ .Lang }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{{ T .Lang "admin.login.title" .Brand.Name }}</title>
+  <style>
+    :root {
+      --brand-color: {{ .Brand.Color }};
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --text: #111827;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b0f19;
+        --surface: #111827;
+        --text: #f3f4f6;
+        --text-muted: #9ca3af;
+        --border: #1f2937;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; min-height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                   "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      min-height: 100vh;
+    }
+    .card {
+      background: var(--surface);
+      border-radius: 16px;
+      padding: 32px 28px;
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.06);
+      border: 1px solid var(--border);
+    }
+    .brand-logo {
+      display: none;
+      margin: 0 auto 24px;
+      max-width: 240px;
+      max-height: 90px;
+      width: auto;
+      height: auto;
+    }
+    .brand-logo.light { display: block; }
+    @media (prefers-color-scheme: dark) {
+      .brand-logo.light { display: none; }
+      .brand-logo.dark  { display: block; }
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0 0 8px;
+      text-align: center;
+      font-weight: 600;
+    }
+    .subtitle {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 14px;
+      margin: 0 0 24px;
+      line-height: 1.5;
+    }
+    .hint {
+      color: var(--text-muted);
+      font-size: 13px;
+      margin: 0 0 12px;
+      line-height: 1.5;
+      text-align: center;
+    }
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      font-family: inherit;
+      border: 1px solid transparent;
+      background: var(--brand-color);
+      color: white;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:active { opacity: 0.8; }
+    .btn-icon {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      stroke-width: 2;
+    }
+    .lang-switch {
+      text-align: center;
+      margin-top: 16px;
+      font-size: 12px;
+    }
+    .lang-switch a {
+      color: var(--text-muted);
+      text-decoration: none;
+      margin: 0 8px;
+    }
+    .lang-switch a.active { color: var(--brand-color); font-weight: 600; }
+    .footer {
+      margin-top: 32px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <img class="brand-logo light" src="/static/logo+title-circle.png"          alt="{{ .Brand.Name }}">
+    <img class="brand-logo dark"  src="/static/logo+title-circle-darkmode.png" alt="{{ .Brand.Name }}">
+
+    <h1>{{ T .Lang "admin.login.title" .Brand.Name }}</h1>
+    <p class="subtitle">{{ T .Lang "admin.login.subtitle" }}</p>
+    <p class="hint">{{ T .Lang "admin.login.hint" }}</p>
+
+    <form method="post" action="/admin/login/start?lang={{ .Lang }}">
+      <button type="submit" class="btn">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
+          <path d="m10 17 5-5-5-5"></path>
+          <path d="M15 12H3"></path>
+        </svg>
+        <span>{{ T .Lang "admin.login.btn.sso" }}</span>
+      </button>
+    </form>
+
+    <div class="lang-switch">
+      <a href="/admin/login?lang=zh-cn" class="{{ if eq .Lang "zh-cn" }}active{{ end }}">{{ T .Lang "lang.zhCn" }}</a>
+      <a href="/admin/login?lang=zh-tw" class="{{ if eq .Lang "zh-tw" }}active{{ end }}">{{ T .Lang "lang.zhTw" }}</a>
+      <a href="/admin/login?lang=en"    class="{{ if eq .Lang "en" }}active{{ end }}">{{ T .Lang "lang.en" }}</a>
+    </div>
+
+    <div class="footer">{{ T .Lang "common.footer" .Brand.Name }} · {{ .NowYear }}</div>
+  </main>
+</body>
+</html>

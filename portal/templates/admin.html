@@ -883,7 +883,7 @@
     // Admin session 服务端 1h 后到期, /admin/* JSON 接口会返 401 not_logged_in.
     // 现存的 fetch 调用都是 .catch(noop) 或只看 b.ok, 401 静默丢掉, 用户看到的是
     // 一直停留在管理页 + 自动刷新拉不到数据. 包一下 fetch: /admin/* 拿到 401 立刻
-    // 跳 /admin/login (会触发 SSO 重新登录).
+    // 跳 /admin/login, 让用户主动点击后再重新 SSO 登录.
     var __adminRedirecting = false;
     var __origFetch = window.fetch;
     window.fetch = function(input, init) {

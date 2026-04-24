@@ -27,7 +27,7 @@
   "errors.expired": "登录超时，请重新尝试。",
   "errors.title": "连接失败",
   "errors.generic": "暂时无法完成认证，请稍后重试。如问题持续请联系管理员。",
-  "errors.adminDisabled": "Admin 后台未配置 (ADMIN_EMAILS)。",
+  "errors.adminDisabled": "Admin 后台未配置 (ADMIN_EMAILS 或 ADMIN_GROUP_IDS)。",
   "errors.notAdminMember": "你的账号不在 admin 列表, 请联系管理员。",
 
   "common.footer": "© %s · WiFi",
@@ -51,6 +51,10 @@
   "misc.labelAccount": "账号",
 
   "admin.pageTitle": "%s Wi-Fi Portal Admin",
+  "admin.login.title": "%s 管理后台",
+  "admin.login.subtitle": "登录后可管理访客码、放行策略、限流状态和事件日志。",
+  "admin.login.hint": "SSO 登录完成后会检查管理员权限。",
+  "admin.login.btn.sso": "使用 SSO 登录",
   "admin.header.logout": "登出",
 
   "admin.dash.loginsToday": "今日登录成功 (24h)",

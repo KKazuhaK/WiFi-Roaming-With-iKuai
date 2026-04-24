@@ -27,7 +27,7 @@
   "errors.expired": "Sign-in timed out. Please try again.",
   "errors.title": "Connection Failed",
   "errors.generic": "Could not complete authentication. Please try again later or contact your admin.",
-  "errors.adminDisabled": "Admin console is not configured (ADMIN_EMAILS).",
+  "errors.adminDisabled": "Admin console is not configured (ADMIN_EMAILS or ADMIN_GROUP_IDS).",
   "errors.notAdminMember": "Your account is not on the admin list. Please contact your administrator.",
 
   "common.footer": "© %s · WiFi",
@@ -51,6 +51,10 @@
   "misc.labelAccount": "Account",
 
   "admin.pageTitle": "%s Wi-Fi Portal Admin",
+  "admin.login.title": "%s Admin",
+  "admin.login.subtitle": "Sign in to manage guest codes, allow policies, rate limits, and audit logs.",
+  "admin.login.hint": "Admin access is checked after SSO.",
+  "admin.login.btn.sso": "Sign in with SSO",
   "admin.header.logout": "Sign out",
 
   "admin.dash.loginsToday": "Logins today (24h)",

@@ -27,7 +27,7 @@
   "errors.expired": "登入逾時，請重新嘗試。",
   "errors.title": "連線失敗",
   "errors.generic": "暫時無法完成驗證，請稍後重試。如問題持續請聯絡管理員。",
-  "errors.adminDisabled": "Admin 後台未設定 (ADMIN_EMAILS)。",
+  "errors.adminDisabled": "Admin 後台未設定 (ADMIN_EMAILS 或 ADMIN_GROUP_IDS)。",
   "errors.notAdminMember": "你的帳號不在 admin 清單, 請聯絡管理員。",
 
   "common.footer": "© %s · WiFi",
@@ -51,6 +51,10 @@
   "misc.labelAccount": "帳號",
 
   "admin.pageTitle": "%s Wi-Fi Portal Admin",
+  "admin.login.title": "%s 管理後台",
+  "admin.login.subtitle": "登入後可管理訪客碼、放行策略、限流狀態和事件日誌。",
+  "admin.login.hint": "SSO 登入完成後會檢查管理員權限。",
+  "admin.login.btn.sso": "使用 SSO 登入",
   "admin.header.logout": "登出",
 
   "admin.dash.loginsToday": "今日登入成功 (24h)",
