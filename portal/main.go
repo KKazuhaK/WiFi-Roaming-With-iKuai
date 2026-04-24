@@ -1636,6 +1636,7 @@ func (a *App) renderError(w http.ResponseWriter, r *http.Request, lang Lang, msg
 }
 
 type adminPageData struct {
+	Lang          Lang
 	Brand         brandData
 	AdminUPN      string
 	NowYear       int
@@ -1720,6 +1721,7 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 		})
 	}
 	data := adminPageData{
+		Lang:          pickLang(r),
 		Brand:         a.makeBrand(),
 		AdminUPN:      admin.UPN,
 		NowYear:       time.Now().Year(),
