@@ -1,13 +1,20 @@
 package main
 
 // admin.go
-// 访客码管理后台: 数据模型 + 内存存储 + 随机生成.
-// 容器重启数据会丢 — 小团队运维场景下可接受. 要持久化就加 JSON 文件刷盘,
-// 把 GuestCodeStore 的 Add/Delete/Validate 包一层磁盘写入.
+// 访客码管理后台: 数据模型 + 内存存储 + 可选 JSON 持久化 + 随机生成.
+//
+// 持久化: newGuestCodeStore(path) 的 path 非空时, 启动加载 + 每次变更原子写盘
+// (tmp + rename). path 空 = 纯内存, 重启数据丢.
+// 配合 docker-compose volume 把 path 所在目录挂出来, 容器重启不丢码.
 
 import (
 	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"log"
 	"math/big"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -70,14 +77,85 @@ func (c *GuestCode) Status() string {
 	}
 }
 
-// GuestCodeStore: 内存存储, 并发安全.
+// GuestCodeStore: 内存存储, 并发安全, 可选磁盘持久化.
+// persistPath 空则不落盘.
 type GuestCodeStore struct {
-	mu    sync.RWMutex
-	codes map[string]*GuestCode // key = strings.ToLower(Code)
+	mu          sync.RWMutex
+	codes       map[string]*GuestCode // key = strings.ToLower(Code)
+	persistPath string
 }
 
-func newGuestCodeStore() *GuestCodeStore {
-	return &GuestCodeStore{codes: make(map[string]*GuestCode)}
+// newGuestCodeStore: persistPath 空 = 纯内存; 非空则尝试从文件加载, 失败直接返回 err
+// (启动阶段暴露, 不静默覆盖).
+func newGuestCodeStore(persistPath string) (*GuestCodeStore, error) {
+	s := &GuestCodeStore{
+		codes:       make(map[string]*GuestCode),
+		persistPath: persistPath,
+	}
+	if persistPath == "" {
+		return s, nil
+	}
+	if err := s.loadFromDisk(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// loadFromDisk: 只在启动时调一次, 不持锁.
+func (s *GuestCodeStore) loadFromDisk() error {
+	data, err := os.ReadFile(s.persistPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // 首次启动, 文件还没建
+		}
+		return fmt.Errorf("读取 %s: %w", s.persistPath, err)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	var codes []*GuestCode
+	if err := json.Unmarshal(data, &codes); err != nil {
+		return fmt.Errorf("解析 %s: %w", s.persistPath, err)
+	}
+	for _, c := range codes {
+		k := strings.ToLower(strings.TrimSpace(c.Code))
+		if k == "" {
+			continue
+		}
+		s.codes[k] = c
+	}
+	log.Printf("访客码持久化: 从 %s 加载 %d 条", s.persistPath, len(s.codes))
+	return nil
+}
+
+// saveLocked: 必须在已持写锁时调用. 原子写 (tmp → rename). 失败只记日志,
+// 不回滚内存状态 — 下一次变更会再写一次, 重启才会丢这次变更.
+func (s *GuestCodeStore) saveLocked() {
+	if s.persistPath == "" {
+		return
+	}
+	codes := make([]*GuestCode, 0, len(s.codes))
+	for _, c := range s.codes {
+		codes = append(codes, c)
+	}
+	data, err := json.MarshalIndent(codes, "", "  ")
+	if err != nil {
+		log.Printf("访客码序列化失败: %v", err)
+		return
+	}
+	dir := filepath.Dir(s.persistPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("访客码 mkdir %s 失败: %v", dir, err)
+		return
+	}
+	tmp := s.persistPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		log.Printf("访客码写 %s 失败: %v", tmp, err)
+		return
+	}
+	if err := os.Rename(tmp, s.persistPath); err != nil {
+		log.Printf("访客码 rename %s → %s 失败: %v", tmp, s.persistPath, err)
+	}
 }
 
 // List 返回按 CreatedAt 倒序排列的副本. 拿到后调用者不持锁.
@@ -110,6 +188,7 @@ func (s *GuestCodeStore) Add(c *GuestCode) bool {
 		return false
 	}
 	s.codes[k] = c
+	s.saveLocked()
 	return true
 }
 
@@ -121,6 +200,7 @@ func (s *GuestCodeStore) Delete(code string) bool {
 		return false
 	}
 	delete(s.codes, k)
+	s.saveLocked()
 	return true
 }
 
@@ -135,6 +215,9 @@ func (s *GuestCodeStore) DeleteExpired() int {
 			delete(s.codes, k)
 			n++
 		}
+	}
+	if n > 0 {
+		s.saveLocked()
 	}
 	return n
 }
@@ -155,6 +238,7 @@ func (s *GuestCodeStore) Validate(code, mac, ip, guestUPN string) *GuestCode {
 	c.Uses = append(c.Uses, CodeUse{
 		At: time.Now(), MAC: mac, IP: ip, GuestUPN: guestUPN,
 	})
+	s.saveLocked()
 	return c
 }
 

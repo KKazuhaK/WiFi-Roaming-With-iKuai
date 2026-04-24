@@ -31,6 +31,12 @@ services:
     ports:
       - "127.0.0.1:28080:28080"
 
+    # 访客码持久化: 把宿主机 ./data 挂进容器的 /var/lib/wifi-portal,
+    # 配合 .env 里的 GUEST_CODES_PATH=/var/lib/wifi-portal/guest-codes.json.
+    # GUEST_CODES_PATH 留空时这个挂载什么事也不做.
+    volumes:
+      - ./data:/var/lib/wifi-portal
+
     # 日志限制: 每文件 10MB * 最多 3 个 = 30MB 上限, 防小 VPS 爆磁盘.
     logging:
       driver: json-file

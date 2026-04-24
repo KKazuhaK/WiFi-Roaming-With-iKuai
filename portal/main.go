@@ -81,6 +81,16 @@ func main() {
 		log.Printf("访客码 admin 后台: 未启用")
 	}
 
+	guestStore, err := newGuestCodeStore(cfg.GuestCodesPath)
+	if err != nil {
+		log.Fatalf("访客码存储初始化失败: %v", err)
+	}
+	if cfg.GuestCodesPath != "" {
+		log.Printf("访客码持久化: 已启用, path=%s", cfg.GuestCodesPath)
+	} else {
+		log.Printf("访客码持久化: 未启用 (纯内存, 容器重启数据丢)")
+	}
+
 	tmpl, err := template.ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		log.Fatalf("模板加载失败: %v", err)
@@ -91,7 +101,7 @@ func main() {
 		oidc:         oidcClient,
 		duo:          duoClient,
 		duoUniversal: duoUni,
-		guestCodes:   newGuestCodeStore(),
+		guestCodes:   guestStore,
 		templates:    tmpl,
 	}
 

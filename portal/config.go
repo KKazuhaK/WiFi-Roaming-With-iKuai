@@ -55,6 +55,9 @@ type Config struct {
 
 	// --- 访客码管理 Admin (可选) ---
 	AdminEmails []string
+	// 访客码持久化文件路径. 空 = 纯内存 (重启数据丢).
+	// 非空则启动加载 + 每次变更原子写盘, 配合 docker volume 挂出来即可.
+	GuestCodesPath string
 }
 
 func loadConfig() Config {
@@ -86,7 +89,8 @@ func loadConfig() Config {
 		DuoAPIHost:          envOr("DUO_API_HOST", ""),
 		AllowedEmailDomains: splitCSV(envOr("ALLOWED_EMAIL_DOMAINS", "")),
 
-		AdminEmails: splitCSV(envOr("ADMIN_EMAILS", "")),
+		AdminEmails:    splitCSV(envOr("ADMIN_EMAILS", "")),
+		GuestCodesPath: strings.TrimSpace(envOr("GUEST_CODES_PATH", "")),
 	}
 
 	secretHex := mustEnv("SESSION_SECRET")
