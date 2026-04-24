@@ -725,13 +725,6 @@
           <input type="datetime-local" name="expires_at">
         </div>
         <div class="form-field">
-          <label>{{ T .Lang "admin.modal.add.duration.label" }}</label>
-          <div class="form-inline">
-            <input type="number" name="duration_h" value="2" min="0"> <span>{{ T .Lang "admin.modal.add.unitH" }}</span>
-            <input type="number" name="duration_m" value="0" min="0" max="59"> <span>{{ T .Lang "admin.modal.add.unitM" }}</span>
-          </div>
-        </div>
-        <div class="form-field">
           <label>{{ T .Lang "admin.modal.add.maxUses.label" }}</label>
           <input type="number" name="max_uses" value="1" min="0">
         </div>
@@ -773,13 +766,6 @@
         <div class="form-field">
           <label>{{ T .Lang "admin.modal.add.expires.label" }}</label>
           <input type="datetime-local" name="expires_at">
-        </div>
-        <div class="form-field">
-          <label>{{ T .Lang "admin.modal.add.duration.label" }}</label>
-          <div class="form-inline">
-            <input type="number" name="duration_h" value="2" min="0"> <span>{{ T .Lang "admin.modal.add.unitH" }}</span>
-            <input type="number" name="duration_m" value="0" min="0" max="59"> <span>{{ T .Lang "admin.modal.add.unitM" }}</span>
-          </div>
         </div>
         <div class="form-field">
           <label>{{ T .Lang "admin.modal.batch.eachMaxUses.label" }}</label>
@@ -952,9 +938,6 @@
       if (code) fd.append('code', code);
       var exp = f.expires_at.value;
       if (exp) fd.append('expires_at', exp);
-      var h = parseInt(f.duration_h.value) || 0;
-      var m = parseInt(f.duration_m.value) || 0;
-      fd.append('duration_min', (h * 60 + m).toString());
       fd.append('max_uses', (parseInt(f.max_uses.value) || 0).toString());
       fd.append('note', f.note.value);
 
@@ -984,9 +967,6 @@
       fd.append('length', f.length.value);
       var exp = f.expires_at.value;
       if (exp) fd.append('expires_at', exp);
-      var h = parseInt(f.duration_h.value) || 0;
-      var m = parseInt(f.duration_m.value) || 0;
-      fd.append('duration_min', (h * 60 + m).toString());
       fd.append('max_uses', (parseInt(f.max_uses.value) || 0).toString());
       fd.append('note', f.note.value);
 

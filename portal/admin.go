@@ -32,9 +32,8 @@ const (
 
 // GuestCode 是一条访客码记录.
 // 设计备注:
-//   - ExpiresAt 是绝对过期时间. 创建时如果 admin 显式填了 "过期时间" 用那个;
-//     否则用 CreatedAt + 限时.
-//   - MaxUses 限制同一个码最多可成功使用多少次. 0 = 不限, 直到过期.
+//   - ExpiresAt 是绝对过期时间. 零值表示永不过期.
+//   - MaxUses 限制同一个码最多可成功使用多少次. 0 = 不限.
 //   - Note 是 admin 的备注, 只用于后台显示.
 type GuestCode struct {
 	Code      string    `json:"code"`
@@ -53,6 +52,9 @@ type CodeUse struct {
 }
 
 func (c *GuestCode) IsExpired() bool {
+	if c.ExpiresAt.IsZero() {
+		return false
+	}
 	return time.Now().After(c.ExpiresAt)
 }
 
@@ -230,7 +232,7 @@ func (s *GuestCodeStore) DeleteExpired() int {
 	n := 0
 	now := time.Now()
 	for k, c := range s.codes {
-		if now.After(c.ExpiresAt) {
+		if !c.ExpiresAt.IsZero() && now.After(c.ExpiresAt) {
 			delete(s.codes, k)
 			n++
 		}
