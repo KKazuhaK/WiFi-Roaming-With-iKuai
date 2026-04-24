@@ -56,6 +56,11 @@ type Strings struct {
 	Retry  string
 	Or     string
 
+	// 时间单位 (给前端 fmtRetryAfter 拼 "N 分钟"/"N minutes" 用)
+	UnitSeconds string // "秒" / "seconds"
+	UnitMinutes string // "分钟" / "minutes"
+	UnitHours   string // "小时" / "hours"
+
 	// 语言切换
 	LangZHCNLabel string
 	LangZHTWLabel string
@@ -103,6 +108,10 @@ var stringsZHCN = Strings{
 	Retry:  "重试",
 	Or:     "或",
 
+	UnitSeconds: "秒",
+	UnitMinutes: "分钟",
+	UnitHours:   "小时",
+
 	LangZHCNLabel: "简体",
 	LangZHTWLabel: "繁體",
 	LangENLabel:   "English",
@@ -148,6 +157,10 @@ var stringsZHTW = Strings{
 	Retry:  "重試",
 	Or:     "或",
 
+	UnitSeconds: "秒",
+	UnitMinutes: "分鐘",
+	UnitHours:   "小時",
+
 	LangZHCNLabel: "简体",
 	LangZHTWLabel: "繁體",
 	LangENLabel:   "English",
@@ -192,6 +205,10 @@ var stringsEN = Strings{
 	Cancel: "Cancel",
 	Retry:  "Retry",
 	Or:     "or",
+
+	UnitSeconds: "seconds",
+	UnitMinutes: "minutes",
+	UnitHours:   "hours",
 
 	LangZHCNLabel: "简体",
 	LangZHTWLabel: "繁體",
