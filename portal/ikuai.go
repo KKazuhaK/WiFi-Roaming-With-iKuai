@@ -16,9 +16,11 @@ package main
 //     &mac={mac}&upload=0&download=0&token={hex}&release_type=1
 //
 // user_id / custom_name / release_type 是透传参数 (不进 MD5 token 计算):
-//   user_id     — 我们用 Entra UPN, 方便 iKuai 审计日志里看是谁登录
-//   custom_name — 我们用 IKUAI_CUSTOM_NAME env (默认 "kazuha-hub"), 区分多个对接的 portal
-//   release_type = 1, 固定
+//   user_id     — iKuai 审计日志 "账号" 列. 格式由 IKUAI_USER_ID_PREFIX 控制:
+//                  前缀空 → user_id = UPN                 (例: you@example.org)
+//                  前缀非空 → user_id = {prefix}-{UPN}     (例: Kazuha_Hub-you@example.org)
+//   custom_name — IKUAI_CUSTOM_NAME env, 区分多个对接的 portal
+//   release_type = IKUAI_RELEASE_TYPE env, 默认 "1"
 //
 // 注意:
 //   - 官方文档明确用 https. 从 VPS 外部 curl HTTPS 遇到 TLS handshake fail,
@@ -64,8 +66,8 @@ func extractDeviceInfo(r *http.Request, cfg Config) (DeviceInfo, bool) {
 }
 
 // buildWebAuthURL 生成给浏览器 302 过去的 iKuai 放行 URL。
-// userID 会作为 user_id 透传, 一般传 Entra UPN (用于 iKuai 审计日志).
-func buildWebAuthURL(cfg Config, dev DeviceInfo, userID string) string {
+// userUPN 是用户的 Entra UPN, 会按 IKUAI_USER_ID_PREFIX 加前缀组成 user_id.
+func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string) string {
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
 
 	// token 源串必须完全按 iKuai 规定的顺序和格式拼接
@@ -76,6 +78,12 @@ func buildWebAuthURL(cfg Config, dev DeviceInfo, userID string) string {
 	)
 	sum := md5.Sum([]byte(raw))
 	token := hex.EncodeToString(sum[:])
+
+	// user_id 按前缀拼: 空前缀 → 只 UPN; 非空 → "前缀-UPN"
+	userID := userUPN
+	if cfg.IKuaiUserIDPrefix != "" {
+		userID = cfg.IKuaiUserIDPrefix + "-" + userUPN
+	}
 
 	// 构造最终 URL
 	params := url.Values{}
