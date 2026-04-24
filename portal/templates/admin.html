@@ -723,7 +723,10 @@
     <div class="modal" style="max-width: 360px; text-align:center;">
       <h2 id="qr-code-text" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">—</h2>
       <img id="qr-image" alt="QR" style="width:240px;height:240px;background:#fff;padding:10px;border-radius:8px;">
-      <div class="muted" style="font-size:12px;margin-top:8px;">扫码即可读到上网码内容</div>
+      <div class="muted" style="font-size:12px;margin-top:8px;line-height:1.5;">
+        访客已在 portal 登录页时扫码 →&nbsp;一键完成认证.<br>
+        不在登录页时扫到的话, 提示先打开 WiFi 登录页.
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-primary" onclick="closeModal('modal-qr')">关闭</button>
       </div>
@@ -976,14 +979,21 @@
     }
 
     // ===== QR 码 =====
+    // QR 内容是完整认证 URL: <origin>/auth/qr?code=XXX. guest 已在 captive
+    // portal (有 session cookie) 时, 扫码直接 302 完成放行, 不用手输码.
 
-    function qrSrc(code) {
-      return '/admin/qr.png?text=' + encodeURIComponent(code) + '&size=240';
+    function qrAuthURL(code) {
+      return window.location.origin + '/auth/qr?code=' + encodeURIComponent(code);
+    }
+
+    function qrSrc(code, size) {
+      var s = size || 240;
+      return '/admin/qr.png?text=' + encodeURIComponent(qrAuthURL(code)) + '&size=' + s;
     }
 
     function showQR(code) {
       $('qr-code-text').textContent = code;
-      $('qr-image').src = qrSrc(code);
+      $('qr-image').src = qrSrc(code, 240);
       openModal('modal-qr');
     }
 
@@ -1007,7 +1017,7 @@
         var cell = document.createElement('div');
         cell.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--bg);padding:8px;border-radius:8px;';
         var img = document.createElement('img');
-        img.src = '/admin/qr.png?text=' + encodeURIComponent(c) + '&size=140';
+        img.src = qrSrc(c, 140);
         img.style.cssText = 'width:120px;height:120px;background:#fff;padding:6px;border-radius:6px;';
         var label = document.createElement('div');
         label.textContent = c;
