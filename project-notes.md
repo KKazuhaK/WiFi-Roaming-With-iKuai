@@ -93,9 +93,13 @@
 ### Phase 3 后小改动
 - 把 iKuai 放行接口 URL 从硬编码常量挪到 `IKUAI_WEBAUTH_URL` 环境变量，
   默认按官方文档 `https://portal.ikuai8-wifi.com/Action/webauth-up`。
-  Phase 4 真实部署时如果固件要 http 或路由器 LAN IP，改 .env 即可不用重 build。
-- 官方文档里示例还有 `user_id` / `custom_name` / `release_type=1` 这几个可选参数，
-  目前不发，等 Phase 4 真实场景验证需要再加。
+- `user_id / custom_name / release_type` 补全（已上线，iKuai 400 问题解决）
+- `IKUAI_USER_ID_PREFIX` env 允许 user_id 前缀化：默认 `Kazuha_Hub-<upn>`
+- UI 大改：logo 图 + 深浅色自适应 + 三语（zh-cn / zh-tw / en）+ 不显示 IP/MAC
+- Duo 免密推送流程：邮箱输入 → Duo preauth 分流 → push/SSO/deny
+  - ALLOWED_EMAIL_DOMAINS 做域名白名单防推送滥发
+  - Duo 未在架构里验证 Entra Member，靠"Duo 已登记 = 内部员工"的运维假设
+  - MSA 用户邮箱会 preauth=enroll → 自动回落 /login (Entra SSO 老路径)
 
 ### Phase 3 已知小坑（供备案）
 - 首次 build 失败: Dockerfile `COPY go.mod ./ + go mod download` 在无 go.sum 时不够，

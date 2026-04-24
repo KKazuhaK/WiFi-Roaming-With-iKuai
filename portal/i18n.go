@@ -18,13 +18,12 @@ const (
 	LangEN   Lang = "en"
 )
 
-// Strings 是页面上所有能出现的文案。
-// 加新文案时三个 map 都要加。
-// Title / Subtitle / SignInButton / Footer / SuccessMsg 里的 %s 会被替换成 BrandName.
+// Strings: 带 %s 的字段会被 BrandName 替换.
 type Strings struct {
 	Title            string
 	Subtitle         string
-	SignInButton     string
+	SignInButton     string // SSO 按钮
+	DuoButton        string // Duo 免密按钮
 	ConnectingInfo   string
 	NotAuthorizedMsg string
 	GuestBlockedMsg  string
@@ -40,12 +39,32 @@ type Strings struct {
 	LangENLabel      string
 	LabelDevice      string
 	LabelAccount     string
+
+	// Duo 免密流程
+	DuoEmailHint     string // 输入框上方提示
+	DuoEmailLabel    string // input 的 aria-label
+	DuoSendPush      string // "发送推送" 按钮
+	DuoPushSent      string // "已发送推送到你的手机"
+	DuoApproveOnApp  string // "请在 Duo Mobile 中批准"
+	DuoRemaining     string // "剩余 %ds"
+	DuoApproved      string // "已批准, 正在接入..."
+	DuoDenied        string // "推送被拒绝"
+	DuoTimeout       string // "推送超时"
+	DuoError         string // 网络/服务端错误
+	DuoInvalidEmail  string // 邮箱格式不对
+	DuoInvalidDomain string // 邮箱域名不允许
+	DuoDeniedAccount string // Duo 管理员标记拒绝这个账号
+	Back             string // "返回"
+	Cancel           string // "取消"
+	Retry            string // "重试"
+	Or               string // "或者"
 }
 
 var stringsZHCN = Strings{
 	Title:            "连接至 %s Roaming 网络",
 	Subtitle:         "登录 %s 账号即可接入网络",
 	SignInButton:     "使用 %s SSO 登录",
+	DuoButton:        "使用 Duo 免密推送登录",
 	ConnectingInfo:   "正在跳转到登录...",
 	NotAuthorizedMsg: "此账号不在允许范围内。请联系管理员。",
 	GuestBlockedMsg:  "抱歉，外部访客账号暂不允许连接 WiFi。",
@@ -61,12 +80,31 @@ var stringsZHCN = Strings{
 	LangENLabel:      "English",
 	LabelDevice:      "设备",
 	LabelAccount:     "账号",
+
+	DuoEmailHint:     "输入你的组织邮箱, 我们会向你的 Duo Mobile 发送批准推送",
+	DuoEmailLabel:    "组织邮箱",
+	DuoSendPush:      "发送推送",
+	DuoPushSent:      "推送已发送到你的设备",
+	DuoApproveOnApp:  "请在 Duo Mobile 中批准接入请求",
+	DuoRemaining:     "剩余 %d 秒",
+	DuoApproved:      "已批准, 正在接入...",
+	DuoDenied:        "推送已被拒绝, 请重试或使用 SSO 登录",
+	DuoTimeout:       "推送超时未响应, 请重试",
+	DuoError:         "暂时无法联系 Duo 服务, 请稍后或改用 SSO",
+	DuoInvalidEmail:  "邮箱格式不正确",
+	DuoInvalidDomain: "邮箱域名不在允许列表, 请使用组织邮箱",
+	DuoDeniedAccount: "此账号被管理员标记为拒绝, 请联系管理员",
+	Back:             "返回",
+	Cancel:           "取消",
+	Retry:            "重试",
+	Or:               "或",
 }
 
 var stringsZHTW = Strings{
 	Title:            "連接至 %s Roaming 網路",
 	Subtitle:         "登入 %s 帳號即可接入網路",
 	SignInButton:     "使用 %s SSO 登入",
+	DuoButton:        "使用 Duo 免密推送登入",
 	ConnectingInfo:   "正在跳轉到登入...",
 	NotAuthorizedMsg: "此帳號不在允許範圍內。請聯絡管理員。",
 	GuestBlockedMsg:  "抱歉，外部訪客帳號暫不允許連接 WiFi。",
@@ -82,12 +120,31 @@ var stringsZHTW = Strings{
 	LangENLabel:      "English",
 	LabelDevice:      "裝置",
 	LabelAccount:     "帳號",
+
+	DuoEmailHint:     "輸入你的組織郵箱, 我們會向你的 Duo Mobile 發送批准推送",
+	DuoEmailLabel:    "組織郵箱",
+	DuoSendPush:      "發送推送",
+	DuoPushSent:      "推送已發送到你的裝置",
+	DuoApproveOnApp:  "請在 Duo Mobile 中批准接入請求",
+	DuoRemaining:     "剩餘 %d 秒",
+	DuoApproved:      "已批准, 正在接入...",
+	DuoDenied:        "推送已被拒絕, 請重試或使用 SSO 登入",
+	DuoTimeout:       "推送逾時未回應, 請重試",
+	DuoError:         "暫時無法聯絡 Duo 服務, 請稍後或改用 SSO",
+	DuoInvalidEmail:  "郵箱格式不正確",
+	DuoInvalidDomain: "郵箱域名不在允許列表, 請使用組織郵箱",
+	DuoDeniedAccount: "此帳號被管理員標記為拒絕, 請聯絡管理員",
+	Back:             "返回",
+	Cancel:           "取消",
+	Retry:            "重試",
+	Or:               "或",
 }
 
 var stringsEN = Strings{
 	Title:            "Connect to %s Roaming",
 	Subtitle:         "Sign in with your %s account to connect",
 	SignInButton:     "Sign in with %s SSO",
+	DuoButton:        "Sign in with Duo Push",
 	ConnectingInfo:   "Redirecting to sign-in...",
 	NotAuthorizedMsg: "This account is not authorized. Please contact your admin.",
 	GuestBlockedMsg:  "Sorry, external guest accounts are not allowed to connect to WiFi.",
@@ -103,34 +160,45 @@ var stringsEN = Strings{
 	LangENLabel:      "English",
 	LabelDevice:      "Device",
 	LabelAccount:     "Account",
+
+	DuoEmailHint:     "Enter your organization email. We'll send a Duo Mobile push for approval.",
+	DuoEmailLabel:    "Organization email",
+	DuoSendPush:      "Send push",
+	DuoPushSent:      "Push sent to your device",
+	DuoApproveOnApp:  "Approve the login request in Duo Mobile",
+	DuoRemaining:     "%d seconds remaining",
+	DuoApproved:      "Approved, connecting...",
+	DuoDenied:        "Push was denied. Please retry or sign in with SSO.",
+	DuoTimeout:       "Push timed out. Please retry.",
+	DuoError:         "Duo service unavailable. Please retry or use SSO.",
+	DuoInvalidEmail:  "Invalid email format",
+	DuoInvalidDomain: "Email domain not allowed. Use your organization email.",
+	DuoDeniedAccount: "This account is denied by admin. Please contact your administrator.",
+	Back:             "Back",
+	Cancel:           "Cancel",
+	Retry:            "Retry",
+	Or:               "or",
 }
 
 // pickLang 按优先级决定用哪种语言。
 func pickLang(r *http.Request) Lang {
-	// 1. 显式 ?lang= 参数
 	if q := r.URL.Query().Get("lang"); q != "" {
 		if l, ok := parseLang(q); ok {
 			return l
 		}
 	}
-	// 2. Accept-Language header
-	// 遍历所有候选项 (按用户偏好顺序), 取第一个我们支持的
 	al := r.Header.Get("Accept-Language")
 	if al != "" {
 		for _, part := range strings.Split(al, ",") {
-			// 去掉 q-value (例: "zh-CN;q=0.9" → "zh-CN")
 			tag := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
 			if l, ok := parseLang(tag); ok {
 				return l
 			}
 		}
 	}
-	// 3. 默认英文
 	return LangEN
 }
 
-// parseLang 把一个语言 tag (比如 "zh-CN", "zh-TW", "zh-Hant-HK", "en-US") 映射到我们的三档。
-// 不认识的返回 ok=false 让调用方继续试下一个或回落默认。
 func parseLang(raw string) (Lang, bool) {
 	s := strings.ToLower(strings.TrimSpace(raw))
 	switch {
@@ -147,7 +215,6 @@ func parseLang(raw string) (Lang, bool) {
 	return "", false
 }
 
-// s 返回对应语言的文案表。
 func (l Lang) s() Strings {
 	switch l {
 	case LangZHCN:
