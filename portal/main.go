@@ -836,6 +836,9 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 }
 
 func guestPolicyTimeout(expiresAt time.Time) int {
+	if expiresAt.IsZero() {
+		return 0
+	}
 	remaining := int(time.Until(expiresAt).Seconds() / 60)
 	if remaining < 1 {
 		return 1
@@ -965,9 +968,9 @@ func (a *App) handleCodeCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "duplicate_code"})
 		return
 	}
-	detail := "add auto-gen code=..." + tailN(gc.Code, 4)
+	detail := "add auto-gen code=" + gc.Code
 	if userProvidedCode {
-		detail = "add code=..." + tailN(gc.Code, 4)
+		detail = "add code=" + gc.Code
 	}
 	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, detail)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "code": gc.Code})
@@ -1002,16 +1005,13 @@ func (a *App) handleCodeBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	note := strings.TrimSpace(r.FormValue("note"))
 	maxUses := parseMaxUses(r.FormValue("max_uses"))
-	// baseProbe 只用来复用 parseExpiry 的过期计算; 每个码的 CreatedAt 用各自
+	// baseProbe 只用来复用 parseExpiry 的过期计算. 每个码的 CreatedAt 用各自
 	// 的 time.Now(), 保证 List 排序时不会因时间戳相同而顺序抖动.
 	baseProbe := &GuestCode{CreatedAt: time.Now()}
 	if err := parseExpiry(r, baseProbe); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// 如果用户填了绝对过期时间, 所有码共用; 否则按 "创建时间 + 时长" 给每个码算.
-	absoluteExpiry := strings.TrimSpace(r.FormValue("expires_at")) != ""
-	duration := baseProbe.ExpiresAt.Sub(baseProbe.CreatedAt)
 	generated := make([]string, 0, count)
 	for i := 0; i < count; i++ {
 		raw, err := generateCode(codeType, length)
@@ -1020,14 +1020,10 @@ func (a *App) handleCodeBatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		createdAt := time.Now()
-		expiresAt := baseProbe.ExpiresAt
-		if !absoluteExpiry {
-			expiresAt = createdAt.Add(duration)
-		}
 		gc := &GuestCode{
 			Code:      raw,
 			CreatedAt: createdAt,
-			ExpiresAt: expiresAt,
+			ExpiresAt: baseProbe.ExpiresAt,
 			MaxUses:   maxUses,
 			Note:      note,
 		}
@@ -1060,7 +1056,7 @@ func (a *App) handleCodeDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted := a.guestCodes.Delete(code)
 	if deleted {
-		a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, "delete code=..."+tailN(code, 4))
+		a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, "delete code="+code)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": deleted})
 }
@@ -1118,7 +1114,7 @@ func (a *App) handleCodeDeleteBulk(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCodeEdit: POST /admin/codes/edit
-// form: code=<existing>, expires_at | duration_min, max_uses, note
+// form: code=<existing>, expires_at, max_uses, note
 // 改一个已存在码的 ExpiresAt / MaxUses / Note. Code 本身不能改 (要改就删了重建).
 // 已经使用过的码也允许编辑, 但已经在线的设备的 iKuai timeout 改不了 — 仅影响后续放行.
 func (a *App) handleCodeEdit(w http.ResponseWriter, r *http.Request) {
@@ -1135,7 +1131,7 @@ func (a *App) handleCodeEdit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_code"})
 		return
 	}
-	// 复用 parseExpiry: 它读 expires_at 或 duration_min, 写到一个临时 GuestCode 上.
+	// 复用 parseExpiry: 它读 expires_at, 写到一个临时 GuestCode 上.
 	probe := &GuestCode{CreatedAt: time.Now()}
 	if err := parseExpiry(r, probe); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1148,7 +1144,7 @@ func (a *App) handleCodeEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess,
-		"edit code=..."+tailN(code, 4))
+		"edit code="+code)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -1571,26 +1567,22 @@ func (a *App) handleDenylistImportCSV(w http.ResponseWriter, r *http.Request) {
 
 func parseExpiry(r *http.Request, gc *GuestCode) error {
 	exp := strings.TrimSpace(r.FormValue("expires_at"))
-	if exp != "" {
-		t, err := time.Parse(time.RFC3339, exp)
-		if err != nil {
-			t2, err2 := time.ParseInLocation("2006-01-02T15:04", exp, time.Local)
-			if err2 != nil {
-				return fmt.Errorf("expires_at format error: %v", err)
-			}
-			t = t2
-		}
-		if t.Before(time.Now()) {
-			return fmt.Errorf("expires_at must not be in the past")
-		}
-		gc.ExpiresAt = t
+	if exp == "" {
+		gc.ExpiresAt = time.Time{}
 		return nil
 	}
-	dur := parseIntDefault(r.FormValue("duration_min"), 120)
-	if dur < 1 {
-		dur = 1
+	t, err := time.Parse(time.RFC3339, exp)
+	if err != nil {
+		t2, err2 := time.ParseInLocation("2006-01-02T15:04", exp, time.Local)
+		if err2 != nil {
+			return fmt.Errorf("expires_at format error: %v", err)
+		}
+		t = t2
 	}
-	gc.ExpiresAt = gc.CreatedAt.Add(time.Duration(dur) * time.Minute)
+	if t.Before(time.Now()) {
+		return fmt.Errorf("expires_at must not be in the past")
+	}
+	gc.ExpiresAt = t
 	return nil
 }
 
@@ -1713,24 +1705,30 @@ type adminDeniedMACRow struct {
 }
 
 func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSession) {
+	lang := pickLang(r)
 	raw := a.guestCodes.List()
 	total, used, unused, expired := a.guestCodes.Stats()
 	rows := make([]adminCodeRow, 0, len(raw))
 	for _, c := range raw {
 		row := adminCodeRow{
-			Code:           c.Code,
-			CreatedAt:      c.CreatedAt.Local().Format("2006-01-02 15:04"),
-			ExpiresAt:      c.ExpiresAt.Local().Format("2006-01-02 15:04"),
-			ExpiresAtInput: c.ExpiresAt.Local().Format("2006-01-02T15:04"),
-			Status:         c.Status(),
-			UseCount:       c.UseCount(),
-			MaxUses:        c.MaxUses,
+			Code:      c.Code,
+			CreatedAt: c.CreatedAt.Local().Format("2006-01-02 15:04"),
+			Status:    c.Status(),
+			UseCount:  c.UseCount(),
+			MaxUses:   c.MaxUses,
 			Note:      c.Note,
 		}
-		d := c.ExpiresAt.Sub(c.CreatedAt)
-		hours := int(d.Hours())
-		mins := int(d.Minutes()) - hours*60
-		row.Duration = formatDuration(hours, mins)
+		if c.ExpiresAt.IsZero() {
+			row.ExpiresAt = T(lang, "admin.codes.neverExpires")
+			row.Duration = T(lang, "admin.codes.neverExpires")
+		} else {
+			row.ExpiresAt = c.ExpiresAt.Local().Format("2006-01-02 15:04")
+			row.ExpiresAtInput = c.ExpiresAt.Local().Format("2006-01-02T15:04")
+			d := c.ExpiresAt.Sub(c.CreatedAt)
+			hours := int(d.Hours())
+			mins := int(d.Minutes()) - hours*60
+			row.Duration = formatDuration(hours, mins)
+		}
 		if len(c.Uses) > 0 {
 			u := c.Uses[len(c.Uses)-1]
 			row.LastUsedAt = u.At.Local().Format("2006-01-02 15:04")
@@ -1750,7 +1748,7 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 		})
 	}
 	data := adminPageData{
-		Lang:          pickLang(r),
+		Lang:          lang,
 		Brand:         a.makeBrand(),
 		AdminUPN:      admin.UPN,
 		NowYear:       time.Now().Year(),
