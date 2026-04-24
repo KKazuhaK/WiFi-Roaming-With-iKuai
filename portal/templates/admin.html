@@ -324,7 +324,7 @@
     <section id="section-ikuai-policy" class="admin-section">
       <div class="toolbar" style="margin-bottom: 16px;">
         <div style="font-weight: 600; font-size: 16px; flex: 1;">iKuai 放行策略</div>
-        <div class="muted" style="font-size: 12px;">upload / download 单位 KB, 0 = 不限; timeout 单位分钟, 0 = 不过期</div>
+        <div class="muted" style="font-size: 12px;">0 = 不限速; SSO/Duo 超时 0 = 不过期; 访客码超时自动截止到上网码剩余有效期</div>
       </div>
 
       <div class="table-wrap">
@@ -332,9 +332,9 @@
           <thead>
             <tr>
               <th style="width: 140px;">认证方式</th>
-              <th style="width: 140px;">上传</th>
-              <th style="width: 140px;">下载</th>
-              <th style="width: 140px;">超时</th>
+              <th style="width: 140px;">上传 (KB/s)</th>
+              <th style="width: 140px;">下载 (KB/s)</th>
+              <th style="width: 140px;">超时 (分钟)</th>
               <th>Comment</th>
               <th style="width: 120px;">操作</th>
             </tr>
@@ -343,9 +343,16 @@
             {{ range .IKuaiPolicies }}
             <tr>
               <td><span class="chip unused">{{ .Label }}</span></td>
-              <td><input form="policy-{{ .Profile }}" type="number" name="upload" value="{{ .Upload }}" min="0" class="search" style="min-width: 110px;"></td>
-              <td><input form="policy-{{ .Profile }}" type="number" name="download" value="{{ .Download }}" min="0" class="search" style="min-width: 110px;"></td>
-              <td><input form="policy-{{ .Profile }}" type="number" name="timeout" value="{{ .Timeout }}" min="0" class="search" style="min-width: 110px;"></td>
+              <td><input form="policy-{{ .Profile }}" type="number" name="upload" value="{{ .Upload }}" min="0" placeholder="KB/s" class="search" style="min-width: 110px;"></td>
+              <td><input form="policy-{{ .Profile }}" type="number" name="download" value="{{ .Download }}" min="0" placeholder="KB/s" class="search" style="min-width: 110px;"></td>
+              <td>
+                {{ if eq .Profile "guest" }}
+                <span class="muted">按上网码剩余有效期</span>
+                <input form="policy-{{ .Profile }}" type="hidden" name="timeout" value="0">
+                {{ else }}
+                <input form="policy-{{ .Profile }}" type="number" name="timeout" value="{{ .Timeout }}" min="0" placeholder="分钟" class="search" style="min-width: 110px;">
+                {{ end }}
+              </td>
               <td><input form="policy-{{ .Profile }}" type="text" name="comment" value="{{ .Comment }}" maxlength="128" class="search" style="min-width: 220px;"></td>
               <td>
                 <form id="policy-{{ .Profile }}" class="policy-form" style="margin:0">

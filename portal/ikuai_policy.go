@@ -2,6 +2,7 @@ package main
 
 // ikuai_policy.go
 // iKuai 放行策略: 按认证来源设置上传 / 下载限速、认证超时和 comment.
+// 访客码的认证超时由上网码剩余有效期自动决定, 不接受手动配置.
 // Env 提供启动默认值; Admin 修改后可选 JSON 持久化.
 
 import (
@@ -74,7 +75,7 @@ func (s *IKuaiPolicyStore) loadFromDisk() error {
 		if err := validateIKuaiPolicy(p); err != nil {
 			return fmt.Errorf("解析 %s: profile %s: %w", s.persistPath, profile, err)
 		}
-		s.policies[profile] = normalizeIKuaiPolicy(p)
+		s.policies[profile] = normalizeIKuaiPolicyForProfile(profile, p)
 	}
 	log.Printf("iKuai 放行策略: 从 %s 加载", s.persistPath)
 	return nil
@@ -98,7 +99,7 @@ func (s *IKuaiPolicyStore) Set(profile IKuaiAuthProfile, p IKuaiPolicy) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.policies[profile] = normalizeIKuaiPolicy(p)
+	s.policies[profile] = normalizeIKuaiPolicyForProfile(profile, p)
 	s.saveLocked()
 	return nil
 }
@@ -176,7 +177,7 @@ func defaultIKuaiPoliciesFromEnv() map[IKuaiAuthProfile]IKuaiPolicy {
 		IKuaiProfileGuest: {
 			Upload:   envOrNonNegativeInt("IKUAI_GUEST_UPLOAD", 0),
 			Download: envOrNonNegativeInt("IKUAI_GUEST_DOWNLOAD", 0),
-			Timeout:  envOrNonNegativeInt("IKUAI_GUEST_TIMEOUT", 0),
+			Timeout:  0,
 			Comment:  strings.TrimSpace(envOr("IKUAI_GUEST_COMMENT", "")),
 		},
 	}
@@ -223,10 +224,18 @@ func normalizeIKuaiPolicy(p IKuaiPolicy) IKuaiPolicy {
 	return p
 }
 
+func normalizeIKuaiPolicyForProfile(profile IKuaiAuthProfile, p IKuaiPolicy) IKuaiPolicy {
+	p = normalizeIKuaiPolicy(p)
+	if profile == IKuaiProfileGuest {
+		p.Timeout = 0
+	}
+	return p
+}
+
 func clonePolicyMap(in map[IKuaiAuthProfile]IKuaiPolicy) map[IKuaiAuthProfile]IKuaiPolicy {
 	out := make(map[IKuaiAuthProfile]IKuaiPolicy, len(in))
 	for k, v := range in {
-		out[k] = normalizeIKuaiPolicy(v)
+		out[k] = normalizeIKuaiPolicyForProfile(k, v)
 	}
 	return out
 }
