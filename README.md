@@ -12,25 +12,25 @@
 
 这份 README 覆盖架构、部署、安全模型和运维。
 
-## 两种部署模式 (同一份 compose)
+## 三种部署模式
 
-| | **模式 A — 外部反代** | **模式 B — 内置 Caddy** |
-|---|---|---|
-| 适合场景 | 公网 VPS, aaPanel/Nginx 已经在管 TLS | 站点内网 LAN 盒子, iKuai DNS 劫持到它 |
-| `.env` 关键 | `COMPOSE_PROFILES=` 留空 | `COMPOSE_PROFILES=caddy` |
-| 起的容器 | `wifi-portal` (1 个) | `wifi-portal` + `wifi-portal-caddy` (2 个) |
-| TLS | 外部反代 (HTTP-01 / 你自己的 ACME) | Caddy 自动 Cloudflare DNS-01 |
-| Portal 端口 | 宿主 `127.0.0.1:28080`, 外部反代转 443 | 宿主 `127.0.0.1:28080` (外部看不到), Caddy 暴露 `28081` |
-| 公网攻击面 | 有, 靠 App 层三道限流 + 可选 Nginx 白名单 | **无**, 域名外网不解析过去 |
-| admin 远程访问 | ✓ | ✗ (要在 WiFi 网里) |
-| 每站点成本 | 一台 VPS 能服务所有站点 | 每站点一台小机器 |
+| | **A — 外部反代** | **B — LAN 盒子** | **C — iKuai 内置 Docker** |
+|---|---|---|---|
+| 适合场景 | 公网 VPS, aaPanel/Nginx 管 TLS | 站点内网 LAN 盒子 | iKuai 自己 (省一台硬件) |
+| 硬件 | 一台 VPS 服务所有站点 | 每站点一台 Pi / NAS / mini-PC | 每站点 iKuai 自己 |
+| TLS | 外部反代 (HTTP-01 / 手动 ACME) | Caddy DNS-01 (Cloudflare) | Caddy DNS-01 |
+| 部署方式 | `docker compose up` | `docker compose up` | iKuai UI 点点点 + tarball |
+| 公网攻击面 | 有, 靠 App 层三道限流 | **无**, iKuai DNS 劫持 | **无** |
+| admin 远程访问 | ✓ | ✗ (要在 WiFi 网里) | ✗ |
+| 运维成本 | 低 | 低 | 中偏高 |
 
-两种模式共用同一份 [`deploy/docker-compose.yml`](./deploy/docker-compose.yml), 靠 `.env` 里的
-`COMPOSE_PROFILES` 开关切换。Caddy 服务带 `profiles: ["caddy"]` tag, 默认不起动, 只
-在 profile 打开时才拉起来。这意味着:
+**A/B 共用同一份** [`deploy/docker-compose.yml`](./deploy/docker-compose.yml),
+靠 `.env` 里的 `COMPOSE_PROFILES` 切换:
+- 留空 → 模式 A, 只跑 Portal, 外部反代处理 TLS
+- `COMPOSE_PROFILES=caddy` → 模式 B, 额外起 Caddy 做 DNS-01 TLS
 
-- 想加站点 / 换部署方式只是改一个 env 值
-- 需要的额外文件 (`Caddyfile` / `Dockerfile.caddy`) 一直都在仓库里, 不用时被 compose 忽略
+**C 独立走 iKuai UI 手动配容器**, 步骤看 [`deploy/ikuai-docker/README.md`](./deploy/ikuai-docker/README.md)。
+三种可以混合部署, `SESSION_SECRET` 共享 → admin 一次登录全通。
 
 ---
 
@@ -58,10 +58,12 @@ WiFi-Roaming-With-iKuai/
 │   ├── .env.example           # 环境变量模板, 不含真值
 │   └── go.mod
 └── deploy/
-    ├── docker-compose.yml           # 两种模式都用这一份
+    ├── docker-compose.yml           # 模式 A/B 共用
     ├── Caddyfile                    # 只有模式 B 会读
-    ├── Dockerfile.caddy             # 只有模式 B 会 build
-    └── aapanel-nginx-snippet.conf   # 只有模式 A 要参考
+    ├── Dockerfile.caddy             # 模式 B / C 要 build
+    ├── aapanel-nginx-snippet.conf   # 只有模式 A 要参考
+    └── ikuai-docker/                # 模式 C: 部署到 iKuai 自带 Docker
+        └── README.md
 ```
 
 ---
