@@ -37,8 +37,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	qrcode "github.com/skip2/go-qrcode"
 )
 
 //go:embed templates/*.html
@@ -198,7 +196,6 @@ func main() {
 	mux.HandleFunc("/auth/callback", app.handleCallback)
 	mux.HandleFunc("/auth/duo-callback", app.handleDuoCallback)
 	mux.HandleFunc("/auth/guest-code", app.handleGuestCode)
-	mux.HandleFunc("/auth/qr", app.handleAuthQR)
 	mux.HandleFunc("/admin", app.handleAdmin)
 	mux.HandleFunc("/admin/login", app.handleAdminLogin)
 	mux.HandleFunc("/admin/logout", app.handleAdminLogout)
@@ -216,7 +213,6 @@ func main() {
 	mux.HandleFunc("/admin/ikuai-policy/update", app.handleIKuaiPolicyUpdate)
 	mux.HandleFunc("/admin/events/query", app.handleEventsQuery)
 	mux.HandleFunc("/admin/events/export.csv", app.handleEventsExportCSV)
-	mux.HandleFunc("/admin/qr.png", app.handleAdminQR)
 	mux.HandleFunc("/admin/denylist/export.csv", app.handleDenylistExportCSV)
 	mux.HandleFunc("/admin/denylist/import", app.handleDenylistImportCSV)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
@@ -802,78 +798,6 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 		policy)
 	clearSessionCookie(w, true)
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": ikuaiURL})
-}
-
-// handleAuthQR: GET /auth/qr?code=XXX
-// QR 扫码完成访客码认证. 跟 handleGuestCode (POST) 同样的安全检查 (denylist /
-// MAC 限流 / IP 冷却 / 码有效性), 但是直接 302 到 iKuai webauth URL, 失败
-// 渲染错误页 (因为是浏览器导航, 不是 AJAX).
-//
-// 前置: guest 已经走过 captive portal 流程, session cookie 里有 user_ip+mac.
-// 没有 session 时返"会话丢失"提示, 让用户先打开登录页.
-func (a *App) handleAuthQR(w http.ResponseWriter, r *http.Request) {
-	lang := pickLang(r)
-	if !a.cfg.IsAdminEnabled() {
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusServiceUnavailable)
-		return
-	}
-	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
-	if err != nil {
-		// 无 session — 没经过 /portal. 提示先打开登录页, 这样 iKuai 能注入 user_ip+mac.
-		a.renderError(w, r, lang, lang.s().SessionLostMsg, http.StatusBadRequest)
-		return
-	}
-	if sess.Lang != "" {
-		lang = Lang(sess.Lang)
-	}
-	if _, ok := a.bannedIPForRequest(r, &sess); ok {
-		a.logLogin("(guest)", ResultRateLimited, MethodGuestCode, sess.MAC, clientIP(r), "ip_ban")
-		a.renderError(w, r, lang, lang.s().RateLimited, http.StatusTooManyRequests)
-		return
-	}
-	if _, denied := a.denylist.IsMACDenied(sess.MAC); denied {
-		log.Printf("拒绝已封禁 MAC qr-auth: mac=%s ip=%s", sess.MAC, sess.UserIP)
-		a.logLogin("(guest)", ResultDenied, MethodGuestCode, sess.MAC, sess.UserIP, "mac_denylist")
-		a.renderError(w, r, lang, lang.s().RateLimitedPermanent, http.StatusForbidden)
-		return
-	}
-	if a.guestCodeFails.countIn(sess.MAC, a.cfg.GuestCodeMacWindow) >= a.cfg.GuestCodeMacFails {
-		log.Printf("qr-auth 按 MAC 限流: mac=%s ip=%s", sess.MAC, sess.UserIP)
-		a.recordRequestFailure(r, &sess, "rate_limited_mac")
-		a.logLogin("(guest)", ResultRateLimited, MethodGuestCode, sess.MAC, sess.UserIP, "mac")
-		a.renderError(w, r, lang, lang.s().RateLimited, http.StatusTooManyRequests)
-		return
-	}
-	code := strings.TrimSpace(r.URL.Query().Get("code"))
-	if code == "" {
-		a.renderError(w, r, lang, lang.s().GuestCodeInvalid, http.StatusBadRequest)
-		return
-	}
-	guestID, err := randomHex(4)
-	if err != nil {
-		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusInternalServerError)
-		return
-	}
-	upn := "guest-" + guestID
-	c := a.guestCodes.Validate(code, sess.MAC, sess.UserIP, upn)
-	if c == nil {
-		log.Printf("拒绝 QR 访客码 ip=%s mac=%s", sess.UserIP, sess.MAC)
-		a.guestCodeFails.record(sess.MAC)
-		a.recordRequestFailure(r, &sess, "invalid_guest_code")
-		a.logLogin("(guest)", ResultDenied, MethodGuestCode, sess.MAC, sess.UserIP, "invalid_code_qr")
-		a.renderError(w, r, lang, lang.s().GuestCodeInvalid, http.StatusUnauthorized)
-		return
-	}
-	log.Printf("放行访客 (QR): upn=%s code-suffix=%s client_ip=%s user_ip=%s mac=%s",
-		upn, tailN(c.Code, 4), clientIP(r), sess.UserIP, sess.MAC)
-	a.logLogin(upn, ResultSuccess, MethodGuestCode, sess.MAC, sess.UserIP,
-		"qr code=…"+tailN(c.Code, 4))
-	a.clearSuccessfulAuthState(r, sess)
-	policy := a.ikuaiPolicies.Get(IKuaiProfileGuest)
-	policy.Timeout = guestPolicyTimeout(c.ExpiresAt)
-	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, upn, policy)
-	clearSessionCookie(w, true)
-	http.Redirect(w, r, ikuaiURL, http.StatusFound)
 }
 
 func guestPolicyTimeout(expiresAt time.Time) int {
@@ -1477,40 +1401,6 @@ func (a *App) handleEventsExportCSV(w http.ResponseWriter, r *http.Request) {
 	if err := WriteEventsCSV(w, events); err != nil {
 		log.Printf("事件日志 CSV 导出失败: %v", err)
 	}
-}
-
-// handleAdminQR: GET /admin/qr.png?text=...&size=200
-// 生成访客码 QR. 仅 admin 可用. 内容来源是 admin 已经拿到的码,
-// 不会泄漏新东西; 但限制 size 上下界防 OOM 攻击.
-func (a *App) handleAdminQR(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r, false); !ok {
-		return
-	}
-	text := r.URL.Query().Get("text")
-	if text == "" {
-		http.Error(w, "missing text", http.StatusBadRequest)
-		return
-	}
-	if len(text) > 256 {
-		http.Error(w, "text too long", http.StatusBadRequest)
-		return
-	}
-	size := parseIntDefault(r.URL.Query().Get("size"), 220)
-	if size < 64 {
-		size = 64
-	}
-	if size > 1024 {
-		size = 1024
-	}
-	png, err := qrcode.Encode(text, qrcode.Medium, size)
-	if err != nil {
-		log.Printf("qr encode 失败: %v", err)
-		http.Error(w, "encode_failed", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Cache-Control", "private, max-age=300")
-	_, _ = w.Write(png)
 }
 
 func (a *App) handleDenylistExportCSV(w http.ResponseWriter, r *http.Request) {
