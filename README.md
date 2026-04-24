@@ -13,21 +13,25 @@
 架构、设计决策、Phase 进度见 [`project-notes.md`](./project-notes.md)。
 这份 README 只讲 **怎么把 Portal 跑起来**。
 
-## 两种部署模式
+## 两种部署模式 (同一份 compose)
 
-| | **A. 公网 VPS** (本 README) | **B. 站点内网 LAN 盒子** |
+| | **模式 A — 外部反代** | **模式 B — 内置 Caddy** |
 |---|---|---|
-| 位置 | 公网 VPS + 域名直指 | 每个站点一台 LAN 盒子, iKuai DNS 劫持指向它 |
-| 端口 | 443 (aaPanel Nginx 处理) | 默认 28081 (可改 443 若端口没冲突) |
-| TLS | aaPanel 自动 ACME HTTP-01 | Caddy 自动 ACME DNS-01 (Cloudflare) |
-| 反代 | aaPanel 的 Nginx | Caddy |
-| 公网攻击面 | 有, 靠 App 层三道限流 + 可选 Nginx 白名单 | **无**, 域名外网根本不解析过去 |
-| admin 远程访问 | ✓ | ✗ (只能在 WiFi 网内) |
-| 每站点成本 | 一台 VPS 够所有站点 | 每站点一台小机器 |
-| Cross-site admin | cookie 自带跨站 | 填同一 SESSION_SECRET 即可跨站 |
+| 适合场景 | 公网 VPS, aaPanel/Nginx 已经在管 TLS | 站点内网 LAN 盒子, iKuai DNS 劫持到它 |
+| `.env` 关键 | `COMPOSE_PROFILES=` 留空 | `COMPOSE_PROFILES=caddy` |
+| 起的容器 | `wifi-portal` (1 个) | `wifi-portal` + `wifi-portal-caddy` (2 个) |
+| TLS | 外部反代 (HTTP-01 / 你自己的 ACME) | Caddy 自动 Cloudflare DNS-01 |
+| Portal 端口 | 宿主 `127.0.0.1:28080`, 外部反代转 443 | 宿主 `127.0.0.1:28080` (外部看不到), Caddy 暴露 `28081` |
+| 公网攻击面 | 有, 靠 App 层三道限流 + 可选 Nginx 白名单 | **无**, 域名外网不解析过去 |
+| admin 远程访问 | ✓ | ✗ (要在 WiFi 网里) |
+| 每站点成本 | 一台 VPS 能服务所有站点 | 每站点一台小机器 |
 
-两种模式**同一份 Portal 代码**, 只是部署拓扑不同。公网模式看下面继续读, 内网模式见
-[`deploy/intranet/README.md`](./deploy/intranet/README.md)。
+两种模式共用同一份 [`deploy/docker-compose.yml`](./deploy/docker-compose.yml), 靠 `.env` 里的
+`COMPOSE_PROFILES` 开关切换。Caddy 服务带 `profiles: ["caddy"]` tag, 默认不起动, 只
+在 profile 打开时才拉起来。这意味着:
+
+- 想加站点 / 换部署方式只是改一个 env 值
+- 需要的额外文件 (`Caddyfile` / `Dockerfile.caddy`) 一直都在仓库里, 不用时被 compose 忽略
 
 ---
 
@@ -56,61 +60,75 @@ WiFi-Roaming-With-iKuai/
 │   ├── .env.example           # 环境变量模板, 不含真值
 │   └── go.mod
 └── deploy/
-    ├── docker-compose.yml           # 模式 A: VPS + aaPanel Nginx
-    ├── aapanel-nginx-snippet.conf   # 模式 A: 可选的 Nginx IP 白名单片段
-    └── intranet/                    # 模式 B: 站点内网方案 (独立 README)
-        ├── README.md
-        ├── docker-compose.yml
-        ├── Dockerfile.caddy
-        ├── Caddyfile
-        └── .env.example
+    ├── docker-compose.yml           # 两种模式都用这一份
+    ├── Caddyfile                    # 只有模式 B 会读
+    ├── Dockerfile.caddy             # 只有模式 B 会 build
+    └── aapanel-nginx-snippet.conf   # 只有模式 A 要参考
 ```
 
 ---
 
-## Phase 3 · VPS 部署
+## Phase 3 · 部署
 
-前置: Phase 1 (Entra App Registration) + Phase 2 (DNS + aaPanel 反代 + SSL)
-已全部完成, `curl -I https://wifi.login.example.com` 返回 502。
+前置: Phase 1 (Entra App Registration) + Phase 2 (DNS + 反代 / TLS 基础设施)
+已全部完成。
 
-### 步骤 1: 源码上 VPS
+### 步骤 1: 源码上机器
 
-在 VPS 上:
-
+**模式 A (VPS)**:
 ```bash
 sudo mkdir -p /opt/wifi-portal
 sudo chown $USER:$USER /opt/wifi-portal
 cd /opt/wifi-portal
 ```
 
-把本仓库 (`WiFi-Roaming-With-iKuai/`) 里的这些传上去:
+**模式 B (LAN 盒子)**: 建议目录换成 `/opt/wifi-portal-intranet/` 防跟模式 A 同机冲突。
 
+把本仓库里的这些传上去:
 - `portal/` 整个目录
-- `deploy/docker-compose.yml` → 放到 `/opt/wifi-portal/docker-compose.yml`
-- `portal/.env.example` → 拷贝一份到 `/opt/wifi-portal/.env`
+- `deploy/docker-compose.yml`
+- **(仅模式 B)** `deploy/Caddyfile` 和 `deploy/Dockerfile.caddy`
+- `portal/.env.example` → 拷成 `.env`
 
-用 `git clone` 或 `scp -r` 都行. 最终目录:
+`git clone` 或 `scp -r` 都行, 最终目录:
 
 ```
-/opt/wifi-portal/
+/opt/wifi-portal/              # 模式 A
 ├── docker-compose.yml
-├── .env                 <- 你刚拷的, 马上要填
+├── .env                       <- 马上要填
+└── portal/                    <- Go 源码
+
+/opt/wifi-portal-intranet/     # 模式 B 追加
+├── docker-compose.yml
+├── Caddyfile
+├── Dockerfile.caddy
+├── .env
 └── portal/
-    ├── Dockerfile
-    ├── main.go
-    └── ...
 ```
+
+或者更快: 在目标机器上直接整个 clone repo, 把 `.env.example` 拷贝到 repo 里的
+`deploy/.env`, 然后在 `deploy/` 目录跑 `docker compose up`.
 
 ### 步骤 2: 填 .env
 
 ```bash
-cd /opt/wifi-portal
+cd /opt/wifi-portal        # 或 wifi-portal-intranet
 cp portal/.env.example .env
-chmod 600 .env         # 只允许你自己读
-vim .env               # 或 nano
+chmod 600 .env             # 只允许你自己读
+vim .env                   # 或 nano
 ```
 
-要填的值:
+`.env.example` 里的字段按需填。**关键的模式切换**:
+
+```bash
+# 模式 A: 留空 (或不要这一行). 只起 portal 容器, 外部反代处理 TLS.
+COMPOSE_PROFILES=
+
+# 模式 B: 设成 caddy. 同时多起 caddy 容器, 自动申请证书.
+COMPOSE_PROFILES=caddy
+```
+
+### 两种模式共通的变量
 
 | 变量 | 来源 |
 |---|---|
@@ -119,8 +137,8 @@ vim .env               # 或 nano
 | `CLIENT_SECRET` | 你本地密码管理器里 `portal-prod-2026-v2` 的 Value |
 | `IKUAI_APPKEY` | iKuai 云面板 "生成" 得到 (Phase 4) |
 | `IKUAI_USER_ID_PREFIX` | 审计日志账号列前缀, 默认 `Kazuha_Hub` → `Kazuha_Hub-<upn>` |
-| `PUBLIC_URL` | `https://wifi.login.example.com` |
-| `SESSION_SECRET` | 运行 `openssl rand -hex 32` 生成一次, 贴进来 |
+| `PUBLIC_URL` | 模式 A: `https://wifi.login.example.com` &nbsp;/&nbsp; 模式 B: `https://wifi.login.example.com:28081` (端口要对上) |
+| `SESSION_SECRET` | 运行 `openssl rand -hex 32` 生成一次, 贴进来. 多站点想共享 admin cookie 填同一个 |
 | `BRAND_NAME` | `Kazuha Hub` 或你喜欢的 |
 | `BRAND_COLOR` | 默认 `#2563eb`, 可改 |
 | `BRAND_LOGO_URL` | 留空用 `static/logo+title-circle{,-darkmode}.png` |
@@ -130,6 +148,22 @@ vim .env               # 或 nano
 | `ALLOWED_EMAIL_DOMAINS` | 启用 Duo 时必填, 逗号分隔 (`example.org,example.com,example.net`) |
 | `ADMIN_EMAILS` | 访客码管理后台 (`/admin`) 准入白名单, 逗号分隔, 可留空走组模式 |
 | `ADMIN_GROUP_IDS` | Entra Security Group Object ID 列表 (可选), 组成员自动 admin |
+
+### 仅模式 B 才要填的变量
+
+| 变量 | 来源 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | CF Dashboard → API Tokens → Create, `Zone:DNS:Edit` 权限, 限定 `example.com` zone. 多站点复用同一个 |
+| `ACME_EMAIL` | 你的邮箱, LE/ZeroSSL 到期提醒用 |
+| `PORTAL_HOSTNAME` | 默认 `wifi.login.example.com`, 多站点都填同一个 (靠 iKuai DNS 劫持分流) |
+| `PORTAL_HTTPS_PORT` | 默认 `28081`, 想占 443 改这里 |
+
+**模式 B 额外步骤**:
+- Entra App Registration 加 Redirect URI: `https://wifi.login.example.com:28081/auth/callback`
+- 每个站点 iKuai 后台加静态 DNS: `wifi.login.example.com` → 本地 LAN 盒子 IP
+- 每个站点 iKuai 自定义认证 URL 改成: `https://wifi.login.example.com:28081/portal`
+
+更详细的 模式 B 故障排查 (CF API token 权限 / 证书申请卡住 / iKuai DNS 不生效) 见本 README 末尾 "故障排查".
 
 ### Duo 两种 Application 怎么建
 
@@ -198,15 +232,33 @@ ADMIN_GROUP_IDS=<刚才复制的 Object ID>
 ### 步骤 3: 起服务
 
 ```bash
-cd /opt/wifi-portal
-docker compose up -d --build
+cd /opt/wifi-portal              # 或 wifi-portal-intranet
+docker compose up -d --build     # 模式由 .env 里 COMPOSE_PROFILES 决定
+docker compose ps                # 确认容器都 Up
 docker compose logs -f portal
 ```
 
-预期日志:
-
+**模式 A** 预期日志:
 ```
 Portal 启动, 监听 0.0.0.0:28080, public URL: https://wifi.login.example.com
+```
+且只有 `wifi-portal` 一个容器。外部 Nginx / aaPanel 反代到 `127.0.0.1:28080`。
+
+**模式 B** 预期日志里多一段 Caddy 的, 稍等十几秒会看到:
+```
+wifi-portal-caddy  | {"level":"info","msg":"certificate obtained successfully"}
+wifi-portal-caddy  | {"level":"info","msg":"serving initial configuration"}
+wifi-portal        | Portal 启动, ..., public URL: https://wifi.login.example.com:28081
+```
+`docker compose ps` 能看到 `wifi-portal` + `wifi-portal-caddy` 两个容器都 Up。
+
+如果 Caddy 一直卡在 "obtaining certificate" + CF API 错误, 99% 是 `CLOUDFLARE_API_TOKEN`
+权限不对 / 值多了空白。本地验证 token 好使:
+
+```bash
+curl -H "Authorization: Bearer <你的 token>" \
+  https://api.cloudflare.com/client/v4/user/tokens/verify
+# 返回 "status": "active" 即可
 ```
 
 ### 步骤 4: 端到端自测 (Phase 4 之前)

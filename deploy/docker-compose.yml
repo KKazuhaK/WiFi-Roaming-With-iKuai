@@ -1,16 +1,31 @@
 # docker-compose.yml
-# 放在 VPS 的 /opt/wifi-portal/ 下, 和 portal/ 源码目录同级:
+# 一份 compose, 两种部署拓扑:
 #
-#   /opt/wifi-portal/
+#   模式 A — 外部反代 (默认)
+#     .env 里 COMPOSE_PROFILES 留空 / 不设
+#     只起 portal 容器, 监听 127.0.0.1:28080
+#     TLS 由宿主机上的 aaPanel Nginx / 其它反代处理
+#     适合: 公网 VPS + aaPanel 已经在管 Nginx / ACME
+#
+#   模式 B — 内置 Caddy + DNS-01 TLS
+#     .env 里设 COMPOSE_PROFILES=caddy (再把 Caddy 那几个变量填上)
+#     多起一个 caddy 容器, 监听 ${PORTAL_HTTPS_PORT:-28081}, 自动 Cloudflare DNS-01 拿证书
+#     适合: 内网 LAN 盒子 + iKuai 站内 DNS 劫持, 不想依赖外部 Nginx
+#
+# 目录布局:
+#   /opt/wifi-portal/ (或 /opt/wifi-portal-intranet/)
 #   ├── docker-compose.yml      <- 本文件
-#   ├── .env                    <- 从 portal/.env.example 拷贝, 填真实值
-#   └── portal/                 <- 源码目录 (git clone 或 scp 上传)
+#   ├── Caddyfile               <- 只有模式 B 会读
+#   ├── Dockerfile.caddy        <- 只有模式 B 会 build
+#   ├── .env                    <- 从 .env.example 拷贝并填值
+#   └── portal/                 <- Portal Go 源码目录
 #
 # 常用命令:
-#   docker compose up -d --build    首次启动 / 代码更新后
-#   docker compose logs -f portal   看日志
-#   docker compose restart portal   只改了 .env 时用
-#   docker compose down             停掉
+#   docker compose up -d --build          起容器 (按 .env 里 COMPOSE_PROFILES 决定是否带 caddy)
+#   docker compose logs -f portal         看 Portal 日志
+#   docker compose logs -f caddy          看 Caddy 日志 (模式 B)
+#   docker compose restart portal         改了 .env 只影响 Portal 时用
+#   docker compose down                   停掉 (named volume 保留)
 
 services:
   portal:
@@ -26,21 +41,19 @@ services:
       - .env
 
     # 端口映射: 容器里 28080 → 宿主机 127.0.0.1:28080
-    # 绑 127.0.0.1 关键! 不要写成 28080:28080 或 0.0.0.0:28080:28080,
-    # 那样会让 Portal 直接暴露到公网, 绕过 Nginx 和 TLS.
+    # 绑 127.0.0.1 关键! 模式 A 给外部 Nginx 用; 模式 B 即使绑了也只有本机能连 —
+    # Caddy 通过 compose 网络 (service 名 "portal:28080") 访问, 用不到这个 host 映射.
+    # 不要写 28080:28080 或 0.0.0.0, 否则 Portal 直接暴露到公网.
     ports:
       - "127.0.0.1:28080:28080"
 
-    # 访客码持久化: 默认不挂 volume, 文件直接写在容器内部 /data/.
-    # 行为: docker compose restart / stop+start / VPS 重启都活;
-    #      docker compose up -d --build / down / rm 会丢 (容器被替换).
-    # 要跨重建也保住数据, 在 .env 基础上把下面两行取消注释:
+    # 访客码持久化: 默认不挂 volume, 数据写容器内 /data/, 随容器生命周期走.
+    # 行为: docker compose restart / stop+start / 宿主机重启 → 活;
+    #       docker compose up -d --build / down / rm → 数据丢.
+    # 要跨重建保住, 取消下面两行注释, 数据会落到宿主机 ./data/guest-codes.json:
     #
     # volumes:
     #   - ./data:/data
-    #
-    # 然后 GUEST_CODES_PATH=/data/guest-codes.json 不变, 文件会出现在
-    # /opt/wifi-portal/data/guest-codes.json, 可直接 cat / vim / rsync.
 
     # 日志限制: 每文件 10MB * 最多 3 个 = 30MB 上限, 防小 VPS 爆磁盘.
     logging:
@@ -56,3 +69,46 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
+
+  # Caddy 只在模式 B 启动. 启用方式: .env 里写
+  #   COMPOSE_PROFILES=caddy
+  # 再填好 CLOUDFLARE_API_TOKEN / ACME_EMAIL / PORTAL_HOSTNAME / PORTAL_HTTPS_PORT.
+  caddy:
+    profiles: ["caddy"]
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    image: kazuha/caddy-cloudflare:latest
+    container_name: wifi-portal-caddy
+    restart: unless-stopped
+
+    # HTTPS 端口. 不占 443 是为了跟 LAN 盒子上的其它服务共存; 想跑在 443 改这里 +
+    # PUBLIC_URL 去掉端口号 + Entra Redirect URI 列表里加不带端口那条.
+    # DNS-01 不需要 80 端口公网可达, 所以这里不开 80.
+    ports:
+      - "${PORTAL_HTTPS_PORT:-28081}:${PORTAL_HTTPS_PORT:-28081}"
+
+    environment:
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+      - PORTAL_HOSTNAME=${PORTAL_HOSTNAME:-wifi.login.example.com}
+      - PORTAL_HTTPS_PORT=${PORTAL_HTTPS_PORT:-28081}
+      - ACME_EMAIL=${ACME_EMAIL}
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 证书 + Caddy 自身状态持久化, 跨重启不重新申请
+      - caddy-data:/data
+      - caddy-config:/config
+
+    depends_on:
+      - portal
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy-data:
+  caddy-config:
