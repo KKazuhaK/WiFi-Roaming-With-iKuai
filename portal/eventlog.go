@@ -30,7 +30,7 @@ import (
 type Event struct {
 	Time    time.Time `json:"time"`
 	Kind    string    `json:"kind"`    // 见 Kind 常量
-	Subject string    `json:"subject"` // user UPN / guest-xxxxx / admin UPN / "(guest)" / "(unknown)"
+	Subject string    `json:"subject"` // user UPN / Guest-xxxxx / admin UPN / "(guest)" / "(unknown)"
 	Result  string    `json:"result"`  // started / success / denied / rate_limited / error
 	Method  string    `json:"method"`  // sso / duo / guest_code / admin
 	MAC     string    `json:"mac,omitempty"`

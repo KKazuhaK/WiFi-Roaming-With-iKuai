@@ -24,7 +24,6 @@ type Config struct {
 	IKuaiAppKey         string // 敏感
 	IKuaiWebAuthURL     string
 	IKuaiReleaseType    string
-	IKuaiUserIDPrefix   string
 	IKuaiPolicyDefaults map[IKuaiAuthProfile]IKuaiPolicy
 
 	// --- Portal 自身 ---
@@ -96,7 +95,6 @@ func loadConfig() Config {
 		IKuaiWebAuthURL: envOr("IKUAI_WEBAUTH_URL",
 			"https://portal.ikuai8-wifi.com/Action/webauth-up"),
 		IKuaiReleaseType:    envOr("IKUAI_RELEASE_TYPE", "1"),
-		IKuaiUserIDPrefix:   envOr("IKUAI_USER_ID_PREFIX", ""),
 		IKuaiPolicyDefaults: defaultIKuaiPoliciesFromEnv(),
 
 		ListenAddr:   envOr("LISTEN_ADDR", "127.0.0.1:28080"),

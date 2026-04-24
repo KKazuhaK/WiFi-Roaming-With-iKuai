@@ -98,7 +98,6 @@ CLIENT_SECRET=<密码管理器里那个>
 IKUAI_APPKEY=<这个站点 iKuai 的 appkey>
 IKUAI_IP_KEYS=user_ip,ip,ipaddr
 IKUAI_MAC_KEYS=user_mac,mac,usrmac,devmac
-IKUAI_USER_ID_PREFIX=Kazuha_Hub
 
 # === Portal — 自身 ===
 PUBLIC_URL=https://wifi.login.kazuhahub.com:28081

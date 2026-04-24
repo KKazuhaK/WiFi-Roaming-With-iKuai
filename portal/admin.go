@@ -50,7 +50,7 @@ type CodeUse struct {
 	At       time.Time `json:"at"`
 	MAC      string    `json:"mac"`
 	IP       string    `json:"ip"`
-	GuestUPN string    `json:"guest_upn"` // 例 guest-abc12345
+	GuestUPN string    `json:"guest_upn"` // 例 Guest-abc12345
 }
 
 func (c *GuestCode) IsExpired() bool {

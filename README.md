@@ -140,7 +140,6 @@ COMPOSE_PROFILES=caddy
 | `CLIENT_ID` | `199d45bd-7c7b-4eed-983e-758c8aa12d18` |
 | `CLIENT_SECRET` | 你本地密码管理器里 `portal-prod-2026-v2` 的 Value |
 | `IKUAI_APPKEY` | iKuai 云面板 "生成" 得到 (Phase 4) |
-| `IKUAI_USER_ID_PREFIX` | 审计日志账号列前缀, 默认 `Kazuha_Hub` → `Kazuha_Hub-<upn>` |
 | `PUBLIC_URL` | 模式 A: `https://wifi.login.kazuhahub.com` &nbsp;/&nbsp; 模式 B: `https://wifi.login.kazuhahub.com:28081` (端口要对上) |
 | `SESSION_SECRET` | 运行 `openssl rand -hex 32` 生成一次, 贴进来. 多站点想共享 admin cookie 填同一个 |
 | `BRAND_NAME` | `Kazuha Hub` 或你喜欢的 |
@@ -152,6 +151,8 @@ COMPOSE_PROFILES=caddy
 | `ALLOWED_EMAIL_DOMAINS` | 启用 Duo 时必填, 逗号分隔 (`kazuha.org,kazuhahub.com,kazuhahub.cn`) |
 | `ADMIN_EMAILS` | 访客码管理后台 (`/admin`) 准入白名单, 逗号分隔, 可留空走组模式 |
 | `ADMIN_GROUP_IDS` | Entra Security Group Object ID 列表 (可选), 组成员自动 admin |
+
+iKuai 账号显示不需要额外 env 配置, 会自动按认证方式生成: `SSO-<upn>`, `Duo-<upn>`, `Guest-<id>`.
 
 ### 仅模式 B 才要填的变量
 

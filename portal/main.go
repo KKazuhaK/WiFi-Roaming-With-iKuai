@@ -688,7 +688,7 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	// 成功认证后清理同一邮箱 / 设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess, user.UPN)
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, user.UPN,
-		a.ikuaiPolicies.Get(IKuaiProfileSSO))
+		IKuaiProfileSSO, a.ikuaiPolicies.Get(IKuaiProfileSSO))
 	clearSessionCookie(w, true)
 	http.Redirect(w, r, ikuaiURL, http.StatusFound)
 }
@@ -753,7 +753,7 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	// 成功认证后清理同一邮箱 / 设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess, username)
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, username,
-		a.ikuaiPolicies.Get(IKuaiProfileDuo))
+		IKuaiProfileDuo, a.ikuaiPolicies.Get(IKuaiProfileDuo))
 	clearSessionCookie(w, true)
 	http.Redirect(w, r, ikuaiURL, http.StatusFound)
 }
@@ -813,7 +813,7 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "random_failed"})
 		return
 	}
-	upn := "guest-" + guestID
+	upn := "Guest-" + guestID
 	c := a.guestCodes.Validate(code, sess.MAC, sess.UserIP, upn)
 	if c == nil {
 		log.Printf("deny guest code ip=%s mac=%s", sess.UserIP, sess.MAC)
@@ -832,7 +832,7 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	policy := a.ikuaiPolicies.Get(IKuaiProfileGuest)
 	policy.Timeout = c.DurationMin
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, upn,
-		policy)
+		IKuaiProfileGuest, policy)
 	clearSessionCookie(w, true)
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": ikuaiURL})
 }
