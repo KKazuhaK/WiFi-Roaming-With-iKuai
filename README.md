@@ -416,7 +416,7 @@ Portal 面向公网, 默认就带以下应用层防御, **不需要额外配置*
 |---|---|---|---|---|
 | **1** · `/auth/start` | email | 3 分钟 5 次 **或** 1 小时 20 次 | `/auth/callback` 或 `/auth/duo-callback` 成功 | 429 `rate_limited` |
 | **5** · `/auth/guest-code` | session cookie 里签名的 MAC | 1 小时 10 次 | 访客码正确 | 429 `rate_limited` |
-| **6** · 全端点兜底 | IP (X-Real-IP) | 1 小时累计 30 次任意失败 | 不自动, 封禁到期 | 封 1 小时, 所有 /auth/* 直接 429 |
+| **6** · 全端点兜底 | IP (X-Real-IP) | 1 小时累计 30 次任意失败 | 不自动, 封禁到期 | 首次封 3 分钟, 第 2 次及以后**永久** (要 admin 解) |
 
 三层并行独立, 任一命中都返 429。**规则 6** 也会累加 "触发规则 1/5 本身" — 所以
 同一个攻击者哪怕换邮箱也会在同 IP 上累加。
@@ -435,9 +435,20 @@ AUTH_EMAIL_FAILS_SHORT=5         AUTH_EMAIL_WINDOW_SHORT=3m
 AUTH_EMAIL_FAILS_LONG=20         AUTH_EMAIL_WINDOW_LONG=1h
 GUEST_CODE_MAC_FAILS=10          GUEST_CODE_MAC_WINDOW=1h
 IP_FAILS_LIMIT=30                IP_FAILS_WINDOW=1h
-IP_BAN_DURATION=1h
+IP_BAN_DURATION=3m               # 首次封禁时长
+IP_BAN_ESCALATE_AT=2             # 第 N 次触发永久封禁
 AUTH_PROCEED_TTL=5m              # opaque token 存活时间
+RATELIMIT_STATE_PATH=            # 空=内存; 建议 /data/ratelimit-state.json 持久化封禁历史
 ```
+
+### 封禁升级模型
+
+为了既不误伤正常用户, 又能真正拦住反复触发的机器人 / 攻击:
+
+- 第 **1** 次单 IP 触发规则 6 → 封 **3 分钟** + 前端显示"请在 X 分钟后再试"
+- 第 **2** 次 (及以后) → **永久封禁** + 前端显示"请联系管理员"
+- 封禁次数记录在 `RATELIMIT_STATE_PATH` 指定的 JSON 文件里, 跨容器重启保留 (没设就是内存模式, 攻击者重启一次就刷新 — 真要防攻击必须挂持久化)
+- Admin 从 `/admin` 面板一键"解除"会同时清除计数, 该 IP 回到"初犯"状态
 
 ### Admin 限流面板
 
@@ -452,7 +463,8 @@ AUTH_PROCEED_TTL=5m              # opaque token 存活时间
 ### 关键日志片段
 
 ```
-限流: email 5/3m0s + 20/1h0m0s, MAC 10/1h0m0s, IP 30/1h0m0s → ban 1h0m0s
+限流: email 5/3m0s + 20/1h0m0s, MAC 10/1h0m0s, IP 30/1h0m0s → 首次封禁 3m0s, 第 2 次起永久
+ban history 持久化: 已启用, path=/data/ratelimit-state.json
 # ↑ 启动时打印, 确认阈值加载成功
 
 auth/start 邮箱限流: you@example.org short=3 long=3 ip=1.2.3.4
@@ -461,8 +473,10 @@ auth/start 邮箱限流: you@example.org short=3 long=3 ip=1.2.3.4
 guest-code 按 MAC 限流: mac=aa:bb:cc:dd:ee:ff ip=1.2.3.4
 # ↑ 规则 5 命中
 
-IP 失败超限, 封禁 1h0m0s: 1.2.3.4 (累计=30 窗口=1h0m0s 原因=...)
-# ↑ 规则 6 命中
+IP 失败超限, 封禁 3m0s (第 1 次): 1.2.3.4 (累计=30 窗口=1h0m0s 原因=...)
+# ↑ 规则 6 首次命中
+IP 失败超限, **永久封禁** (第 2 次): 1.2.3.4 (...)
+# ↑ 同一 IP 再次命中, 升级到永久
 ```
 
 ### 爬虫

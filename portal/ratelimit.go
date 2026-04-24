@@ -13,8 +13,13 @@ package main
 //                Portal 只绑 127.0.0.1, 所有连接都过 Nginx 反代, header 可信.
 
 import (
+	"encoding/json"
+	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -159,6 +164,22 @@ func (b *ipBanList) isBanned(ip string) bool {
 	return true
 }
 
+// expiryOf 返回该 IP 封禁到期时间, ok=false 表示没被封.
+// 跟 isBanned 一样会顺手清掉过期条目.
+func (b *ipBanList) expiryOf(ip string) (time.Time, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	exp, ok := b.bans[ip]
+	if !ok {
+		return time.Time{}, false
+	}
+	if time.Now().After(exp) {
+		delete(b.bans, ip)
+		return time.Time{}, false
+	}
+	return exp, true
+}
+
 func (b *ipBanList) gcLoop() {
 	t := time.NewTicker(10 * time.Minute)
 	defer t.Stop()
@@ -204,6 +225,115 @@ func (b *ipBanList) snapshot() []BanSnapshot {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ExpiresAt < out[j].ExpiresAt })
 	return out
+}
+
+// banHistory 记录每个 IP 被封过多少次. 持久化到磁盘, 跨容器重启保留 —
+// 不然"第二次封禁永久"意义全失, 攻击者重启一次就重置。
+// 内容只有 {ip: count}, 不涉及积累失败计数 (那些重启清零对合法用户更友好).
+type banHistory struct {
+	mu          sync.Mutex
+	counts      map[string]int // ip → 被封过几次
+	persistPath string         // 空 = 内存模式, 非空 = JSON 文件持久化
+}
+
+// newBanHistory: persistPath 空则纯内存; 非空则尝试从文件加载, 失败直接 err
+// (启动阶段暴露, 不静默覆盖旧数据).
+func newBanHistory(persistPath string) (*banHistory, error) {
+	b := &banHistory{
+		counts:      make(map[string]int),
+		persistPath: persistPath,
+	}
+	if persistPath == "" {
+		return b, nil
+	}
+	data, err := os.ReadFile(persistPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return b, nil
+		}
+		return nil, fmt.Errorf("读取 %s: %w", persistPath, err)
+	}
+	if len(data) == 0 {
+		return b, nil
+	}
+	if err := json.Unmarshal(data, &b.counts); err != nil {
+		return nil, fmt.Errorf("解析 %s: %w", persistPath, err)
+	}
+	log.Printf("ban history: 从 %s 加载 %d 条 IP 封禁历史", persistPath, len(b.counts))
+	return b, nil
+}
+
+// increment: IP 被封一次, 计数 +1, 返回新的总封禁次数 (从 1 开始).
+// 同步写盘, 失败只 log 不回滚内存 — 下次变更会再写.
+func (b *banHistory) increment(ip string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.counts[ip]++
+	n := b.counts[ip]
+	b.saveLocked()
+	return n
+}
+
+// get: 返回该 IP 已被封次数 (0 = 从未).
+func (b *banHistory) get(ip string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.counts[ip]
+}
+
+// reset: admin 手动清除一个 IP 的封禁历史 (让他回到"初犯"状态).
+func (b *banHistory) reset(ip string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.counts[ip]; ok {
+		delete(b.counts, ip)
+		b.saveLocked()
+	}
+}
+
+// snapshot: admin UI 用, 返回 {ip: count} 的副本.
+func (b *banHistory) snapshot() map[string]int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make(map[string]int, len(b.counts))
+	for k, v := range b.counts {
+		out[k] = v
+	}
+	return out
+}
+
+// saveLocked: 必须在持锁时调. 原子写 (tmp + rename). 失败只 log.
+func (b *banHistory) saveLocked() {
+	if b.persistPath == "" {
+		return
+	}
+	data, err := json.MarshalIndent(b.counts, "", "  ")
+	if err != nil {
+		log.Printf("ban history 序列化失败: %v", err)
+		return
+	}
+	dir := filepath.Dir(b.persistPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("ban history mkdir %s 失败: %v", dir, err)
+		return
+	}
+	tmp := b.persistPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		log.Printf("ban history 写 %s 失败: %v", tmp, err)
+		return
+	}
+	if err := os.Rename(tmp, b.persistPath); err != nil {
+		log.Printf("ban history rename %s → %s 失败: %v", tmp, b.persistPath, err)
+	}
+}
+
+// PermanentBanUntil 我们用来标记"永久封禁"的时间点. 实际是 1 百年后的某个 Unix 时间,
+// 大得不可能被正常到期逻辑跨过去, 又能走正常的时间比较路径不用特殊分支.
+var PermanentBanUntil = time.Date(2125, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// IsPermanent 判断一个到期时间点是不是"永久"标记.
+func IsPermanent(t time.Time) bool {
+	return t.After(time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC))
 }
 
 // clientIP 从反代 header 提真实 IP. Portal 绑 127.0.0.1, 所有连接都过 Nginx,
