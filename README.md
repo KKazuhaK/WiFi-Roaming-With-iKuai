@@ -279,6 +279,8 @@ IKUAI_GUEST_UPLOAD=0     IKUAI_GUEST_DOWNLOAD=0     IKUAI_GUEST_COMMENT=
 | `/data/events.jsonl` | 事件日志 (登录 + admin 审计, JSONL, 默认保留 7 天) |
 
 要换位置改 `docker-compose.yml` 的 `volumes: - ./data:/data` 一行即可。
+容器启动入口会先把 bind-mounted `./data` 修成 `portal` 用户可写, 再降权运行 Portal。
+Portal 启动时还会做一次 `/data` 写入探测; 如果宿主目录权限不对, 会直接 fatal, 避免误以为持久化生效。
 落盘采用原子写 (tmp + rename), 启动加载失败会 fatal 避免覆盖损坏文件。
 事件日志写盘失败只 log 不阻塞业务路径 — 不是关键路径, 丢一条也不影响放行。
 

@@ -31,7 +31,7 @@ type Event struct {
 	Time    time.Time `json:"time"`
 	Kind    string    `json:"kind"`    // 见 Kind 常量
 	Subject string    `json:"subject"` // user UPN / guest-xxxxx / admin UPN / "(guest)" / "(unknown)"
-	Result  string    `json:"result"`  // success / denied / rate_limited / error
+	Result  string    `json:"result"`  // started / success / denied / rate_limited / error
 	Method  string    `json:"method"`  // sso / duo / guest_code / admin
 	MAC     string    `json:"mac,omitempty"`
 	IP      string    `json:"ip,omitempty"`
@@ -42,6 +42,7 @@ const (
 	KindLogin       = "login"
 	KindAdminAction = "admin_action"
 
+	ResultStarted     = "started"
 	ResultSuccess     = "success"
 	ResultDenied      = "denied"
 	ResultRateLimited = "rate_limited"
@@ -375,6 +376,8 @@ func eventMethodLabel(m string) string {
 
 func eventResultLabel(r string) string {
 	switch r {
+	case ResultStarted:
+		return "started"
 	case ResultSuccess:
 		return "success"
 	case ResultDenied:

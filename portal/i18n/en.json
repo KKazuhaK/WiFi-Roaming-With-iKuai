@@ -161,6 +161,7 @@
   "admin.events.method.duo": "Duo",
   "admin.events.method.guestCode": "Guest code",
   "admin.events.method.admin": "Console",
+  "admin.events.result.started": "Started",
   "admin.events.result.success": "Success",
   "admin.events.result.denied": "Denied",
   "admin.events.result.rateLimited": "Rate-limited",
