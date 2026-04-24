@@ -92,9 +92,8 @@ type Config struct {
 	RatelimitStatePath string
 
 	// --- 事件日志 (admin observability) ---
-	EventLogPath       string        // 空 = 纯内存, 非空 = JSONL 持久化
-	EventLogRetention  time.Duration // 超过此时长的事件会被 gc 掉, 默认 7 天
-	ActiveDeviceWindow time.Duration // 设备最后活跃超过此时长后从"活跃设备"面板剔除
+	EventLogPath      string        // 空 = 纯内存, 非空 = JSONL 持久化
+	EventLogRetention time.Duration // 超过此时长的事件会被 gc 掉, 默认 7 天
 }
 
 func loadConfig() Config {
@@ -146,9 +145,8 @@ func loadConfig() Config {
 		AuthProceedTTL:       envOrDuration("AUTH_PROCEED_TTL", 5*time.Minute),
 		RatelimitStatePath:   strings.TrimSpace(envOr("RATELIMIT_STATE_PATH", "")),
 
-		EventLogPath:       strings.TrimSpace(envOr("EVENT_LOG_PATH", "/data/events.jsonl")),
-		EventLogRetention:  time.Duration(envOrInt("EVENT_LOG_RETENTION_DAYS", 7)) * 24 * time.Hour,
-		ActiveDeviceWindow: envOrDuration("ACTIVE_DEVICE_WINDOW", 24*time.Hour),
+		EventLogPath:      strings.TrimSpace(envOr("EVENT_LOG_PATH", "/data/events.jsonl")),
+		EventLogRetention: time.Duration(envOrInt("EVENT_LOG_RETENTION_DAYS", 7)) * 24 * time.Hour,
 	}
 
 	secretHex := mustEnv("SESSION_SECRET")

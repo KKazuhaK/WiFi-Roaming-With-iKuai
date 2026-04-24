@@ -69,8 +69,7 @@ type App struct {
 	proceedStore *proceedTokenStore
 
 	// --- 可观测性 ---
-	eventLog      *EventLog
-	activeDevices *ActiveDevices
+	eventLog *EventLog
 }
 
 func main() {
@@ -151,9 +150,6 @@ func main() {
 		log.Printf("事件日志: 未启用持久化 (纯内存, 容器重启数据丢)")
 	}
 
-	activeDevices := newActiveDevices(cfg.ActiveDeviceWindow)
-	log.Printf("活跃设备看板: window=%s (超过此时长未活动剔除)", cfg.ActiveDeviceWindow)
-
 	app := &App{
 		cfg:            cfg,
 		oidc:           oidcClient,
@@ -170,7 +166,6 @@ func main() {
 		banHistory:     banHist,
 		proceedStore:   newProceedTokenStore(cfg.AuthProceedTTL),
 		eventLog:       eventLog,
-		activeDevices:  activeDevices,
 	}
 	go app.authEmailFails.gcLoop()
 	go app.guestCodeFails.gcLoop()
@@ -178,7 +173,6 @@ func main() {
 	go app.ipBans.gcLoop()
 	go app.proceedStore.gcLoop()
 	go app.eventLog.gcLoop()
-	go app.activeDevices.gcLoop()
 	if cfg.IPBanEscalateAt >= 999999 {
 		log.Printf("限流: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s → 冷却 %s, 不升级永久",
 			cfg.AuthEmailFailsShort, cfg.AuthEmailWindowShort,
@@ -226,8 +220,6 @@ func main() {
 	mux.HandleFunc("/admin/ikuai-policy/update", app.handleIKuaiPolicyUpdate)
 	mux.HandleFunc("/admin/events/query", app.handleEventsQuery)
 	mux.HandleFunc("/admin/events/export.csv", app.handleEventsExportCSV)
-	mux.HandleFunc("/admin/active-devices", app.handleActiveDevicesList)
-	mux.HandleFunc("/admin/active-devices/remove", app.handleActiveDeviceRemove)
 	mux.HandleFunc("/admin/denylist/export.csv", app.handleDenylistExportCSV)
 	mux.HandleFunc("/admin/denylist/import", app.handleDenylistImportCSV)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
@@ -663,7 +655,6 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	log.Printf("放行成员(SSO): upn=%s name=%q client_ip=%s user_ip=%s mac=%s",
 		user.UPN, user.Name, clientIP(r), sess.UserIP, sess.MAC)
 	a.logLogin(user.UPN, ResultSuccess, MethodSSO, sess.MAC, sess.UserIP, "")
-	a.activeDevices.Track(sess.MAC, user.UPN, sess.UserIP, MethodSSO)
 	// 成功认证后清理同一邮箱 / 设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess, user.UPN)
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, user.UPN,
@@ -729,7 +720,6 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	log.Printf("放行成员(Duo快捷): upn=%s client_ip=%s user_ip=%s mac=%s",
 		username, clientIP(r), sess.UserIP, sess.MAC)
 	a.logLogin(username, ResultSuccess, MethodDuo, sess.MAC, sess.UserIP, "")
-	a.activeDevices.Track(sess.MAC, username, sess.UserIP, MethodDuo)
 	// 成功认证后清理同一邮箱 / 设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess, username)
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, username,
@@ -807,7 +797,6 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 		upn, tailN(c.Code, 4), clientIP(r), sess.UserIP, sess.MAC)
 	a.logLogin(upn, ResultSuccess, MethodGuestCode, sess.MAC, sess.UserIP,
 		"code=…"+tailN(c.Code, 4))
-	a.activeDevices.Track(sess.MAC, upn, sess.UserIP, MethodGuestCode)
 	// 成功 → 清理同一设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess)
 	policy := a.ikuaiPolicies.Get(IKuaiProfileGuest)
@@ -1280,7 +1269,7 @@ func ikuaiPolicyDiff(profile IKuaiAuthProfile, old, cur IKuaiPolicy) string {
 	return fmt.Sprintf("policy %s: %s", profile, strings.Join(parts, ", "))
 }
 
-// --- 事件日志 / 活跃设备 / denylist CSV ---
+// --- 事件日志 / denylist CSV ---
 
 // parseEventFilter 从 URL query 里抓过滤条件. 不校验字段值合法性 —
 // 不认识的值会过滤后返回空结果, 不 500.
@@ -1364,59 +1353,6 @@ func (a *App) handleEventsExportCSV(w http.ResponseWriter, r *http.Request) {
 	if err := WriteEventsCSV(w, events); err != nil {
 		log.Printf("事件日志 CSV 导出失败: %v", err)
 	}
-}
-
-func (a *App) handleActiveDevicesList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r, true); !ok {
-		return
-	}
-	devices := a.activeDevices.List()
-	type row struct {
-		MAC             string `json:"mac"`
-		UserID          string `json:"user_id"`
-		IP              string `json:"ip"`
-		Method          string `json:"method"`
-		FirstSeenUnix   int64  `json:"first_seen_unix"`
-		LastSeenUnix    int64  `json:"last_seen_unix"`
-	}
-	out := make([]row, 0, len(devices))
-	for _, d := range devices {
-		out = append(out, row{
-			MAC:           d.MAC,
-			UserID:        d.UserID,
-			IP:            d.IP,
-			Method:        d.Method,
-			FirstSeenUnix: d.FirstSeen.Unix(),
-			LastSeenUnix:  d.LastSeen.Unix(),
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":       true,
-		"devices":  out,
-		"count":    len(out),
-		"now_unix": time.Now().Unix(),
-	})
-}
-
-func (a *App) handleActiveDeviceRemove(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
-		return
-	}
-	admin, ok := a.requireAdmin(w, r, true)
-	if !ok {
-		return
-	}
-	mac := strings.TrimSpace(r.FormValue("mac"))
-	if mac == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_mac"})
-		return
-	}
-	removed := a.activeDevices.Remove(mac)
-	if removed {
-		a.logAdminAction(admin.UPN, ResultSuccess, "active-device remove mac="+normalizeMAC(mac))
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed})
 }
 
 func (a *App) handleDenylistExportCSV(w http.ResponseWriter, r *http.Request) {
@@ -1633,7 +1569,6 @@ type DashboardStats struct {
 	LoginsWeek       int
 	FailedRatePct    int // 0..100, 最近 7 天失败占比
 	FailedCount7d    int
-	ActiveDevices    int
 	ActiveGuestCodes int
 	BannedIPs        int
 	BannedMACs       int
@@ -1718,13 +1653,13 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 
 // buildDashboard 计算 /admin 首页顶部 summary 卡片的数字.
 //   - 登录统计从 eventLog 的 KindLogin 事件推导
-//   - 当前活跃设备 / 访客码 / 封禁状态从各 store 直接拿
+//   - 访客码 / 封禁状态从各 store 直接拿
+//   - 当前在线设备数请直接到 iKuai 后台查, Portal 不重复造轮子
 func (a *App) buildDashboard(allCodes []*GuestCode) DashboardStats {
 	now := time.Now()
 	stats := DashboardStats{
-		ActiveDevices: a.activeDevices.Count(),
-		BannedMACs:    len(a.denylist.ListMACs()),
-		BannedIPs:     len(a.ipBans.snapshot()),
+		BannedMACs: len(a.denylist.ListMACs()),
+		BannedIPs:  len(a.ipBans.snapshot()),
 	}
 	// 当前有效访客码 = 未过期 且 未用完 (跟 Validate 判断一致, 比 Stats().Unused 更严格)
 	validCodes := 0
