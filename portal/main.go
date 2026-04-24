@@ -364,8 +364,14 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusBadRequest)
 		return
 	}
+	// Duo Universal Prompt 回调参数名在不同版本 / 租户不一致:
+	// 早期版本返 duo_code, OIDC-compliant 的新版本返 code. 两个都认.
 	duoCode := r.URL.Query().Get("duo_code")
 	if duoCode == "" {
+		duoCode = r.URL.Query().Get("code")
+	}
+	if duoCode == "" {
+		log.Printf("Duo callback 缺 code/duo_code 参数, query=%q", r.URL.RawQuery)
 		a.renderError(w, r, lang, lang.s().ErrorGenericMsg, http.StatusBadRequest)
 		return
 	}
