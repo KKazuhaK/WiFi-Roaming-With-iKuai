@@ -48,13 +48,23 @@
     header .upn { color: var(--text-muted); font-size: 13px; }
     .btn-logout {
       background: transparent;
-      border: 1px solid var(--border);
-      color: var(--text-muted);
+      border: 1px solid var(--danger);
+      color: var(--danger);
+      min-height: 34px;
       padding: 6px 12px;
       border-radius: 8px;
       font-size: 13px;
       cursor: pointer;
       font-family: inherit;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-logout:hover { background: rgba(220,38,38,0.08); }
+    .btn-logout svg {
+      width: 16px;
+      height: 16px;
+      stroke-width: 2;
     }
     main { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
     .admin-nav {
@@ -150,6 +160,14 @@
       font-size: 12px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+    }
+    .policy-table td { vertical-align: middle; }
+    .policy-note {
+      display: inline-flex;
+      align-items: center;
+      min-height: 38px;
+      color: var(--text);
+      font-size: 14px;
     }
     tbody tr { border-top: 1px solid var(--border); }
     tbody tr:first-child { border-top: none; }
@@ -252,7 +270,14 @@
     <div class="title">Kazuha Hub Wi-Fi Portal Admin</div>
     <div class="upn">{{ .AdminUPN }}</div>
     <form action="/admin/logout" method="post" style="margin:0">
-      <button type="submit" class="btn-logout">登出</button>
+      <button type="submit" class="btn-logout">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+          <path d="M16 17l5-5-5-5"></path>
+          <path d="M21 12H9"></path>
+        </svg>
+        <span>登出</span>
+      </button>
     </form>
   </header>
 
@@ -328,7 +353,7 @@
       </div>
 
       <div class="table-wrap">
-        <table>
+        <table class="policy-table">
           <thead>
             <tr>
               <th style="width: 140px;">认证方式</th>
@@ -347,7 +372,7 @@
               <td><input form="policy-{{ .Profile }}" type="number" name="download" value="{{ .Download }}" min="0" placeholder="KB/s" class="search" style="min-width: 110px;"></td>
               <td>
                 {{ if eq .Profile "guest" }}
-                <span class="muted">按上网码剩余有效期</span>
+                <span class="policy-note">按上网码剩余有效期</span>
                 <input form="policy-{{ .Profile }}" type="hidden" name="timeout" value="0">
                 {{ else }}
                 <input form="policy-{{ .Profile }}" type="number" name="timeout" value="{{ .Timeout }}" min="0" placeholder="分钟" class="search" style="min-width: 110px;">
