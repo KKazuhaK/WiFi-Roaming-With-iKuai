@@ -239,18 +239,18 @@ ADMIN_GROUP_IDS=<刚才复制的 Object ID>
 默认写到 `/data/denylist.json`; 要跨重建保留, 使用同一个 `/data` volume。
 
 **iKuai 放行策略持久化**: `/admin` 的"放行策略"页可分别设置 SSO 成员、
-Duo 成员、访客码的 `upload` / `download` / `timeout` / `comment`。启动默认值走 env:
+Duo 成员、访客码的 `upload` / `download` / `comment`; SSO / Duo 还可设置 `timeout`。启动默认值走 env:
 
 ```
 IKUAI_SSO_UPLOAD=0       IKUAI_SSO_DOWNLOAD=0       IKUAI_SSO_TIMEOUT=0       IKUAI_SSO_COMMENT=
 IKUAI_DUO_UPLOAD=0       IKUAI_DUO_DOWNLOAD=0       IKUAI_DUO_TIMEOUT=0       IKUAI_DUO_COMMENT=
-IKUAI_GUEST_UPLOAD=0     IKUAI_GUEST_DOWNLOAD=0     IKUAI_GUEST_TIMEOUT=0     IKUAI_GUEST_COMMENT=
+IKUAI_GUEST_UPLOAD=0     IKUAI_GUEST_DOWNLOAD=0     IKUAI_GUEST_COMMENT=
 ```
 
-`upload` / `download` 单位是 KB, `0` = 不限速; `timeout` 单位是分钟, `0` = 不过期。
+`upload` / `download` 单位是 KB/s, `0` = 不限速; `timeout` 单位是分钟, `0` = 不过期。
 默认写到 `/data/ikuai-policy.json`; 要让 Admin 修改跨重建保留, 使用同一个 `/data` volume。
 `comment` 会写进 iKuai 侧记录, 不要放敏感信息或完整访客码。
-访客码放行时会自动把 iKuai `timeout` 限制到该码的剩余有效分钟数内, 不会超过访客码限时。
+访客码不手动设置 `timeout`; 放行时会自动把 iKuai `timeout` 设置为该码的剩余有效分钟数, 不会超过访客码限时。
 
 ### 步骤 3: 起服务
 

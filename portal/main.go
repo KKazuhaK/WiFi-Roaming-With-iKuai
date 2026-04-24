@@ -769,22 +769,19 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	// 成功 → 清理同一设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess)
 	policy := a.ikuaiPolicies.Get(IKuaiProfileGuest)
-	policy.Timeout = capGuestPolicyTimeout(policy.Timeout, c.ExpiresAt)
+	policy.Timeout = guestPolicyTimeout(c.ExpiresAt)
 	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, upn,
 		policy)
 	clearSessionCookie(w, true)
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": ikuaiURL})
 }
 
-func capGuestPolicyTimeout(policyTimeout int, expiresAt time.Time) int {
+func guestPolicyTimeout(expiresAt time.Time) int {
 	remaining := int(time.Until(expiresAt).Seconds() / 60)
 	if remaining < 1 {
 		return 1
 	}
-	if policyTimeout == 0 || policyTimeout > remaining {
-		return remaining
-	}
-	return policyTimeout
+	return remaining
 }
 
 // --- admin ---
@@ -1176,6 +1173,9 @@ func (a *App) handleIKuaiPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		Download: parseIntDefault(r.FormValue("download"), 0),
 		Timeout:  parseIntDefault(r.FormValue("timeout"), 0),
 		Comment:  strings.TrimSpace(r.FormValue("comment")),
+	}
+	if profile == IKuaiProfileGuest {
+		policy.Timeout = 0
 	}
 	if err := a.ikuaiPolicies.Set(profile, policy); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
