@@ -134,8 +134,10 @@ func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string,
 	if err != nil {
 		return "", fmt.Errorf("duo id_token: %w", err)
 	}
-	// iss = https://{apiHost}
-	if iss, _ := claims["iss"].(string); iss != "https://"+d.apiHost {
+	// iss = 完整的 token endpoint URL (对照 Duo 官方 duo_universal_golang SDK).
+	// 早先这里按 "https://{apiHost}" 校验, 被 Duo 实际返回的
+	// "https://{apiHost}/oauth/v1/token" 给挂了.
+	if iss, _ := claims["iss"].(string); iss != tokenEndpoint {
 		return "", fmt.Errorf("duo id_token iss 不匹配: %s", iss)
 	}
 	// aud = client_id
