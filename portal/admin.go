@@ -124,7 +124,7 @@ func (s *GuestCodeStore) loadFromDisk() error {
 		}
 		s.codes[k] = c
 	}
-	log.Printf("guest codes: loaded %d entries from %s", s.persistPath, len(s.codes))
+	log.Printf("guest codes: loaded %d entries from %s", len(s.codes), s.persistPath)
 	return nil
 }
 
