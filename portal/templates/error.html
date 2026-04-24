@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="robots" content="noindex, nofollow">
-  <title>{{ .S.ErrorTitle }} · {{ .Brand.Name }}</title>
+  <title>{{ T .Lang "errors.title" }} · {{ .Brand.Name }}</title>
   <style>
     :root {
       --brand-color: {{ .Brand.Color }};
@@ -100,10 +100,10 @@
     <img class="brand-logo light" src="/static/logo+title-circle.png"          alt="{{ .Brand.Name }}">
     <img class="brand-logo dark"  src="/static/logo+title-circle-darkmode.png" alt="{{ .Brand.Name }}">
 
-    <h1>{{ .S.ErrorTitle }}</h1>
+    <h1>{{ T .Lang "errors.title" }}</h1>
     <p class="msg">{{ .Message }}</p>
-    <a href="/login" class="btn">{{ printf .S.SignInButton .Brand.Name }}</a>
-    <div class="footer">{{ printf .S.Footer .Brand.Name }} · {{ .NowYear }}</div>
+    <a href="/login" class="btn">{{ T .Lang "login.btn.sso" .Brand.Name }}</a>
+    <div class="footer">{{ T .Lang "common.footer" .Brand.Name }} · {{ .NowYear }}</div>
   </main>
 </body>
 </html>

@@ -1,12 +1,30 @@
 package main
 
 // i18n.go
-// 三语字符串表 + 语言判定.
+// 三语字符串表 + 语言判定. 字符串本体在 portal/i18n/<lang>.json,
+// 启动时 go:embed 烤进二进制, 单例 map 缓存. 模板里通过 T 函数查询,
+// JS 通过 jsonI18N 注入命名空间子集.
+//
+// 设计取舍:
+//   - 不做 type-safe struct: 字段太多会臃肿, 且现在 admin 那边量级 ~150 条
+//   - 启动期校验所有 lang 必须有所有 key (以 EN 为基准), 缺则 fatal — 把
+//     "type-safe struct 的编译期保证" 退化成"启动期保证"
+//   - 缺 key 运行时 fallback: 当前 lang → EN → key 字面量 (便于定位)
+//   - 不引入复数 / 复杂格式化, 用 fmt.Sprintf 套 %s/%d 就够了
 
 import (
+	"embed"
+	"encoding/json"
+	"fmt"
+	"html/template"
+	"log"
 	"net/http"
+	"sort"
 	"strings"
 )
+
+//go:embed i18n/*.json
+var i18nFS embed.FS
 
 type Lang string
 
@@ -16,211 +34,97 @@ const (
 	LangEN   Lang = "en"
 )
 
-// Strings 字段中带 %s 的会被 BrandName 替换.
-type Strings struct {
-	// 登录主页
-	Title        string
-	Subtitle     string
-	SignInButton string // "使用 %s SSO 登录"
-	GuestButton  string // "访客码登录"
+// supportedLangs: 启动校验时遍历用. 加新语言只改这一行 + 新加 json 文件.
+var supportedLangs = []Lang{LangZHCN, LangZHTW, LangEN}
 
-	// 账号输入步骤
-	EmailHint      string // "输入你的账号以继续登录"
-	EmailLabel     string
-	ContinueButton string // "继续"
+// translations[lang][key] = value. 启动后只读, 多 goroutine 并发安全.
+var translations map[Lang]map[string]string
 
-	// 访客码步骤
-	GuestCodeHint    string
-	GuestCodeLabel   string
-	GuestCodeVerify  string
-	GuestCodeInvalid string
-
-	// 错误 / 通用
-	InvalidEmail     string
-	InvalidDomain    string
-	AccountDenied    string // Duo / admin 拒绝账号
-	RateLimited      string // 通用限流 (没有具体倒计时信息时显示)
-	RateLimitedRetry string // 有倒计时: "请在 %s 后再试" — %s 会被前端替换成具体时间
-	RateLimitedPermanent string // 永久封禁: 联系管理员
-	NotAuthorizedMsg string
-	GuestBlockedMsg  string
-	SessionLostMsg   string
-	ExpiredMsg       string
-	ErrorTitle       string
-	ErrorGenericMsg  string
-	Footer           string
-
-	// 按钮通用
-	Back   string
-	Cancel string
-	Retry  string
-	Or     string
-
-	// 时间单位 (给前端 fmtRetryAfter 拼 "N 分钟"/"N minutes" 用)
-	UnitSeconds string // "秒" / "seconds"
-	UnitMinutes string // "分钟" / "minutes"
-	UnitHours   string // "小时" / "hours"
-
-	// 语言切换
-	LangZHCNLabel string
-	LangZHTWLabel string
-	LangENLabel   string
-
-	// 杂项 (暂未在模板里用, 保留)
-	ConnectingInfo string
-	SuccessTitle   string
-	SuccessMsg     string
-	LabelDevice    string
-	LabelAccount   string
+// loadTranslations: 启动时读所有 i18n/*.json + 校验. 任一失败 fatal.
+// 在 loadConfig 之后、handler 注册之前调用.
+func loadTranslations() {
+	translations = make(map[Lang]map[string]string, len(supportedLangs))
+	for _, l := range supportedLangs {
+		path := fmt.Sprintf("i18n/%s.json", l)
+		data, err := i18nFS.ReadFile(path)
+		if err != nil {
+			log.Fatalf("i18n: 读取 %s 失败: %v", path, err)
+		}
+		var m map[string]string
+		if err := json.Unmarshal(data, &m); err != nil {
+			log.Fatalf("i18n: 解析 %s 失败: %v", path, err)
+		}
+		translations[l] = m
+	}
+	// 校验: 以 EN 为 source-of-truth, 其它 lang 必须有所有 key.
+	base := translations[LangEN]
+	if base == nil {
+		log.Fatalf("i18n: en.json 加载失败")
+	}
+	missing := map[Lang][]string{}
+	for _, l := range supportedLangs {
+		if l == LangEN {
+			continue
+		}
+		for k := range base {
+			if _, ok := translations[l][k]; !ok {
+				missing[l] = append(missing[l], k)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		for l, keys := range missing {
+			sort.Strings(keys)
+			log.Printf("i18n: lang %s 缺 %d 个 key: %v", l, len(keys), keys)
+		}
+		log.Fatalf("i18n: 翻译不完整, 见上面 缺失列表")
+	}
+	log.Printf("i18n: 已加载 %d 种语言, 每种 %d 条", len(supportedLangs), len(base))
 }
 
-var stringsZHCN = Strings{
-	Title:        "连接至 %s Roaming 网络",
-	Subtitle:     "登录 %s 账号即可接入网络",
-	SignInButton: "使用 %s SSO 登录",
-	GuestButton:  "访客码登录",
-
-	EmailHint:      "输入你的账号以继续登录",
-	EmailLabel:     "账号",
-	ContinueButton: "继续",
-
-	GuestCodeHint:    "请输入管理员发给你的访客码",
-	GuestCodeLabel:   "访客码",
-	GuestCodeVerify:  "验证",
-	GuestCodeInvalid: "访客码无效, 请核对后重试",
-
-	InvalidEmail:     "账号格式不正确",
-	InvalidDomain:    "账号不在允许范围内, 请使用允许的账号",
-	AccountDenied:    "此账号被管理员标记为拒绝, 请联系管理员",
-	RateLimited:      "操作过于频繁, 请稍后再试",
-	RateLimitedRetry: "操作过于频繁, 请在 %s 后再试",
-	RateLimitedPermanent: "由于多次触发安全限制, 当前连接已被封禁. 请联系管理员解除.",
-	NotAuthorizedMsg: "此账号不在允许范围内。请联系管理员。",
-	GuestBlockedMsg:  "抱歉，外部访客账号暂不允许连接 WiFi。",
-	SessionLostMsg:   "会话已丢失，请重新从 WiFi 界面打开登录页。",
-	ExpiredMsg:       "登录超时，请重新尝试。",
-	ErrorTitle:       "连接失败",
-	ErrorGenericMsg:  "暂时无法完成认证，请稍后重试。如问题持续请联系管理员。",
-	Footer:           "© %s · WiFi",
-
-	Back:   "返回",
-	Cancel: "取消",
-	Retry:  "重试",
-	Or:     "或",
-
-	UnitSeconds: "秒",
-	UnitMinutes: "分钟",
-	UnitHours:   "小时",
-
-	LangZHCNLabel: "简体",
-	LangZHTWLabel: "繁體",
-	LangENLabel:   "English",
-
-	ConnectingInfo: "正在跳转到登录...",
-	SuccessTitle:   "已连接",
-	SuccessMsg:     "你已成功接入 %s。本次会话有效期 8 小时。",
-	LabelDevice:    "设备",
-	LabelAccount:   "账号",
+// T: 按 lang 查 key. 找不到 → fallback 到 EN. 还找不到 → 返回 key 字面量
+// (生产环境如果出现这种情况, key 会原样显示在页面上, 一眼能定位忘加翻译的地方).
+// 有 args 时套 fmt.Sprintf, 字符串里用 %s/%d 占位.
+func T(lang Lang, key string, args ...any) string {
+	s, ok := translations[lang][key]
+	if !ok {
+		s, ok = translations[LangEN][key]
+		if !ok {
+			return key
+		}
+	}
+	if len(args) > 0 {
+		return fmt.Sprintf(s, args...)
+	}
+	return s
 }
 
-var stringsZHTW = Strings{
-	Title:        "連接至 %s Roaming 網路",
-	Subtitle:     "登入 %s 帳號即可接入網路",
-	SignInButton: "使用 %s SSO 登入",
-	GuestButton:  "訪客碼登入",
-
-	EmailHint:      "輸入你的帳號以繼續登入",
-	EmailLabel:     "帳號",
-	ContinueButton: "繼續",
-
-	GuestCodeHint:    "請輸入管理員發給你的訪客碼",
-	GuestCodeLabel:   "訪客碼",
-	GuestCodeVerify:  "驗證",
-	GuestCodeInvalid: "訪客碼無效, 請核對後重試",
-
-	InvalidEmail:     "帳號格式不正確",
-	InvalidDomain:    "帳號不在允許範圍內, 請使用允許的帳號",
-	AccountDenied:    "此帳號被管理員標記為拒絕, 請聯絡管理員",
-	RateLimited:      "操作過於頻繁, 請稍後再試",
-	RateLimitedRetry: "操作過於頻繁, 請在 %s 後再試",
-	RateLimitedPermanent: "由於多次觸發安全限制, 目前連線已被封禁. 請聯絡管理員解除.",
-	NotAuthorizedMsg: "此帳號不在允許範圍內。請聯絡管理員。",
-	GuestBlockedMsg:  "抱歉，外部訪客帳號暫不允許連接 WiFi。",
-	SessionLostMsg:   "工作階段已遺失，請重新從 WiFi 介面開啟登入頁。",
-	ExpiredMsg:       "登入逾時，請重新嘗試。",
-	ErrorTitle:       "連線失敗",
-	ErrorGenericMsg:  "暫時無法完成驗證，請稍後重試。如問題持續請聯絡管理員。",
-	Footer:           "© %s · WiFi",
-
-	Back:   "返回",
-	Cancel: "取消",
-	Retry:  "重試",
-	Or:     "或",
-
-	UnitSeconds: "秒",
-	UnitMinutes: "分鐘",
-	UnitHours:   "小時",
-
-	LangZHCNLabel: "简体",
-	LangZHTWLabel: "繁體",
-	LangENLabel:   "English",
-
-	ConnectingInfo: "正在跳轉到登入...",
-	SuccessTitle:   "已連線",
-	SuccessMsg:     "你已成功接入 %s。本次工作階段有效期 8 小時。",
-	LabelDevice:    "裝置",
-	LabelAccount:   "帳號",
+// jsonI18N: 给前端 JS 用. 返回所有以 prefix 开头的 key=value 的 JSON
+// 字符串 (key 去掉 prefix 缩短). 注入方式:
+//   <script>window.__I18N = {{ jsonI18N .Lang "admin." }};</script>
+// 然后 JS: __I18N["toast.added"] / __I18N["btn.delete"].
+// 返回 template.JS 而非 string, 让 html/template 不再做转义 (返回值已经是
+// 合法 JSON 文本, 可直接当 JS 表达式).
+func jsonI18N(lang Lang, prefix string) (template.JS, error) {
+	src := translations[lang]
+	if src == nil {
+		src = translations[LangEN]
+	}
+	sub := make(map[string]string, len(src))
+	for k, v := range src {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		sub[strings.TrimPrefix(k, prefix)] = v
+	}
+	data, err := json.Marshal(sub)
+	if err != nil {
+		return "", err
+	}
+	return template.JS(data), nil
 }
 
-var stringsEN = Strings{
-	Title:        "Connect to %s Roaming",
-	Subtitle:     "Sign in with your %s account to connect",
-	SignInButton: "Sign in with %s SSO",
-	GuestButton:  "Guest code sign-in",
-
-	EmailHint:      "Enter your account to continue",
-	EmailLabel:     "Account",
-	ContinueButton: "Continue",
-
-	GuestCodeHint:    "Enter the guest code provided by your administrator",
-	GuestCodeLabel:   "Guest code",
-	GuestCodeVerify:  "Verify",
-	GuestCodeInvalid: "Invalid guest code. Please double-check and retry.",
-
-	InvalidEmail:     "Invalid account format",
-	InvalidDomain:    "Account not allowed. Use an allowed account.",
-	AccountDenied:    "This account is denied by admin. Please contact your administrator.",
-	RateLimited:      "Too many attempts. Please wait a bit and try again.",
-	RateLimitedRetry: "Too many attempts. Please try again in %s.",
-	RateLimitedPermanent: "This connection has been blocked after repeated security violations. Please contact your administrator.",
-	NotAuthorizedMsg: "This account is not authorized. Please contact your admin.",
-	GuestBlockedMsg:  "Sorry, external guest accounts are not allowed to connect to WiFi.",
-	SessionLostMsg:   "Session lost. Please reopen the login page from your WiFi dialog.",
-	ExpiredMsg:       "Sign-in timed out. Please try again.",
-	ErrorTitle:       "Connection Failed",
-	ErrorGenericMsg:  "Could not complete authentication. Please try again later or contact your admin.",
-	Footer:           "© %s · WiFi",
-
-	Back:   "Back",
-	Cancel: "Cancel",
-	Retry:  "Retry",
-	Or:     "or",
-
-	UnitSeconds: "seconds",
-	UnitMinutes: "minutes",
-	UnitHours:   "hours",
-
-	LangZHCNLabel: "简体",
-	LangZHTWLabel: "繁體",
-	LangENLabel:   "English",
-
-	ConnectingInfo: "Redirecting to sign-in...",
-	SuccessTitle:   "Connected",
-	SuccessMsg:     "You are now connected to %s. This session is valid for 8 hours.",
-	LabelDevice:    "Device",
-	LabelAccount:   "Account",
-}
-
+// pickLang: query > Accept-Language > LangEN (fallback).
 func pickLang(r *http.Request) Lang {
 	if q := r.URL.Query().Get("lang"); q != "" {
 		if l, ok := parseLang(q); ok {
@@ -253,15 +157,4 @@ func parseLang(raw string) (Lang, bool) {
 		return LangEN, true
 	}
 	return "", false
-}
-
-func (l Lang) s() Strings {
-	switch l {
-	case LangZHCN:
-		return stringsZHCN
-	case LangZHTW:
-		return stringsZHTW
-	default:
-		return stringsEN
-	}
 }
