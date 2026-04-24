@@ -16,9 +16,8 @@ package main
 //     &mac={mac}&upload=0&download=0&token={hex}&release_type=1
 //
 // user_id / custom_name / release_type / timeout / comment 是透传参数 (不进 MD5 token 计算):
-//   user_id     — iKuai 审计日志 "账号" 列. 格式由 IKUAI_USER_ID_PREFIX 控制:
-//                  前缀空 → user_id = UPN                 (例: you@example.org)
-//                  前缀非空 → user_id = {prefix}-{UPN}     (例: Kazuha_Hub-you@example.org)
+//   user_id     — iKuai 审计日志 "账号" 列. 格式由认证类型控制:
+//                  SSO → SSO-{UPN}, Duo → Duo-{UPN}, Guest → Guest-{id}
 //   custom_name — 设为与 user_id 相同, 兼容部分 iKuai 固件在在线用户页优先显示 custom_name
 //   release_type = IKUAI_RELEASE_TYPE env, 默认 "1"
 //   timeout      — iKuai 认证超时时间, 单位分钟, 0 = 不过期
@@ -68,8 +67,8 @@ func extractDeviceInfo(r *http.Request, cfg Config) (DeviceInfo, bool) {
 }
 
 // buildWebAuthURL 生成给浏览器 302 过去的 iKuai 放行 URL。
-// userUPN 是用户的 Entra UPN, 会按 IKUAI_USER_ID_PREFIX 加前缀组成 user_id.
-func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string, policy IKuaiPolicy) string {
+// userUPN 是用户身份; profile 决定爱快侧显示的认证来源前缀.
+func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string, profile IKuaiAuthProfile, policy IKuaiPolicy) string {
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
 	upload := fmt.Sprintf("%d", policy.Upload)
 	download := fmt.Sprintf("%d", policy.Download)
@@ -83,11 +82,7 @@ func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string, policy IKuaiPol
 	sum := md5.Sum([]byte(raw))
 	token := hex.EncodeToString(sum[:])
 
-	// user_id 按前缀拼: 空前缀 → 只 UPN; 非空 → "前缀-UPN"
-	userID := userUPN
-	if cfg.IKuaiUserIDPrefix != "" {
-		userID = cfg.IKuaiUserIDPrefix + "-" + userUPN
-	}
+	userID := ikuaiUserID(profile, userUPN)
 
 	// 构造最终 URL
 	params := url.Values{}
@@ -109,6 +104,21 @@ func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string, policy IKuaiPol
 	params.Set("release_type", cfg.IKuaiReleaseType)
 
 	return cfg.IKuaiWebAuthURL + "?" + params.Encode()
+}
+
+func ikuaiUserID(profile IKuaiAuthProfile, identity string) string {
+	identity = strings.TrimSpace(identity)
+	switch profile {
+	case IKuaiProfileSSO:
+		return "SSO-" + identity
+	case IKuaiProfileDuo:
+		return "Duo-" + identity
+	case IKuaiProfileGuest:
+		guestID := strings.TrimPrefix(strings.TrimPrefix(identity, "guest-"), "Guest-")
+		return "Guest-" + guestID
+	default:
+		return identity
+	}
 }
 
 // --- helpers ---
