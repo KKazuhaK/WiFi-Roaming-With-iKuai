@@ -1,0 +1,35 @@
+# Caddyfile
+# TLS 证书: 通过 Cloudflare DNS-01 challenge 申请, 不需要任何端口公网可达.
+# 这是内网方案的关键 — 盒子只在 LAN 有 IP, 但证书依然是真实 CA 签发的,
+# 浏览器不会报警告.
+#
+# 只反代到同 compose 网络里的 portal service, portal 不暴露端口到宿主.
+
+{
+    # 邮箱用于 LE / ZeroSSL 的账号注册 + 证书到期提醒
+    email {$ACME_EMAIL}
+}
+
+{$PORTAL_HOSTNAME} {
+    # DNS-01 via Cloudflare. CLOUDFLARE_API_TOKEN 只需要 Zone:DNS:Edit 权限
+    # + Zone:Zone:Read, 限定到 kazuhahub.com 这一个 zone.
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
+
+    # 反代到 portal 容器. 容器名 portal = compose service 名,
+    # Caddy 自动做 DNS 解析, 不用写 IP.
+    reverse_proxy portal:28080 {
+        # 传给 Portal 的 ratelimit.go clientIP() 解析用
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up Host {host}
+    }
+
+    # Caddy 默认就带合理的 log 级别, 再显式开 access log 写 stdout
+    log {
+        output stdout
+        format console
+    }
+}

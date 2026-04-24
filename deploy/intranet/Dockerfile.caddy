@@ -1,0 +1,13 @@
+# Dockerfile.caddy
+# 自定义 Caddy 镜像: 官方 caddy:2 + caddy-dns/cloudflare 模块.
+# 为什么要自己 build: 官方 caddy 镜像不自带 DNS 插件, 要用 CF DNS-01
+# 就必须带 github.com/caddy-dns/cloudflare 模块. 官方文档推荐的方式就是
+# 用 caddy:*-builder 镜像 + xcaddy 编译一个新二进制, 拷回运行镜像.
+# 参考: https://caddyserver.com/docs/build#docker
+
+FROM caddy:2-builder AS builder
+RUN xcaddy build \
+    --with github.com/caddy-dns/cloudflare
+
+FROM caddy:2
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy
