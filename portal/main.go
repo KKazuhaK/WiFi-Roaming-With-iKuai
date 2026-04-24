@@ -217,6 +217,7 @@ func main() {
 	mux.HandleFunc("/admin/ratelimit/reset-all", app.handleRateLimitResetAll)
 	mux.HandleFunc("/admin/denylist/macs/create", app.handleDenyMACCreate)
 	mux.HandleFunc("/admin/denylist/macs/delete", app.handleDenyMACDelete)
+	mux.HandleFunc("/admin/denylist/macs/delete-all", app.handleDenyMACDeleteAll)
 	mux.HandleFunc("/admin/ikuai-policy/update", app.handleIKuaiPolicyUpdate)
 	mux.HandleFunc("/admin/events/query", app.handleEventsQuery)
 	mux.HandleFunc("/admin/events/export.csv", app.handleEventsExportCSV)
@@ -1211,6 +1212,23 @@ func (a *App) handleDenyMACDelete(w http.ResponseWriter, r *http.Request) {
 		a.logAdminAction(admin.UPN, ResultSuccess, "mac="+norm+" unban")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+}
+
+// handleDenyMACDeleteAll: 一键清空整个 MAC 封禁列表. 只动 denylist, 不碰限流.
+// 跟 /admin/ratelimit/reset-all 是两个独立动作, 各管各的.
+func (a *App) handleDenyMACDeleteAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	admin, ok := a.requireAdmin(w, r, true)
+	if !ok {
+		return
+	}
+	n := a.denylist.DeleteAllMACs()
+	log.Printf("admin %s 一键解除全部 MAC 封禁: cleared=%d", admin.UPN, n)
+	a.logAdminAction(admin.UPN, ResultSuccess, fmt.Sprintf("mac unban-all cleared=%d", n))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": n})
 }
 
 func (a *App) handleIKuaiPolicyUpdate(w http.ResponseWriter, r *http.Request) {
