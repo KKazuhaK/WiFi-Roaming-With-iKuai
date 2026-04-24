@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config 是 Portal 运行需要的所有配置.
@@ -58,6 +59,22 @@ type Config struct {
 	// 访客码持久化文件路径. 空 = 纯内存 (重启数据丢).
 	// 非空则启动加载 + 每次变更原子写盘, 配合 docker volume 挂出来即可.
 	GuestCodesPath string
+
+	// --- 限流配置 ---
+	// 规则 1: /auth/start 按邮箱失败计数, 双窗口. 成功回调清零.
+	AuthEmailFailsShort  int           // 短窗口上限 (default 3)
+	AuthEmailWindowShort time.Duration // 短窗口长度 (default 5m)
+	AuthEmailFailsLong   int           // 长窗口上限 (default 10)
+	AuthEmailWindowLong  time.Duration // 长窗口长度 (default 1h)
+	// 规则 5: /auth/guest-code 按 MAC 失败计数, 成功清零.
+	GuestCodeMacFails  int           // 默认 10
+	GuestCodeMacWindow time.Duration // 默认 1h
+	// 规则 6: 单 IP 跨端点累计失败, 超限封禁.
+	IPFailsLimit  int           // 默认 30
+	IPFailsWindow time.Duration // 默认 1h
+	IPBanDuration time.Duration // 默认 1h
+	// 账号枚举防护: /auth/start 返回 opaque token, 浏览器访问 /auth/proceed 再内跳.
+	AuthProceedTTL time.Duration // token 存活 (default 5m)
 }
 
 func loadConfig() Config {
@@ -91,6 +108,17 @@ func loadConfig() Config {
 
 		AdminEmails:    splitCSV(envOr("ADMIN_EMAILS", "")),
 		GuestCodesPath: strings.TrimSpace(envOr("GUEST_CODES_PATH", "")),
+
+		AuthEmailFailsShort:  envOrInt("AUTH_EMAIL_FAILS_SHORT", 3),
+		AuthEmailWindowShort: envOrDuration("AUTH_EMAIL_WINDOW_SHORT", 5*time.Minute),
+		AuthEmailFailsLong:   envOrInt("AUTH_EMAIL_FAILS_LONG", 10),
+		AuthEmailWindowLong:  envOrDuration("AUTH_EMAIL_WINDOW_LONG", time.Hour),
+		GuestCodeMacFails:    envOrInt("GUEST_CODE_MAC_FAILS", 10),
+		GuestCodeMacWindow:   envOrDuration("GUEST_CODE_MAC_WINDOW", time.Hour),
+		IPFailsLimit:         envOrInt("IP_FAILS_LIMIT", 30),
+		IPFailsWindow:        envOrDuration("IP_FAILS_WINDOW", time.Hour),
+		IPBanDuration:        envOrDuration("IP_BAN_DURATION", time.Hour),
+		AuthProceedTTL:       envOrDuration("AUTH_PROCEED_TTL", 5*time.Minute),
 	}
 
 	secretHex := mustEnv("SESSION_SECRET")
@@ -191,6 +219,19 @@ func envOrInt(key string, fallback int) int {
 		log.Fatalf("环境变量 %s 必须是整数, 当前: %q", key, v)
 	}
 	return n
+}
+
+// envOrDuration: 解析 time.Duration (如 "5m", "1h30m"). 空值走 fallback.
+func envOrDuration(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Fatalf("环境变量 %s 必须是时长 (如 5m, 1h), 当前: %q", key, v)
+	}
+	return d
 }
 
 func splitCSV(s string) []string {
