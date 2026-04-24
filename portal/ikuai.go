@@ -126,4 +126,11 @@ func normalizeMAC(mac string) string {
 	}
 	// 按 2 字符插冒号
 	var b strings.Builder
-	for i
+	for i := 0; i < 12; i += 2 {
+		if i > 0 {
+			b.WriteByte(':')
+		}
+		b.WriteString(clean[i : i+2])
+	}
+	return b.String()
+}
