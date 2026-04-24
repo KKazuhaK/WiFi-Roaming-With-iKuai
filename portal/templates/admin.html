@@ -391,6 +391,7 @@
       <input type="text" class="search" placeholder="搜索码或备注…" id="search-input">
       <button type="button" class="btn btn-primary" onclick="openModal('modal-add')">添加</button>
       <button type="button" class="btn" onclick="openModal('modal-batch')">批量生成</button>
+      <button type="button" class="btn btn-danger" id="btn-bulk-delete" onclick="bulkDeleteCodes()" disabled>删除选中(<span id="bulk-count">0</span>)</button>
       <button type="button" class="btn btn-danger" onclick="deleteExpired()">删除失效</button>
     </div>
 
@@ -398,6 +399,7 @@
       <table>
         <thead>
           <tr>
+            <th style="width: 32px;"><input type="checkbox" id="codes-checkall" onclick="toggleAllCodes(this)"></th>
             <th>上网码</th>
             <th>状态</th>
             <th>限时</th>
@@ -410,6 +412,7 @@
         <tbody id="tbody">
           {{ range .Codes }}
           <tr data-status="{{ .Status }}" data-search="{{ .Code }} {{ .Note }}">
+            <td><input type="checkbox" class="code-check" data-code="{{ .Code }}" onclick="updateBulkCount()"></td>
             <td class="code">{{ .Code }}</td>
             <td><span class="chip {{ .Status }}">{{ if eq .Status "unused" }}未使用{{ else if eq .Status "used" }}已使用{{ else }}已过期{{ end }}</span></td>
             <td class="muted">{{ .Duration }}</td>
@@ -425,11 +428,14 @@
               {{ end }}
             </td>
             <td class="muted">{{ .Note }}</td>
-            <td><button type="button" class="btn btn-danger btn-mini" onclick="deleteCode('{{ .Code }}')">删除</button></td>
+            <td>
+              <button type="button" class="btn btn-mini" onclick="showQR('{{ .Code }}')">QR</button>
+              <button type="button" class="btn btn-danger btn-mini" onclick="deleteCode('{{ .Code }}')">删除</button>
+            </td>
           </tr>
           {{ end }}
           {{ if not .Codes }}
-          <tr id="empty-row"><td colspan="7" class="empty">还没有访客码. 点"添加"或"批量生成"创建第一条.</td></tr>
+          <tr id="empty-row"><td colspan="8" class="empty">还没有访客码. 点"添加"或"批量生成"创建第一条.</td></tr>
           {{ end }}
         </tbody>
       </table>
@@ -700,12 +706,26 @@
 
   <!-- 批量结果 -->
   <div class="modal-backdrop" id="modal-result">
-    <div class="modal">
+    <div class="modal" style="max-width: 720px;">
       <h2>生成成功 · <span id="result-count">0</span> 条</h2>
       <div class="result" id="result-codes"></div>
+      <div id="result-qr-grid" style="display:none;margin-top:14px;"></div>
       <div class="modal-actions">
         <button type="button" class="btn" onclick="copyResult()">复制全部</button>
+        <button type="button" class="btn" onclick="toggleResultQRs()" id="btn-toggle-qrs">显示 QR</button>
         <button type="button" class="btn btn-primary" onclick="closeModal('modal-result'); location.reload()">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 单条 QR 显示 -->
+  <div class="modal-backdrop" id="modal-qr">
+    <div class="modal" style="max-width: 360px; text-align:center;">
+      <h2 id="qr-code-text" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">—</h2>
+      <img id="qr-image" alt="QR" style="width:240px;height:240px;background:#fff;padding:10px;border-radius:8px;">
+      <div class="muted" style="font-size:12px;margin-top:8px;">扫码即可读到上网码内容</div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" onclick="closeModal('modal-qr')">关闭</button>
       </div>
     </div>
   </div>
@@ -765,6 +785,8 @@
         var searchOK = !q || (row.dataset.search || '').toLowerCase().indexOf(q) !== -1;
         row.style.display = (statusOK && searchOK) ? '' : 'none';
       }
+      // filter 改变后, 之前选中但现在被隐藏的行不应计入. 重算.
+      if (typeof updateBulkCount === 'function') updateBulkCount();
     }
     document.querySelectorAll('.tab').forEach(function(t) {
       t.addEventListener('click', function() {
@@ -904,6 +926,98 @@
           toast('已删除 ' + body.deleted + ' 条过期码');
           setTimeout(function() { location.reload(); }, 500);
         });
+    }
+
+    // ===== 选中删除 =====
+
+    function selectedCodes() {
+      var out = [];
+      document.querySelectorAll('.code-check').forEach(function(cb) {
+        // 只算当前可见 (filter / search 过滤后) 的行
+        if (cb.checked && cb.closest('tr').style.display !== 'none') {
+          out.push(cb.dataset.code);
+        }
+      });
+      return out;
+    }
+
+    function updateBulkCount() {
+      var n = selectedCodes().length;
+      $('bulk-count').textContent = n;
+      $('btn-bulk-delete').disabled = (n === 0);
+    }
+
+    function toggleAllCodes(master) {
+      document.querySelectorAll('.code-check').forEach(function(cb) {
+        if (cb.closest('tr').style.display !== 'none') {
+          cb.checked = master.checked;
+        }
+      });
+      updateBulkCount();
+    }
+
+    function bulkDeleteCodes() {
+      var codes = selectedCodes();
+      if (codes.length === 0) return;
+      if (!confirm('确认删除选中的 ' + codes.length + ' 个访客码?')) return;
+      var fd = new FormData();
+      fd.append('codes', codes.join(','));
+      fetch('/admin/codes/delete-bulk', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(body) {
+          if (body.ok) {
+            toast('已删除 ' + body.deleted + ' 条');
+            setTimeout(function() { location.reload(); }, 500);
+          } else {
+            toast('批量删除失败: ' + (body.error || 'unknown'));
+          }
+        })
+        .catch(function() { toast('网络异常'); });
+    }
+
+    // ===== QR 码 =====
+
+    function qrSrc(code) {
+      return '/admin/qr.png?text=' + encodeURIComponent(code) + '&size=240';
+    }
+
+    function showQR(code) {
+      $('qr-code-text').textContent = code;
+      $('qr-image').src = qrSrc(code);
+      openModal('modal-qr');
+    }
+
+    var __resultQRsShown = false;
+    function toggleResultQRs() {
+      var grid = $('result-qr-grid');
+      var btn = $('btn-toggle-qrs');
+      if (__resultQRsShown) {
+        grid.style.display = 'none';
+        btn.textContent = '显示 QR';
+        __resultQRsShown = false;
+        return;
+      }
+      // 第一次展开: 渲染所有码的 QR
+      var codes = $('result-codes').textContent.split('\n').filter(Boolean);
+      grid.innerHTML = '';
+      grid.style.display = 'grid';
+      grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(140px, 1fr))';
+      grid.style.gap = '12px';
+      codes.forEach(function(c) {
+        var cell = document.createElement('div');
+        cell.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--bg);padding:8px;border-radius:8px;';
+        var img = document.createElement('img');
+        img.src = '/admin/qr.png?text=' + encodeURIComponent(c) + '&size=140';
+        img.style.cssText = 'width:120px;height:120px;background:#fff;padding:6px;border-radius:6px;';
+        var label = document.createElement('div');
+        label.textContent = c;
+        label.style.cssText = 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;word-break:break-all;text-align:center;';
+        cell.appendChild(img);
+        cell.appendChild(label);
+        grid.appendChild(cell);
+      });
+      btn.textContent = '隐藏 QR';
+      __resultQRsShown = true;
     }
 
     document.querySelectorAll('.modal-backdrop').forEach(function(b) {
