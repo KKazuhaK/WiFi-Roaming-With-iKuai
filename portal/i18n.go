@@ -23,7 +23,8 @@ type Strings struct {
 	Title            string
 	Subtitle         string
 	SignInButton     string // SSO 按钮
-	DuoButton        string // Duo 免密按钮
+	DuoButton        string // Duo 快捷登录按钮
+	GuestButton      string // 访客码登录按钮
 	ConnectingInfo   string
 	NotAuthorizedMsg string
 	GuestBlockedMsg  string
@@ -54,6 +55,13 @@ type Strings struct {
 	DuoInvalidEmail  string // 邮箱格式不对
 	DuoInvalidDomain string // 邮箱域名不允许
 	DuoDeniedAccount string // Duo 管理员标记拒绝这个账号
+
+	// 访客码流程
+	GuestCodeHint    string // 访客码输入框上方提示
+	GuestCodeLabel   string // 访客码 input 的 aria-label / placeholder
+	GuestCodeVerify  string // "验证" 按钮
+	GuestCodeInvalid string // "访客码无效"
+
 	Back             string // "返回"
 	Cancel           string // "取消"
 	Retry            string // "重试"
@@ -64,7 +72,8 @@ var stringsZHCN = Strings{
 	Title:            "连接至 %s Roaming 网络",
 	Subtitle:         "登录 %s 账号即可接入网络",
 	SignInButton:     "使用 %s SSO 登录",
-	DuoButton:        "使用 Duo 免密推送登录",
+	DuoButton:        "使用 Duo 快捷登录",
+	GuestButton:      "访客码登录",
 	ConnectingInfo:   "正在跳转到登录...",
 	NotAuthorizedMsg: "此账号不在允许范围内。请联系管理员。",
 	GuestBlockedMsg:  "抱歉，外部访客账号暂不允许连接 WiFi。",
@@ -94,17 +103,24 @@ var stringsZHCN = Strings{
 	DuoInvalidEmail:  "邮箱格式不正确",
 	DuoInvalidDomain: "邮箱域名不在允许列表, 请使用组织邮箱",
 	DuoDeniedAccount: "此账号被管理员标记为拒绝, 请联系管理员",
-	Back:             "返回",
-	Cancel:           "取消",
-	Retry:            "重试",
-	Or:               "或",
+
+	GuestCodeHint:    "请输入管理员发给你的访客码",
+	GuestCodeLabel:   "访客码",
+	GuestCodeVerify:  "验证",
+	GuestCodeInvalid: "访客码无效, 请核对后重试",
+
+	Back:   "返回",
+	Cancel: "取消",
+	Retry:  "重试",
+	Or:     "或",
 }
 
 var stringsZHTW = Strings{
 	Title:            "連接至 %s Roaming 網路",
 	Subtitle:         "登入 %s 帳號即可接入網路",
 	SignInButton:     "使用 %s SSO 登入",
-	DuoButton:        "使用 Duo 免密推送登入",
+	DuoButton:        "使用 Duo 快捷登入",
+	GuestButton:      "訪客碼登入",
 	ConnectingInfo:   "正在跳轉到登入...",
 	NotAuthorizedMsg: "此帳號不在允許範圍內。請聯絡管理員。",
 	GuestBlockedMsg:  "抱歉，外部訪客帳號暫不允許連接 WiFi。",
@@ -134,17 +150,24 @@ var stringsZHTW = Strings{
 	DuoInvalidEmail:  "郵箱格式不正確",
 	DuoInvalidDomain: "郵箱域名不在允許列表, 請使用組織郵箱",
 	DuoDeniedAccount: "此帳號被管理員標記為拒絕, 請聯絡管理員",
-	Back:             "返回",
-	Cancel:           "取消",
-	Retry:            "重試",
-	Or:               "或",
+
+	GuestCodeHint:    "請輸入管理員發給你的訪客碼",
+	GuestCodeLabel:   "訪客碼",
+	GuestCodeVerify:  "驗證",
+	GuestCodeInvalid: "訪客碼無效, 請核對後重試",
+
+	Back:   "返回",
+	Cancel: "取消",
+	Retry:  "重試",
+	Or:     "或",
 }
 
 var stringsEN = Strings{
 	Title:            "Connect to %s Roaming",
 	Subtitle:         "Sign in with your %s account to connect",
 	SignInButton:     "Sign in with %s SSO",
-	DuoButton:        "Sign in with Duo Push",
+	DuoButton:        "Quick sign-in with Duo",
+	GuestButton:      "Guest code sign-in",
 	ConnectingInfo:   "Redirecting to sign-in...",
 	NotAuthorizedMsg: "This account is not authorized. Please contact your admin.",
 	GuestBlockedMsg:  "Sorry, external guest accounts are not allowed to connect to WiFi.",
@@ -174,10 +197,16 @@ var stringsEN = Strings{
 	DuoInvalidEmail:  "Invalid email format",
 	DuoInvalidDomain: "Email domain not allowed. Use your organization email.",
 	DuoDeniedAccount: "This account is denied by admin. Please contact your administrator.",
-	Back:             "Back",
-	Cancel:           "Cancel",
-	Retry:            "Retry",
-	Or:               "or",
+
+	GuestCodeHint:    "Enter the guest code provided by your administrator",
+	GuestCodeLabel:   "Guest code",
+	GuestCodeVerify:  "Verify",
+	GuestCodeInvalid: "Invalid guest code. Please double-check and retry.",
+
+	Back:   "Back",
+	Cancel: "Cancel",
+	Retry:  "Retry",
+	Or:     "or",
 }
 
 // pickLang 按优先级决定用哪种语言。

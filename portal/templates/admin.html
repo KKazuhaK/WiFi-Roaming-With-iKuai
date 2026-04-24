@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>访客码管理 · {{ .Brand.Name }}</title>
+  <style>
+    :root {
+      --brand: {{ .Brand.Color }};
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --text: #111827;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+      --danger: #dc2626;
+      --success: #16a34a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b0f19;
+        --surface: #111827;
+        --text: #f3f4f6;
+        --text-muted: #9ca3af;
+        --border: #1f2937;
+        --danger: #f87171;
+        --success: #4ade80;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                   "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header .title { font-weight: 600; font-size: 16px; flex: 1; }
+    header .upn { color: var(--text-muted); font-size: 13px; }
+    .btn-logout {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    main { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
+    .toolbar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .tabs { display: flex; gap: 4px; }
+    .tab {
+      background: transparent;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 14px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .tab.active { background: var(--brand); color: white; }
+    .search {
+      flex: 1;
+      min-width: 160px;
+      padding: 8px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 14px;
+    }
+    .btn {
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      font-family: inherit;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+    }
+    .btn:hover { background: rgba(0,0,0,0.04); }
+    @media (prefers-color-scheme: dark) {
+      .btn:hover { background: rgba(255,255,255,0.05); }
+    }
+    .btn-primary { background: var(--brand); color: white; border-color: var(--brand); }
+    .btn-primary:hover { background: var(--brand); opacity: 0.9; }
+    .btn-danger { color: var(--danger); border-color: var(--danger); }
+
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: auto;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 900px; }
+    thead { background: rgba(0,0,0,0.02); border-bottom: 1px solid var(--border); }
+    @media (prefers-color-scheme: dark) {
+      thead { background: rgba(255,255,255,0.03); }
+    }
+    th, td { text-align: left; padding: 10px 16px; vertical-align: top; }
+    th {
+      font-weight: 500;
+      color: var(--text-muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    tbody tr { border-top: 1px solid var(--border); }
+    tbody tr:first-child { border-top: none; }
+    td.code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 500; }
+    td.muted { color: var(--text-muted); font-size: 13px; }
+    .chip {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .chip.unused  { background: rgba(37,99,235,0.1);  color: var(--brand); }
+    .chip.used    { background: rgba(22,163,74,0.12); color: var(--success); }
+    .chip.expired { background: rgba(220,38,38,0.1);  color: var(--danger); }
+    .empty { padding: 48px 16px; text-align: center; color: var(--text-muted); font-size: 14px; }
+    .btn-mini { padding: 4px 10px; font-size: 12px; }
+
+    .modal-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5);
+      display: none; align-items: center; justify-content: center;
+      z-index: 100; padding: 20px;
+    }
+    .modal-backdrop.active { display: flex; }
+    .modal {
+      background: var(--surface);
+      border-radius: 12px;
+      max-width: 480px;
+      width: 100%;
+      padding: 24px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.2);
+      max-height: calc(100vh - 40px);
+      overflow-y: auto;
+    }
+    .modal h2 { margin: 0 0 16px; font-size: 18px; }
+    .form-field { margin-bottom: 14px; }
+    .form-field label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 4px; }
+    .form-field label .required { color: var(--danger); }
+    .form-field input[type="text"],
+    .form-field input[type="number"],
+    .form-field input[type="datetime-local"],
+    .form-field textarea {
+      width: 100%;
+      padding: 8px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 14px;
+    }
+    .form-field textarea { min-height: 60px; resize: vertical; }
+    .form-row { display: flex; gap: 8px; }
+    .form-row > * { flex: 1; }
+    .form-inline { display: flex; gap: 8px; align-items: center; }
+    .form-inline input[type="number"] { width: 100px; }
+    .form-inline input[type="text"] { flex: 1; }
+    .radio-group { display: flex; gap: 12px; flex-wrap: wrap; }
+    .radio-group label {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 14px; color: var(--text); cursor: pointer;
+    }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+    .result {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+      max-height: 240px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .toast {
+      position: fixed; bottom: 24px; right: 24px;
+      background: var(--text); color: var(--bg);
+      padding: 10px 16px; border-radius: 8px;
+      font-size: 14px;
+      opacity: 0; transform: translateY(10px);
+      transition: opacity 0.2s, transform 0.2s;
+      z-index: 200;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 720px) {
+      .toolbar { flex-direction: column; align-items: stretch; }
+      .tabs { justify-content: flex-start; overflow-x: auto; }
+      header { padding: 12px 16px; }
+      main { padding: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title">访客码管理 · {{ .Brand.Name }}</div>
+    <div class="upn">{{ .AdminUPN }}</div>
+    <form action="/admin/logout" method="post" style="margin:0">
+      <button type="submit" class="btn-logout">登出</button>
+    </form>
+  </header>
+
+  <main>
+    <div class="toolbar">
+      <div class="tabs">
+        <button type="button" class="tab active" data-filter="all">全部({{ .Total }})</button>
+        <button type="button" class="tab" data-filter="used">已使用({{ .Used }})</button>
+        <button type="button" class="tab" data-filter="unused">未使用({{ .Unused }})</button>
+        <button type="button" class="tab" data-filter="expired">已过期({{ .Expired }})</button>
+      </div>
+      <input type="text" class="search" placeholder="搜索码或备注…" id="search-input">
+      <button type="button" class="btn btn-primary" onclick="openModal('modal-add')">添加</button>
+      <button type="button" class="btn" onclick="openModal('modal-batch')">批量生成</button>
+      <button type="button" class="btn btn-danger" onclick="deleteExpired()">删除失效</button>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>上网码</th>
+            <th>状态</th>
+            <th>限时</th>
+            <th>过期时间</th>
+            <th>使用记录</th>
+            <th>备注</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          {{ range .Codes }}
+          <tr data-status="{{ .Status }}" data-search="{{ .Code }} {{ .Note }}">
+            <td class="code">{{ .Code }}</td>
+            <td><span class="chip {{ .Status }}">{{ if eq .Status "unused" }}未使用{{ else if eq .Status "used" }}已使用{{ else }}已过期{{ end }}</span></td>
+            <td class="muted">{{ .Duration }}</td>
+            <td class="muted">{{ .ExpiresAt }}</td>
+            <td class="muted">
+              {{ if gt .UseCount 0 }}
+                {{ .UseCount }} 次 · {{ .LastUsedAt }}<br>
+                <span style="font-size:11px">{{ .LastUsedMAC }}</span>
+              {{ else }}
+                —
+              {{ end }}
+            </td>
+            <td class="muted">{{ .Note }}</td>
+            <td><button type="button" class="btn btn-danger btn-mini" onclick="deleteCode('{{ .Code }}')">删除</button></td>
+          </tr>
+          {{ end }}
+          {{ if not .Codes }}
+          <tr id="empty-row"><td colspan="7" class="empty">还没有访客码. 点"添加"或"批量生成"创建第一条.</td></tr>
+          {{ end }}
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <!-- 单条添加 -->
+  <div class="modal-backdrop" id="modal-add">
+    <div class="modal">
+      <h2>添加访客码</h2>
+      <form id="form-add">
+        <div class="form-field">
+          <label>上网码 <span class="required">*</span></label>
+          <div class="form-inline">
+            <input type="text" name="code" id="add-code" placeholder="留空则自动生成 10 位数字">
+            <button type="button" class="btn" onclick="genOneDigitCode()">自动生成</button>
+          </div>
+        </div>
+        <div class="form-field">
+          <label>过期时间 (可选, 留空则用下方限时计算)</label>
+          <input type="datetime-local" name="expires_at">
+        </div>
+        <div class="form-field">
+          <label>限时</label>
+          <div class="form-inline">
+            <input type="number" name="duration_h" value="2" min="0"> <span>小时</span>
+            <input type="number" name="duration_m" value="0" min="0" max="59"> <span>分</span>
+          </div>
+        </div>
+        <div class="form-field">
+          <label>备注</label>
+          <textarea name="note"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" onclick="closeModal('modal-add')">取消</button>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 批量生成 -->
+  <div class="modal-backdrop" id="modal-batch">
+    <div class="modal">
+      <h2>批量生成访客码</h2>
+      <form id="form-batch">
+        <div class="form-field">
+          <label>上网码类型</label>
+          <div class="radio-group">
+            <label><input type="radio" name="code_type" value="numeric" checked> 纯数字</label>
+            <label><input type="radio" name="code_type" value="alpha"> 纯字母</label>
+            <label><input type="radio" name="code_type" value="alphanumeric"> 数字+字母</label>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label>上网码个数 <span class="required">*</span></label>
+            <input type="number" name="count" value="10" min="1" max="200">
+          </div>
+          <div class="form-field">
+            <label>上网码长度 <span class="required">*</span></label>
+            <input type="number" name="length" value="15" min="6" max="32">
+          </div>
+        </div>
+        <div class="form-field">
+          <label>过期时间 (可选, 留空则用下方限时)</label>
+          <input type="datetime-local" name="expires_at">
+        </div>
+        <div class="form-field">
+          <label>限时</label>
+          <div class="form-inline">
+            <input type="number" name="duration_h" value="2" min="0"> <span>小时</span>
+            <input type="number" name="duration_m" value="0" min="0" max="59"> <span>分</span>
+          </div>
+        </div>
+        <div class="form-field">
+          <label>备注</label>
+          <textarea name="note"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" onclick="closeModal('modal-batch')">取消</button>
+          <button type="submit" class="btn btn-primary">生成</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 批量结果 -->
+  <div class="modal-backdrop" id="modal-result">
+    <div class="modal">
+      <h2>生成成功 · <span id="result-count">0</span> 条</h2>
+      <div class="result" id="result-codes"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="copyResult()">复制全部</button>
+        <button type="button" class="btn btn-primary" onclick="closeModal('modal-result'); location.reload()">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    'use strict';
+    var activeFilter = 'all';
+    var searchQuery = '';
+
+    function $(id) { return document.getElementById(id); }
+    function openModal(id) { $(id).classList.add('active'); }
+    function closeModal(id) { $(id).classList.remove('active'); }
+    function toast(msg) {
+      var t = $('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(function() { t.classList.remove('show'); }, 2000);
+    }
+    function applyFilter() {
+      var rows = document.querySelectorAll('#tbody tr[data-status]');
+      var q = searchQuery.toLowerCase();
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var statusOK = (activeFilter === 'all' || row.dataset.status === activeFilter);
+        var searchOK = !q || (row.dataset.search || '').toLowerCase().indexOf(q) !== -1;
+        row.style.display = (statusOK && searchOK) ? '' : 'none';
+      }
+    }
+    document.querySelectorAll('.tab').forEach(function(t) {
+      t.addEventListener('click', function() {
+        document.querySelectorAll('.tab').forEach(function(e) { e.classList.remove('active'); });
+        t.classList.add('active');
+        activeFilter = t.dataset.filter;
+        applyFilter();
+      });
+    });
+    $('search-input').addEventListener('input', function(e) {
+      searchQuery = e.target.value;
+      applyFilter();
+    });
+
+    function genOneDigitCode() {
+      var s = '';
+      var arr = new Uint32Array(10);
+      (window.crypto || window.msCrypto).getRandomValues(arr);
+      for (var i = 0; i < 10; i++) s += (arr[i] % 10).toString();
+      $('add-code').value = s;
+    }
+
+    function submitCreate(e) {
+      e.preventDefault();
+      var f = $('form-add');
+      var fd = new FormData();
+      var code = f.code.value.trim();
+      if (code) fd.append('code', code);
+      var exp = f.expires_at.value;
+      if (exp) fd.append('expires_at', exp);
+      var h = parseInt(f.duration_h.value) || 0;
+      var m = parseInt(f.duration_m.value) || 0;
+      fd.append('duration_min', (h * 60 + m).toString());
+      fd.append('note', f.note.value);
+
+      fetch('/admin/codes/create', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, body: b }; }); })
+        .then(function(res) {
+          if (res.ok && res.body.ok) {
+            toast('已添加: ' + res.body.code);
+            setTimeout(function() { location.reload(); }, 700);
+          } else {
+            var err = (res.body && res.body.error) || 'error';
+            if (err === 'duplicate_code') toast('码已存在, 请换一个');
+            else if (err.indexOf('expires_at') !== -1) toast(err);
+            else toast('添加失败: ' + err);
+          }
+        })
+        .catch(function() { toast('网络异常'); });
+    }
+    $('form-add').addEventListener('submit', submitCreate);
+
+    function submitBatch(e) {
+      e.preventDefault();
+      var f = $('form-batch');
+      var fd = new FormData();
+      fd.append('code_type', f.code_type.value);
+      fd.append('count', f.count.value);
+      fd.append('length', f.length.value);
+      var exp = f.expires_at.value;
+      if (exp) fd.append('expires_at', exp);
+      var h = parseInt(f.duration_h.value) || 0;
+      var m = parseInt(f.duration_m.value) || 0;
+      fd.append('duration_min', (h * 60 + m).toString());
+      fd.append('note', f.note.value);
+
+      fetch('/admin/codes/batch', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, body: b }; }); })
+        .then(function(res) {
+          if (res.ok && res.body.ok) {
+            closeModal('modal-batch');
+            $('result-count').textContent = res.body.count;
+            $('result-codes').textContent = (res.body.codes || []).join('\n');
+            openModal('modal-result');
+          } else {
+            toast('批量生成失败: ' + ((res.body && res.body.error) || 'error'));
+          }
+        })
+        .catch(function() { toast('网络异常'); });
+    }
+    $('form-batch').addEventListener('submit', submitBatch);
+
+    function copyResult() {
+      var text = $('result-codes').textContent;
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(function() { toast('已复制'); });
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); toast('已复制'); } catch (e) { toast('复制失败, 请手动'); }
+        document.body.removeChild(ta);
+      }
+    }
+
+    function deleteCode(code) {
+      if (!confirm('确认删除码: ' + code + ' ?')) return;
+      var fd = new FormData();
+      fd.append('code', code);
+      fetch('/admin/codes/delete', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(body) {
+          if (body.ok) {
+            toast('已删除');
+            setTimeout(function() { location.reload(); }, 500);
+          } else {
+            toast('删除失败');
+          }
+        });
+    }
+
+    function deleteExpired() {
+      if (!confirm('确认删除所有过期的访客码?')) return;
+      fetch('/admin/codes/delete-expired', { method: 'POST', credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(body) {
+          toast('已删除 ' + body.deleted + ' 条过期码');
+          setTimeout(function() { location.reload(); }, 500);
+        });
+    }
+
+    document.querySelectorAll('.modal-backdrop').forEach(function(b) {
+      b.addEventListener('click', function(e) { if (e.target === b) b.classList.remove('active'); });
+    });
+  </script>
+</body>
+</html>

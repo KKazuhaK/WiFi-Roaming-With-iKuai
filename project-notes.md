@@ -100,6 +100,13 @@
   - ALLOWED_EMAIL_DOMAINS 做域名白名单防推送滥发
   - Duo 未在架构里验证 Entra Member，靠"Duo 已登记 = 内部员工"的运维假设
   - MSA 用户邮箱会 preauth=enroll → 自动回落 /login (Entra SSO 老路径)
+- 访客码登录 + /admin 管理后台
+  - Admin 登录：Entra 账号, UPN 必须在 ADMIN_EMAILS env 里
+  - Admin cookie 独立 (kz_admin_sess, 4 小时 TTL), 与 wifi 登录的短命 cookie 分开
+  - 单条添加 + 批量生成 (数字/字母/数字字母, 默认 10 位数字)
+  - 过期时间 (绝对) / 限时 (相对, 默认 2 小时) 二选一
+  - 内存存储: 容器重启数据丢 (小团队可接受), 要持久化再加 JSON 落盘
+  - 用户侧访客码登录: user_id=guest-<随机8hex>, 不把真实访客码泄进 iKuai 审计日志
 
 ### Phase 3 已知小坑（供备案）
 - 首次 build 失败: Dockerfile `COPY go.mod ./ + go mod download` 在无 go.sum 时不够，

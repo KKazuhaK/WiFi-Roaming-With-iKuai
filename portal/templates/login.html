@@ -247,7 +247,26 @@
         <span>{{ .S.DuoButton }}</span>
       </button>
       {{ end }}
+      {{ if .GuestEnabled }}
+      <button id="btn-to-guest" type="button" class="btn btn-secondary">
+        <span>{{ .S.GuestButton }}</span>
+      </button>
+      {{ end }}
     </div>
+
+    {{ if .GuestEnabled }}
+    <!-- Step 5: 访客码输入 -->
+    <div id="step-guest-code" class="step">
+      <p class="hint">{{ .S.GuestCodeHint }}</p>
+      <input id="guest-code-input" type="text" autocomplete="off"
+             aria-label="{{ .S.GuestCodeLabel }}"
+             placeholder="{{ .S.GuestCodeLabel }}"
+             class="input">
+      <div id="guest-code-error" class="error-inline" style="display:none"></div>
+      <button id="btn-guest-verify" type="button" class="btn btn-primary">{{ .S.GuestCodeVerify }}</button>
+      <button id="btn-back-from-guest" type="button" class="btn-link">← {{ .S.Back }}</button>
+    </div>
+    {{ end }}
 
     {{ if .DuoEnabled }}
     <!-- Step 2: 输入邮箱 -->
@@ -436,6 +455,65 @@
         $('btn-send').disabled = false;
         show('step-choice');
       });
+    })();
+  </script>
+  {{ end }}
+
+  {{ if .GuestEnabled }}
+  <script>
+    (function() {
+      'use strict';
+      var S = {
+        invalidCode: {{ .S.GuestCodeInvalid }},
+        netError:    {{ .S.ErrorGenericMsg }}
+      };
+      function $(id) { return document.getElementById(id); }
+      function showStep(id) {
+        var steps = document.querySelectorAll('.step');
+        for (var i = 0; i < steps.length; i++) steps[i].classList.remove('active');
+        $(id).classList.add('active');
+      }
+      $('btn-to-guest').addEventListener('click', function() {
+        showStep('step-guest-code');
+        setTimeout(function() { $('guest-code-input').focus(); }, 60);
+      });
+      $('btn-back-from-guest').addEventListener('click', function() {
+        showStep('step-choice');
+      });
+      $('guest-code-input').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') verifyGuestCode();
+      });
+      $('btn-guest-verify').addEventListener('click', verifyGuestCode);
+
+      function verifyGuestCode() {
+        var code = $('guest-code-input').value.trim();
+        var errEl = $('guest-code-error');
+        errEl.style.display = 'none';
+        if (!code) {
+          errEl.textContent = S.invalidCode;
+          errEl.style.display = 'block';
+          return;
+        }
+        $('btn-guest-verify').disabled = true;
+        var fd = new FormData();
+        fd.append('code', code);
+        fetch('/auth/guest-code', { method: 'POST', body: fd, credentials: 'same-origin' })
+          .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, body: b }; }); })
+          .then(function(res) {
+            if (res.ok && res.body.redirect) {
+              window.location.href = res.body.redirect;
+            } else {
+              errEl.textContent = S.invalidCode;
+              errEl.style.display = 'block';
+              $('btn-guest-verify').disabled = false;
+            }
+          })
+          .catch(function() {
+            errEl.textContent = S.netError;
+            errEl.style.display = 'block';
+            $('btn-guest-verify').disabled = false;
+          });
+      }
     })();
   </script>
   {{ end }}
