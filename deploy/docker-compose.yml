@@ -31,14 +31,12 @@ services:
     ports:
       - "127.0.0.1:28080:28080"
 
-    # 访客码持久化: 挂一个 Docker named volume 到 /var/lib/wifi-portal,
-    # 配合 .env 里的 GUEST_CODES_PATH=/var/lib/wifi-portal/guest-codes.json.
-    # named volume 的位置由 Docker 管 (宿主机 /var/lib/docker/volumes/...),
-    # 不在项目目录里落文件. `docker compose down` 和 `up -d --build` 都不会丢,
-    # 只有 `docker compose down -v` 或 `docker volume rm` 会真删.
+    # 访客码持久化: 把宿主机 ./data (相对 docker-compose.yml 所在目录)
+    # 挂进容器的 /data. 配合 .env 里的 GUEST_CODES_PATH=/data/guest-codes.json.
+    # 好处: 宿主机 /opt/wifi-portal/data/ 直接 cat / vim / 备份, 不用钻 docker volume.
     # GUEST_CODES_PATH 留空时这个挂载什么事也不做.
     volumes:
-      - wifi-portal-data:/var/lib/wifi-portal
+      - ./data:/data
 
     # 日志限制: 每文件 10MB * 最多 3 个 = 30MB 上限, 防小 VPS 爆磁盘.
     logging:
@@ -54,11 +52,3 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
-
-# Docker-managed volume. 想看里面的文件可以:
-#   docker run --rm -v wifi-portal-data:/data alpine cat /data/guest-codes.json
-# 想备份到宿主机:
-#   docker run --rm -v wifi-portal-data:/src -v $(pwd):/dst alpine \
-#     cp /src/guest-codes.json /dst/guest-codes.json.bak
-volumes:
-  wifi-portal-data:
