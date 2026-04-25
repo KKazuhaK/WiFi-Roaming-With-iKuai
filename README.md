@@ -364,18 +364,37 @@ curl -I "https://wifi.login.example.com/portal?user_ip=192.168.1.100&mac=aa:bb:c
 ### iKuai 免认证白名单 (必须)
 
 Captive Portal 启动后, 浏览器必须能**先**访问这些域名才能走完登录流程。
-把它们全部加到 iKuai 的 "免认证 IP / 免认证域名":
+把它们全部加到 iKuai 的 "免认证 IP / 免认证域名" (iKuai 支持通配,
+`*.example.com` 这种写法可以用):
 
 ```
+# Microsoft Entra (必需)
 login.microsoftonline.com
 login.microsoft.com
+login.windows.net
 login.live.com
 aadcdn.msftauth.net
 aadcdn.msauth.net
-graph.microsoft.com
+logincdn.msauth.net
+device.login.microsoftonline.com
+
+# Duo (启用 Duo 才需要; 你的 DUO_API_HOST 也包含在通配里)
+*.duosecurity.com
+
+# 自家域名
 wifi.login.example.com
 portal.ikuai8-wifi.com
 ```
+
+**故意不加白名单** (这些必须被 iKuai 劫持才会弹 captive portal):
+- `connectivitycheck.gstatic.com` (Android 探测)
+- `captive.apple.com` (iOS 探测)
+- `www.msftconnecttest.com` (Windows 探测)
+
+加白这些会让 OS 误以为已联网, 不弹登录页, 用户连了 WiFi 没浏览器自动跳就以为坏了。
+
+**Graph API**: 当前 admin 组成员从 id_token 的 `groups` claim 直接读,
+**不调 graph.microsoft.com** — 没必要白名单这一条 (留着也无害)。
 
 ---
 
