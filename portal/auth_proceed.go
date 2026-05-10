@@ -13,12 +13,17 @@ package main
 // token 绑定到发起请求的 session.State (CSRF), 一次性用 (取一次就删).
 
 import (
+	"crypto/subtle"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 )
 
+// proceedKind 仅在 main.go 里用作"刚才分流到 Duo 还是 Entra"的局部判断 (决定
+// 事件日志记 method=duo 还是 sso). 这里不再存进 proceedEntry — Kind 字段历史上
+// 注释说"用于日志/调试", 但实际从未被读取过 (L8 死代码清理).
 type proceedKind int
 
 const (
@@ -30,7 +35,6 @@ const (
 type proceedEntry struct {
 	URL          string
 	SessionState string // 必须和 cookie 里的 session.State 一致
-	Kind         proceedKind
 	Email        string // 用于日志 / 调试
 	Expires      time.Time
 }
@@ -48,17 +52,43 @@ func newProceedTokenStore(ttl time.Duration) *proceedTokenStore {
 	}
 }
 
+// maxProceedEntries 防内存增长 DOS: 攻击者反复 /auth/start 但不消费 token.
+// 触顶时同步清过期项 + 必要时丢最早 Expires 的.
+const maxProceedEntries = 50000
+
 // put 随机生成 token 并记一条. 返回 token 字符串.
-func (s *proceedTokenStore) put(url, sessionState, email string, kind proceedKind) (string, error) {
+func (s *proceedTokenStore) put(url, sessionState, email string) (string, error) {
 	tok, err := randomHex(16)
 	if err != nil {
 		return "", err
 	}
 	s.mu.Lock()
+	if len(s.entries) >= maxProceedEntries {
+		now := time.Now()
+		for k, e := range s.entries {
+			if now.After(e.Expires) {
+				delete(s.entries, k)
+			}
+		}
+		if len(s.entries) >= maxProceedEntries {
+			type kv struct {
+				k   string
+				exp time.Time
+			}
+			all := make([]kv, 0, len(s.entries))
+			for k, e := range s.entries {
+				all = append(all, kv{k, e.Expires})
+			}
+			sort.Slice(all, func(i, j int) bool { return all[i].exp.Before(all[j].exp) })
+			target := maxProceedEntries * 9 / 10
+			for i := 0; i < len(all) && len(s.entries) > target; i++ {
+				delete(s.entries, all[i].k)
+			}
+		}
+	}
 	s.entries[tok] = proceedEntry{
 		URL:          url,
 		SessionState: sessionState,
-		Kind:         kind,
 		Email:        email,
 		Expires:      time.Now().Add(s.ttl),
 	}
@@ -125,7 +155,7 @@ func (a *App) handleAuthProceed(w http.ResponseWriter, r *http.Request) {
 		a.renderError(w, r, lang, T(lang, "errors.expired"), http.StatusBadRequest)
 		return
 	}
-	if entry.SessionState != sess.State {
+	if subtle.ConstantTimeCompare([]byte(entry.SessionState), []byte(sess.State)) != 1 {
 		log.Printf("/auth/proceed state mismatch (token=%s)", token[:8])
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
