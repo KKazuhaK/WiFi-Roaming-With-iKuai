@@ -526,12 +526,53 @@ AUTH_EMAIL_FAILS_LONG=20         AUTH_EMAIL_WINDOW_LONG=1h
 GUEST_CODE_MAC_FAILS=6           GUEST_CODE_MAC_WINDOW=30m
 IP_FAILS_LIMIT=20                IP_FAILS_WINDOW=5m
 IP_BAN_DURATION=2m               # IP 短时冷却时长
-IP_BAN_ESCALATE_AT=999999        # 基本等于不升级永久
+IP_BAN_ESCALATE_AT=999999        # 基本等于不升级永久 (≤0 显式禁用 + 跳过 banHistory 写盘)
 AUTH_PROCEED_TTL=5m              # opaque token 存活时间
 EVENT_LOG_RETENTION_DAYS=7       # 事件日志保留期
 ```
 
 (所有持久化文件路径都固定在 `/data/`, 见上面"持久化"段, 没有 `*_PATH` env 可配。)
+
+### 反代信任边界 (TRUST_PROXY)
+
+Portal 的 IP 限流靠 `X-Real-IP` / `X-Forwarded-For` 拿真实客户端 IP。**默认信任** —
+适合反代终结 TLS 的部署 (模式 A/B 都是)。
+
+```
+TRUST_PROXY=true     # 默认, 反代场景
+TRUST_PROXY=false    # 直暴公网必须设, 否则攻击者伪造 X-Real-IP 绕过所有限流
+```
+
+> ⚠️ 安全要点: 直接把 Portal 端口暴露到公网时 *必须* `TRUST_PROXY=false`,
+> 否则攻击者每个请求带 `X-Real-IP: <随机>` 让 IP 限流永远不累计。
+> 启动时 Portal 检测 `LISTEN_ADDR` 不是 loopback 会打 warning。
+
+`X-Forwarded-For` 解析时取 **最右** 那一段 (反代 append 的真客户端 IP),
+攻击者伪造的部分被推到左侧自然失效。推荐反代显式设 `X-Real-IP $remote_addr`,
+比 XFF 更稳。
+
+### 时区 (TZ)
+
+Portal 的 datetime-local 输入 (admin 设访客码过期时间) 按容器时区解析。
+**默认 `TZ=UTC`** (docker-entrypoint.sh 内设)。
+
+```
+TZ=UTC                # 默认, admin 输入 "18:00" 当 18:00 UTC
+TZ=Asia/Shanghai      # admin 输入 "18:00" 当 18:00 北京时间
+```
+
+CSV 导出 / admin 列表显示 / 日志时间戳全跟这个 env 走。
+
+### 优雅退出 (SIGTERM)
+
+`docker compose down` / `docker stop` 会发 SIGTERM, Portal 接到后:
+1. `srv.Shutdown` (停接新连接, 在飞中请求 10s grace)
+2. flush `banHistory` 的 dirty 状态到 `/data/ratelimit-state.json` (异步 flusher 平时 30s 一次,
+   退出时强制同步一次, 防丢失 IP 冷却升级历史)
+3. close EventLog file handle
+4. 日志打 `clean exit`
+
+kill -9 / OOM 会跳过这步, 最多丢 30s 内的 banHistory 增量。
 
 ### IP 短时冷却模型
 
