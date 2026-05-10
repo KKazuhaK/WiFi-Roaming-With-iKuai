@@ -1,12 +1,13 @@
 # syntax=docker/dockerfile:1.6
 
 # ---------- build stage ----------
-FROM golang:1.22-alpine AS build
+FROM golang:1.25-alpine AS build
 WORKDIR /src
 
-# 先拉依赖, 这一层能被缓存 (go.mod 不变时重新 build 很快)
-# 首次 build 会根据 go.mod 生成 go.sum; 之后可以把 go.sum 提交进 git 获得可复现构建.
-COPY go.mod ./
+# 先拉依赖, 这一层能被缓存 (go.mod / go.sum 不变时重新 build 很快).
+# go.sum 必须一并拷入: 没它的话 go mod download 会按 go.mod 自由 resolve,
+# 上游 mirror 被劫持时可能注入伪造版本; 有 go.sum 则按哈希校验, 拿到不一致直接 fail.
+COPY go.mod go.sum ./
 RUN go mod download
 
 # 再拷源码
