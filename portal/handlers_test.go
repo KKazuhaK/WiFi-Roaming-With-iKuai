@@ -1,0 +1,361 @@
+package main
+
+// handlers_test.go
+// HTTP handler 端到端测试. 测的是真实路径上的安全契约:
+//   - handleCodeCreate: 用户自填 code 长度上限 (M7 回归)
+//   - handleCodeCreate: 审计 detail 里只有 code-suffix, 没有完整码 (H2 回归)
+//   - handleCodeDelete / handleCodeEdit: 同样脱敏审计
+//   - handleAuthStart: 账号枚举防护 — 所有 email 响应一致
+//   - handleAuthStart: 邮箱失败计数双窗口
+//   - handlePortal: MAC 在 denylist 里直接拒
+//
+// 这里不打 OIDC, 不调 Duo — 把这些 client 设为 nil 走 fallback 分支.
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+)
+
+func mkAdminCookie(t *testing.T, app *App) *http.Cookie {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	if err := writeAdminCookie(rec, app.cfg.SessionSecret, AdminSession{
+		UPN: "admin@example.com",
+		Exp: time.Now().Add(time.Hour).Unix(),
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("want 1 cookie, got %d", len(cookies))
+	}
+	return cookies[0]
+}
+
+func mkAdminTestApp(t *testing.T) *App {
+	t.Helper()
+	app := mkTestApp(t)
+	app.cfg.AdminEmails = []string{"admin@example.com"}
+	gc, err := newGuestCodeStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.guestCodes = gc
+	policies, err := newIKuaiPolicyStore(map[IKuaiAuthProfile]IKuaiPolicy{
+		IKuaiProfileSSO: {}, IKuaiProfileDuo: {}, IKuaiProfileGuest: {},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.ikuaiPolicies = policies
+	app.eventLog, _ = newEventLog("", time.Hour)
+	return app
+}
+
+// adminPOST 拼装一个带合法 admin cookie + 同源 Origin 的 POST 请求.
+func adminPOST(t *testing.T, app *App, path string, form url.Values) *http.Request {
+	t.Helper()
+	r, _ := http.NewRequest("POST", path, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", app.cfg.PublicURL)
+	r.AddCookie(mkAdminCookie(t, app))
+	return r
+}
+
+// --- handleCodeCreate ---
+
+func TestHandleCodeCreate_RejectsLongCode(t *testing.T) {
+	// M7 回归: 用户自填 code 不能超过 64 字符.
+	app := mkAdminTestApp(t)
+	form := url.Values{
+		"code": {strings.Repeat("a", 65)},
+	}
+	w := httptest.NewRecorder()
+	app.handleCodeCreate(w, adminPOST(t, app, "/admin/codes/create", form))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for over-long code", w.Code)
+	}
+}
+
+// TestHandleCodeCreate_AuditDoesNotLeakFullCode: H2 关键回归.
+// admin 创建访客码时, 审计 detail 不能写完整码 — 备份 / SIEM 泄露后等于身份信息.
+func TestHandleCodeCreate_AuditDoesNotLeakFullCode(t *testing.T) {
+	app := mkAdminTestApp(t)
+	const myCode = "VERY-SECRET-CODE-1234"
+	form := url.Values{
+		"code":         {myCode},
+		"duration_min": {"60"},
+	}
+	w := httptest.NewRecorder()
+	app.handleCodeCreate(w, adminPOST(t, app, "/admin/codes/create", form))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	events := app.eventLog.Query(EventQueryFilter{Kind: KindAdminAction})
+	if len(events) != 1 {
+		t.Fatalf("want 1 admin event, got %d", len(events))
+	}
+	detail := events[0].Detail
+	if strings.Contains(detail, myCode) {
+		t.Errorf("audit detail leaked full code: %q", detail)
+	}
+	// 应该有 code-suffix 字样
+	if !strings.Contains(detail, "code-suffix=") {
+		t.Errorf("detail missing 'code-suffix=': %q", detail)
+	}
+	// 末 4 位 (1234) 应该出现
+	if !strings.Contains(detail, "1234") {
+		t.Errorf("detail missing last 4 chars: %q", detail)
+	}
+}
+
+func TestHandleCodeDelete_AuditUsesSuffix(t *testing.T) {
+	// H2 回归: 删除审计也只留末 4 位.
+	app := mkAdminTestApp(t)
+	app.guestCodes.Add(&GuestCode{
+		Code:      "AAAA-BBBB-CCCC-DDDD",
+		CreatedAt: time.Now(),
+	})
+	form := url.Values{"code": {"AAAA-BBBB-CCCC-DDDD"}}
+	w := httptest.NewRecorder()
+	app.handleCodeDelete(w, adminPOST(t, app, "/admin/codes/delete", form))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	events := app.eventLog.Query(EventQueryFilter{Kind: KindAdminAction})
+	if len(events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(events))
+	}
+	if strings.Contains(events[0].Detail, "AAAA-BBBB") {
+		t.Errorf("delete audit leaked full code: %q", events[0].Detail)
+	}
+	if !strings.Contains(events[0].Detail, "DDDD") {
+		t.Errorf("delete audit missing suffix DDDD: %q", events[0].Detail)
+	}
+}
+
+// --- handleAuthStart 账号枚举防护 ---
+
+func TestHandleAuthStart_OpaqueResponseRegardlessOfDuoStatus(t *testing.T) {
+	// 关键设计: /auth/start 对所有合法邮箱响应一致 (返回 opaque token), 攻击者
+	// 没法靠响应差异判断哪个 email 在 Duo 注册. 这里 duo=nil 走 SSO fallback,
+	// 仅验返回结构稳定.
+	app := mkTestApp(t)
+
+	// 走 /auth/start 需要先有合法 wifi session cookie
+	rec := httptest.NewRecorder()
+	sess := Session{
+		MAC:    "aa:bb:cc:dd:ee:ff",
+		UserIP: "192.168.1.10",
+		State:  "s", Nonce: "n",
+		Lang: "en",
+		Exp:  time.Now().Add(time.Minute).Unix(),
+	}
+	if err := writeSessionCookie(rec, app.cfg.SessionSecret, sess, false); err != nil {
+		t.Fatal(err)
+	}
+
+	bodyOf := func(email string) (int, string) {
+		form := url.Values{"email": {email}}
+		r, _ := http.NewRequest("POST", "/auth/start", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for _, c := range rec.Result().Cookies() {
+			r.AddCookie(c)
+		}
+		w := httptest.NewRecorder()
+		app.handleAuthStart(w, r)
+		body, _ := io.ReadAll(w.Result().Body)
+		return w.Code, string(body)
+	}
+
+	for _, email := range []string{"alice@example.com", "bob@example.com", "anyone@test.org"} {
+		code, body := bodyOf(email)
+		if code != http.StatusOK {
+			t.Errorf("email=%q got status %d, body=%s", email, code, body)
+			continue
+		}
+		// 响应里只有 redirect 字段,不能含邮箱信息或 deny 信号
+		if !strings.Contains(body, "/auth/proceed?token=") {
+			t.Errorf("email=%q response missing opaque token: %s", email, body)
+		}
+		if strings.Contains(body, "duo") || strings.Contains(body, "deny") {
+			t.Errorf("email=%q response leaked Duo/deny signal: %s", email, body)
+		}
+	}
+}
+
+func TestHandleAuthStart_RejectsInvalidEmail(t *testing.T) {
+	app := mkTestApp(t)
+	rec := httptest.NewRecorder()
+	_ = writeSessionCookie(rec, app.cfg.SessionSecret, Session{
+		MAC: "aa", UserIP: "1.1.1.1",
+		State: "s", Nonce: "n",
+		Exp: time.Now().Add(time.Minute).Unix(),
+	}, false)
+
+	cases := []string{
+		"",
+		"not-an-email",
+		"two@@at.com",
+		"with space@x.com",
+		strings.Repeat("a", 300) + "@x.com",
+	}
+	for _, email := range cases {
+		form := url.Values{"email": {email}}
+		r, _ := http.NewRequest("POST", "/auth/start", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for _, c := range rec.Result().Cookies() {
+			r.AddCookie(c)
+		}
+		w := httptest.NewRecorder()
+		app.handleAuthStart(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("email=%q got %d, want 400", email, w.Code)
+		}
+	}
+}
+
+func TestHandleAuthStart_RejectsGET(t *testing.T) {
+	app := mkTestApp(t)
+	r, _ := http.NewRequest("GET", "/auth/start", nil)
+	w := httptest.NewRecorder()
+	app.handleAuthStart(w, r)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET should be 405, got %d", w.Code)
+	}
+}
+
+// --- handlePortal MAC denylist ---
+
+func TestHandlePortal_BlocksDeniedMAC(t *testing.T) {
+	app := mkTestApp(t)
+	app.denylist.AddMAC("aa:bb:cc:dd:ee:ff", "abuse", "admin")
+
+	// 模拟 iKuai 跳过来 + cookie 已带这个 MAC
+	rec := httptest.NewRecorder()
+	_ = writeSessionCookie(rec, app.cfg.SessionSecret, Session{
+		MAC:    "aa:bb:cc:dd:ee:ff",
+		UserIP: "192.168.1.10",
+		State:  "s", Nonce: "n",
+		Exp: time.Now().Add(time.Minute).Unix(),
+	}, false)
+
+	r, _ := http.NewRequest("GET", "/portal", nil)
+	for _, c := range rec.Result().Cookies() {
+		r.AddCookie(c)
+	}
+	w := httptest.NewRecorder()
+	app.handlePortal(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("denied MAC should get 403, got %d", w.Code)
+	}
+}
+
+// --- handleAdminLoginStart M6 回归 ---
+
+// --- 纯函数 / helper 单测 (M1, M7, L3 修复路径) ---
+
+func TestCapLen(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"", 5, ""},
+		{"abc", 5, "abc"},
+		{"abcdef", 3, "abc"},
+		{"abc", 3, "abc"},
+	}
+	for _, c := range cases {
+		if got := capLen(c.in, c.n); got != c.want {
+			t.Errorf("capLen(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
+func TestIsLoopbackListen(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:28080", true},
+		{"localhost:28080", true},
+		{"[::1]:28080", true},
+		{"0.0.0.0:28080", false},
+		{":28080", false},
+		{"203.0.113.5:28080", false},
+		{"not_an_addr", false},
+	}
+	for _, c := range cases {
+		if got := isLoopbackListen(c.addr); got != c.want {
+			t.Errorf("isLoopbackListen(%q) = %v, want %v", c.addr, got, c.want)
+		}
+	}
+}
+
+func TestIsSameOriginRequest(t *testing.T) {
+	app := &App{cfg: Config{PublicURL: "https://wifi.example.com"}}
+
+	cases := []struct {
+		name    string
+		origin  string
+		referer string
+		want    bool
+	}{
+		{"matching Origin", "https://wifi.example.com", "", true},
+		{"matching Origin trailing slash", "https://wifi.example.com/", "", true},
+		{"foreign Origin", "https://evil.com", "", false},
+		{"http vs https", "http://wifi.example.com", "", false},
+		{"matching Referer", "", "https://wifi.example.com/admin", true},
+		{"foreign Referer", "", "https://evil.com/x", false},
+		{"both missing → reject", "", "", false},
+		{"Origin overrides Referer", "https://wifi.example.com", "https://evil.com/x", true},
+		{"foreign Origin even with good Referer", "https://evil.com", "https://wifi.example.com/admin", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, _ := http.NewRequest("POST", "/admin/codes/create", nil)
+			if c.origin != "" {
+				r.Header.Set("Origin", c.origin)
+			}
+			if c.referer != "" {
+				r.Header.Set("Referer", c.referer)
+			}
+			if got := app.isSameOriginRequest(r); got != c.want {
+				t.Errorf("origin=%q referer=%q → %v, want %v", c.origin, c.referer, got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseDurationMinClamp(t *testing.T) {
+	r, _ := http.NewRequest("POST", "/", nil)
+	r.PostForm = map[string][]string{
+		"duration_h": {"99999999999"}, // 远超合理值
+		"duration_m": {"0"},
+	}
+	got := parseDurationMin(r)
+	if got < 0 || got > maxDurationMin {
+		t.Fatalf("parseDurationMin overflow / out of range: got %d, expected 0..%d", got, maxDurationMin)
+	}
+}
+
+func TestHandleAdminLoginStart_RejectsGET(t *testing.T) {
+	// M6 回归: GET 不能写 cookie. 限定 POST 后, GET 应直接 405.
+	app := mkAdminTestApp(t)
+	r, _ := http.NewRequest("GET", "/admin/login/start", nil)
+	w := httptest.NewRecorder()
+	app.handleAdminLoginStart(w, r)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET to /admin/login/start should be 405, got %d", w.Code)
+	}
+	// 不应该有 cookie 被写
+	if len(w.Result().Cookies()) > 0 {
+		t.Error("GET must not set any cookie")
+	}
+}

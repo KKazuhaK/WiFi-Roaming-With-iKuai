@@ -105,6 +105,44 @@ func (s *DenylistStore) AddMAC(mac, reason, createdBy string) (DeniedMAC, bool, 
 	return item, true, nil
 }
 
+// MACInput 给 AddMACMany 用的批量输入条目.
+type MACInput struct {
+	MAC       string
+	Reason    string
+	CreatedBy string
+}
+
+// AddMACMany 批量加, 一把锁内一次写盘. 返回 (新增数量, 跳过非法/重复数量).
+// 用于 handleDenylistImportCSV 的 CSV 批量导入, 避免每行 saveLocked.
+// 非法 MAC 跳过不报错 — handler 自己根据 skipped 数量提示用户.
+func (s *DenylistStore) AddMACMany(items []MACInput) (added, skipped int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for _, in := range items {
+		norm := normalizeMAC(in.MAC)
+		if !isNormalizedMAC(norm) {
+			skipped++
+			continue
+		}
+		if _, ok := s.macs[norm]; ok {
+			skipped++
+			continue
+		}
+		s.macs[norm] = DeniedMAC{
+			MAC:       norm,
+			Reason:    strings.TrimSpace(in.Reason),
+			CreatedAt: now,
+			CreatedBy: strings.TrimSpace(in.CreatedBy),
+		}
+		added++
+	}
+	if added > 0 {
+		s.saveLocked()
+	}
+	return added, skipped
+}
+
 func (s *DenylistStore) DeleteMAC(mac string) bool {
 	norm := normalizeMAC(mac)
 	s.mu.Lock()

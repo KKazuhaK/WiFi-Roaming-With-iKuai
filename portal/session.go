@@ -30,8 +30,9 @@ const (
 // Session: state/nonce 可被 Entra 或 Duo 任一 OAuth 流程复用.
 // Email 在用户提交邮箱后填入 (/auth/start 写).
 // Purpose 决定 /auth/callback (Entra 回调) 或 /auth/duo-callback (Duo 回调) 之后干什么:
-//   ""/"wifi"  → 放行 iKuai
-//   "admin"    → 验 admin UPN 后写 admin cookie
+//
+//	""/"wifi"  → 放行 iKuai
+//	"admin"    → 验 admin UPN 后写 admin cookie
 type Session struct {
 	UserIP  string `json:"user_ip,omitempty"`
 	MAC     string `json:"mac,omitempty"`
@@ -160,7 +161,10 @@ func writeAdminCookie(w http.ResponseWriter, secret []byte, s AdminSession, secu
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		// admin 不需要跨站发起请求 — 用 Strict 比 Lax 更严, 阻断跨站 form POST
+		// 类 CSRF (受害者 admin 在另一个 tab 访问攻击页, <form action=...> 自动 submit
+		// 即可触发 admin 操作). 配合 requireAdmin 里的 Origin 校验做双保险.
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(adminSessionTTL.Seconds()),
 	})
 	return nil
@@ -199,7 +203,7 @@ func clearAdminCookie(w http.ResponseWriter, secure bool) {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
 }

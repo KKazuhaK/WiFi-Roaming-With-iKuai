@@ -30,6 +30,10 @@ type Config struct {
 	SessionSecret []byte // 敏感
 	PublicURL     string
 	ListenAddr    string
+	// TrustProxy: 是否信任 X-Real-IP / X-Forwarded-For. 默认 true (兼容现有反代部署).
+	// 当 Portal 直接暴露公网时务必置 false, 否则攻击者可伪造 IP 绕过限流.
+	// 启动时若 LISTEN_ADDR 不是 loopback 且 TRUST_PROXY 显式为 false, 仅按 remote addr 计.
+	TrustProxy bool
 
 	// --- 品牌化 ---
 	BrandName    string
@@ -73,10 +77,10 @@ type Config struct {
 	GuestCodeMacWindow time.Duration // 默认 30m
 	// 规则 6: 单 IP 跨端点累计失败, 超限后短时冷却. 默认不升级永久,
 	// 因为内网 DHCP IP 不适合作为长期身份.
-	IPFailsLimit     int           // 默认 20
-	IPFailsWindow    time.Duration // 默认 5m
-	IPBanDuration    time.Duration // 冷却时长, 默认 2m
-	IPBanEscalateAt  int           // 第 N 次触发永久封禁, 默认 999999 (近似关闭)
+	IPFailsLimit    int           // 默认 20
+	IPFailsWindow   time.Duration // 默认 5m
+	IPBanDuration   time.Duration // 冷却时长, 默认 2m
+	IPBanEscalateAt int           // 第 N 次触发永久封禁, 默认 999999 (近似关闭)
 	// 账号枚举防护: /auth/start 返回 opaque token, 浏览器访问 /auth/proceed 再内跳.
 	AuthProceedTTL time.Duration // token 存活 (default 5m)
 
@@ -125,9 +129,11 @@ func loadConfig() Config {
 		IPFailsWindow:        envOrDuration("IP_FAILS_WINDOW", 5*time.Minute),
 		IPBanDuration:        envOrDuration("IP_BAN_DURATION", 2*time.Minute),
 		IPBanEscalateAt:      envOrInt("IP_BAN_ESCALATE_AT", 999999),
-		AuthProceedTTL: envOrDuration("AUTH_PROCEED_TTL", 5*time.Minute),
+		AuthProceedTTL:       envOrDuration("AUTH_PROCEED_TTL", 5*time.Minute),
 
 		EventLogRetention: time.Duration(envOrInt("EVENT_LOG_RETENTION_DAYS", 7)) * 24 * time.Hour,
+
+		TrustProxy: envOrBool("TRUST_PROXY", true),
 	}
 
 	secretHex := mustEnv("SESSION_SECRET")
@@ -240,6 +246,23 @@ func envOrNonNegativeInt(key string, fallback int) int {
 }
 
 // envOrDuration: 解析 time.Duration (如 "5m", "1h30m"). 空值走 fallback.
+// envOrBool: 解析 "true/false/1/0/yes/no/on/off". 空值走 fallback.
+// 不接受其它字符串 — 错配是致命的限流问题, 直接 fatal 暴露问题.
+func envOrBool(key string, fallback bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	log.Fatalf("env %s must be a boolean (true/false), got: %q", key, v)
+	return fallback
+}
+
 func envOrDuration(key string, fallback time.Duration) time.Duration {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {

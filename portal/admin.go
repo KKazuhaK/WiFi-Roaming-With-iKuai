@@ -69,7 +69,9 @@ func (c *GuestCode) UseCount() int {
 	return len(c.Uses)
 }
 
-// Status: 给 UI 分类 Tabs 用. 用完的归到 "已使用", 不单独列一类.
+// Status: 给 UI 分类 Tabs 用. 用过一次就归 "used", 不细分用尽 vs 半用 — 那是
+// IsActive 的活儿. 这样 admin.html 现有三 tab (全部 / 已使用 / 未使用 + 已过期)
+// 不变.
 func (c *GuestCode) Status() string {
 	switch {
 	case c.IsExpired():
@@ -79,6 +81,14 @@ func (c *GuestCode) Status() string {
 	default:
 		return "unused"
 	}
+}
+
+// IsActive: 这个码现在还能用吗? = 没过期 + 没用完.
+// 跟 Status 区分开 — Status 用于 UI tab 分类 (用过/没用过), IsActive 用于
+// "DeleteInactive 该不该删" 等业务判定. C3 修复关键: 半使用的多次性码 IsActive=true
+// 不该被清理.
+func (c *GuestCode) IsActive() bool {
+	return !c.IsExpired() && !c.IsExhausted()
 }
 
 // GuestCodeStore: 内存存储, 并发安全, 可选磁盘持久化.
@@ -148,6 +158,11 @@ func (s *GuestCodeStore) loadFromDisk() error {
 
 // saveLocked: 必须在已持写锁时调用. 原子写 (tmp → rename). 失败只记日志,
 // 不回滚内存状态 — 下一次变更会再写一次, 重启才会丢这次变更.
+//
+// 注: M12 评估后**不修**. 异步写引入 goroutine 调度顺序不一致风险 (后写可能先
+// 落盘导致数据丢失); 拆两把锁手术工程量大. 实际典型规模 (< 1000 码, ~150KB JSON)
+// 同步持锁 ~5ms 不构成瓶颈, 跟 handleGuestCode 调 iKuai webauth 的 100ms+ 相比
+// 微不足道. 高负载场景 (10k+ 码) 再回来重做.
 func (s *GuestCodeStore) saveLocked() {
 	if s.persistPath == "" {
 		return
@@ -176,14 +191,18 @@ func (s *GuestCodeStore) saveLocked() {
 	}
 }
 
-// List 返回按 CreatedAt 倒序排列的副本. 拿到后调用者不持锁.
+// List 返回按 CreatedAt 倒序排列的**深拷贝**, 调用者拿到后随便读 / 改不影响 store.
 // 时间相同时按 Code 字典序兜底, 保证多次刷新顺序稳定 (map 遍历本身无序).
+//
+// 关键: Validate 持锁内会 append c.Uses; 如果 List 返回内部指针, renderAdmin /
+// buildDashboard 在锁外读 c.Uses 就跟 Validate 撞 race. 所以这里整张表 deep copy.
+// 一次 List 通常用于 admin 页面渲染, 不在热路径, 多复制一份 GuestCode 不构成性能问题.
 func (s *GuestCodeStore) List() []*GuestCode {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*GuestCode, 0, len(s.codes))
 	for _, c := range s.codes {
-		out = append(out, c)
+		out = append(out, copyGuestCode(c))
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
@@ -192,6 +211,17 @@ func (s *GuestCodeStore) List() []*GuestCode {
 		return out[i].Code < out[j].Code
 	})
 	return out
+}
+
+// copyGuestCode 深拷贝一个 GuestCode, 包括内部 Uses slice. Uses 元素是值,
+// 直接 copy 即可.
+func copyGuestCode(c *GuestCode) *GuestCode {
+	dup := *c
+	if len(c.Uses) > 0 {
+		dup.Uses = make([]CodeUse, len(c.Uses))
+		copy(dup.Uses, c.Uses)
+	}
+	return &dup
 }
 
 // Add: 码重复则返回 false, 不覆盖.
@@ -210,6 +240,33 @@ func (s *GuestCodeStore) Add(c *GuestCode) bool {
 	return true
 }
 
+// AddMany 批量插入, 一把锁内一次写盘. 返回成功插入的码列表 (顺序与输入一致,
+// 但跳过空码 / 重复码). 用于 handleCodeBatch 的 N 码批量生成, 避免每码触发一次
+// saveLocked → O(N²) 文件写.
+//
+// 调用方往往希望知道"实际有哪些进了 store" — 返回 []string 而不是数量, 因为
+// AddMany 跳过的可能在中间不是末尾, 不能简单 `inputs[:n]`.
+func (s *GuestCodeStore) AddMany(codes []*GuestCode) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	added := make([]string, 0, len(codes))
+	for _, c := range codes {
+		k := strings.ToLower(strings.TrimSpace(c.Code))
+		if k == "" {
+			continue
+		}
+		if _, exists := s.codes[k]; exists {
+			continue
+		}
+		s.codes[k] = c
+		added = append(added, c.Code)
+	}
+	if len(added) > 0 {
+		s.saveLocked()
+	}
+	return added
+}
+
 func (s *GuestCodeStore) Delete(code string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -220,6 +277,29 @@ func (s *GuestCodeStore) Delete(code string) bool {
 	delete(s.codes, k)
 	s.saveLocked()
 	return true
+}
+
+// DeleteMany 批量删, 一把锁内一次写盘. 返回真实删掉的数量
+// (空字符串 / 不存在的码会被跳过, 不计入). 同 AddMany 防 O(N²) 写.
+func (s *GuestCodeStore) DeleteMany(codes []string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	deleted := 0
+	for _, code := range codes {
+		k := strings.ToLower(strings.TrimSpace(code))
+		if k == "" {
+			continue
+		}
+		if _, ok := s.codes[k]; !ok {
+			continue
+		}
+		delete(s.codes, k)
+		deleted++
+	}
+	if deleted > 0 {
+		s.saveLocked()
+	}
+	return deleted
 }
 
 // Edit 修改一个码的可变元数据 (过期时间 / 限时 / MaxUses / 备注). 不允许改 Code
@@ -242,14 +322,14 @@ func (s *GuestCodeStore) Edit(code string, expiresAt time.Time, durationMin, max
 	return true
 }
 
-// DeleteInactive deletes codes that are no longer fresh in the admin UI:
-// already used or expired. It keeps only "unused" codes.
+// DeleteInactive 删 "已经不能再用" 的码: 过期 OR 用尽.
+// 半使用的多次性码 (MaxUses>1 且还有剩余次数) 不删 — 那是 admin 的资产.
 func (s *GuestCodeStore) DeleteInactive() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for k, c := range s.codes {
-		if c.Status() == "used" || c.Status() == "expired" {
+		if !c.IsActive() {
 			delete(s.codes, k)
 			n++
 		}
@@ -266,8 +346,9 @@ func (s *GuestCodeStore) DeleteExpired() int {
 	return s.DeleteInactive()
 }
 
-// Validate: 找到、未过期、未达 MaxUses 就记一次使用, 返回 code 对象. nil = 无效.
+// Validate: 找到、未过期、未达 MaxUses 就记一次使用, 返回 code 对象的**副本**.
 // guestUPN 是我们上报给 iKuai 的 user_id (每次连接都不同).
+// 返回副本而非内部指针 — 防调用方在锁外读到正在被写的 Uses slice 引发 race.
 func (s *GuestCodeStore) Validate(code, mac, ip, guestUPN string) *GuestCode {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -283,20 +364,29 @@ func (s *GuestCodeStore) Validate(code, mac, ip, guestUPN string) *GuestCode {
 		At: time.Now(), MAC: mac, IP: ip, GuestUPN: guestUPN,
 	})
 	s.saveLocked()
-	return c
+	return copyGuestCode(c)
 }
 
-// Stats 三分类计数, 给 UI Tabs 显示用.
+// Stats 给 UI / Dashboard 算计数:
+//
+//	total   — 全部
+//	used    — 已用尽 (IsExhausted) 且未过期
+//	unused  — 还能用 (IsActive: 没过期 + 没用尽), 包括完全没用过和半使用的多次性码
+//	expired — 已过期 (无论是否用过)
+//
+// M1 修复: 旧实现按 Status() ("用过没用过") 划分, 把半使用的多次性码归 used,
+// 跟 buildDashboard.ActiveGuestCodes (按 IsActive 算) 对不上 — admin 看顶部
+// 数字和 Tab 数字不一致. 现在 Stats.unused 严格等于 Dashboard active count.
 func (s *GuestCodeStore) Stats() (total, used, unused, expired int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	total = len(s.codes)
 	for _, c := range s.codes {
-		switch c.Status() {
-		case "used":
-			used++
-		case "expired":
+		switch {
+		case c.IsExpired():
 			expired++
+		case c.IsExhausted():
+			used++
 		default:
 			unused++
 		}

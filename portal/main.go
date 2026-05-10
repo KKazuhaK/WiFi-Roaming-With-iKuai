@@ -25,18 +25,23 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -58,6 +63,41 @@ const (
 	eventLogPath    = dataDir + "/events.jsonl"
 )
 
+// isSameOriginRequest 校验请求是从 cfg.PublicURL 同源发起.
+// 优先 Origin (浏览器 fetch / form POST 都会发); fallback Referer.
+// 两个都没有 → 拒绝 (现代浏览器 form POST 默认带 Referer; 缺失通常是 curl / 伪造客户端).
+func (a *App) isSameOriginRequest(r *http.Request) bool {
+	expected := strings.TrimRight(a.cfg.PublicURL, "/")
+	if origin := r.Header.Get("Origin"); origin != "" {
+		// Origin 是 scheme+host[:port], 不带 path — 直接比.
+		return strings.TrimRight(origin, "/") == expected
+	}
+	if referer := r.Header.Get("Referer"); referer != "" {
+		ref, err := url.Parse(referer)
+		if err != nil || ref.Scheme == "" || ref.Host == "" {
+			return false
+		}
+		// 重组成 scheme://host[:port] 后比.
+		got := ref.Scheme + "://" + ref.Host
+		return got == expected
+	}
+	return false
+}
+
+// isLoopbackListen 判断 LISTEN_ADDR 是否只绑 loopback 接口.
+// host 部分为空 (":28080") 视为 0.0.0.0 — 监听所有接口, 不算 loopback.
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func ensureDataDirWritable(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create data dir %s: %w", dir, err)
@@ -78,14 +118,14 @@ func ensureDataDirWritable(dir string) error {
 }
 
 type App struct {
-	cfg          Config
-	oidc         *OIDCClient
-	duo          *DuoClient          // Duo Auth API, 仅 preauth 用
-	duoUniversal *DuoUniversalClient // Duo Universal Prompt (OIDC)
-	guestCodes   *GuestCodeStore
-	denylist     *DenylistStore
+	cfg           Config
+	oidc          *OIDCClient
+	duo           *DuoClient          // Duo Auth API, 仅 preauth 用
+	duoUniversal  *DuoUniversalClient // Duo Universal Prompt (OIDC)
+	guestCodes    *GuestCodeStore
+	denylist      *DenylistStore
 	ikuaiPolicies *IKuaiPolicyStore
-	templates    *template.Template
+	templates     *template.Template
 
 	// --- 限流 / 防滥用 ---
 	// 规则 1: /auth/start 按邮箱失败计数, 双窗口, 成功回调清零. 防 MFA 轰炸.
@@ -100,6 +140,10 @@ type App struct {
 	// 账号枚举防护: /auth/start 返回 opaque token, /auth/proceed 才 302.
 	proceedStore *proceedTokenStore
 
+	// usedStates 防 OIDC state 被重放: callback 验完 state 立刻 markUsed, 同 state 第
+	// 二次到达直接拒. 攻击者偷到 cookie 后即使在 15 分钟 TTL 内也只能 round-trip 一次.
+	usedStates *usedStateSet
+
 	// --- 可观测性 ---
 	eventLog *EventLog
 }
@@ -108,6 +152,15 @@ func main() {
 	loadTranslations()
 
 	cfg := loadConfig()
+
+	// 注入到 ratelimit.go 的 package var. 必须在任何 clientIP 调用之前.
+	trustProxyHeaders = cfg.TrustProxy
+	if !cfg.TrustProxy {
+		log.Printf("TRUST_PROXY=false: 忽略 X-Real-IP / X-Forwarded-For, 仅按 r.RemoteAddr 计客户端 IP")
+	} else if !isLoopbackListen(cfg.ListenAddr) {
+		log.Printf("warning: LISTEN_ADDR=%s 不是 loopback 且 TRUST_PROXY=true. 若 Portal 端口直接暴露公网, 攻击者可伪造 X-Real-IP/X-Forwarded-For 绕过 IP 限流; 务必让反代终结连接, 或显式 TRUST_PROXY=false",
+			cfg.ListenAddr)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -188,6 +241,7 @@ func main() {
 		ipBans:         newIPBanList(),
 		banHistory:     banHist,
 		proceedStore:   newProceedTokenStore(cfg.AuthProceedTTL),
+		usedStates:     newUsedStateSet(sessionTTL),
 		eventLog:       eventLog,
 	}
 	go app.authEmailFails.gcLoop()
@@ -195,6 +249,7 @@ func main() {
 	go app.ipFails.gcLoop()
 	go app.ipBans.gcLoop()
 	go app.proceedStore.gcLoop()
+	go app.usedStates.gcLoop()
 	go app.eventLog.gcLoop()
 	if cfg.IPBanEscalateAt >= 999999 {
 		log.Printf("ratelimit: email %d/%s + %d/%s, MAC %d/%s, IP %d/%s -> cooldown %s, no permanent escalation",
@@ -258,7 +313,40 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 	log.Printf("Portal started, listening on %s, public URL: %s", cfg.ListenAddr, cfg.PublicURL)
-	log.Fatal(srv.ListenAndServe())
+
+	// Graceful shutdown: 捕 SIGINT/SIGTERM 后停 server, 然后 flush banHistory +
+	// 关 EventLog file handle. 没这步的话 SIGTERM 直接 kill, banHistory 异步 flusher
+	// 还没到下一个 tick 就丢一段窗口的 ip 冷却历史 (虽然 IPBanEscalateAt 默认 999999
+	// 不太关键, 但优雅退出对运维仪表盘 / 分析日志一致性都更好).
+	stopCh := make(chan os.Signal, 1)
+	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
+	srvErr := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			srvErr <- err
+		}
+		close(srvErr)
+	}()
+	select {
+	case sig := <-stopCh:
+		log.Printf("got signal %s, shutting down...", sig)
+	case err := <-srvErr:
+		if err != nil {
+			log.Fatalf("ListenAndServe: %v", err)
+		}
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("server shutdown: %v", err)
+	}
+	if err := banHist.shutdown(); err != nil {
+		log.Printf("ban history shutdown: %v", err)
+	}
+	if err := eventLog.Close(); err != nil {
+		log.Printf("event log close: %v", err)
+	}
+	log.Printf("clean exit")
 }
 
 // --- 中间件 ---
@@ -405,7 +493,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	// 只有启用 Duo 时才强制域名白名单;
 	// 不用 Duo 的场景, Entra 自己会做域名 / 租户过滤.
 	if a.cfg.IsDuoEnabled() && !isAllowedDomain(email, a.cfg.AllowedEmailDomains) {
-		log.Printf("deny domain not in allowlist: %s", email)
+		log.Printf("deny domain not in allowlist: %q", email)
 		a.recordRequestFailure(r, &sess, "invalid_domain")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_domain"})
 		return
@@ -415,7 +503,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	shortN := a.authEmailFails.countIn(email, a.cfg.AuthEmailWindowShort)
 	longN := a.authEmailFails.countIn(email, a.cfg.AuthEmailWindowLong)
 	if shortN >= a.cfg.AuthEmailFailsShort || longN >= a.cfg.AuthEmailFailsLong {
-		log.Printf("/auth/start email ratelimit: %s short=%d long=%d ip=%s",
+		log.Printf("/auth/start email ratelimit: %q short=%d long=%d ip=%s",
 			email, shortN, longN, ip)
 		a.recordRequestFailure(r, &sess, "rate_limited_email")
 		// 哪个窗口先满选哪个的 retry_after
@@ -484,15 +572,16 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 记一次 pending 失败 — 回调成功会清零.
-	a.authEmailFails.record(email)
-
-	token, err := a.proceedStore.put(realURL, sess.State, email, kind)
+	// 先 put proceed token, 再 record pending 失败 — M8 修复: put 失败时不污染计数.
+	// (put 唯一可能失败的路径是 rand.Reader 失败, 极罕见; 但既然成本是调换两行,
+	// 干脆让计数永远跟 token 创建保持一致.)
+	token, err := a.proceedStore.put(realURL, sess.State, email)
 	if err != nil {
 		log.Printf("proceedStore.put failed: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 		return
 	}
+	a.authEmailFails.record(email)
 	method := MethodSSO
 	if kind == proceedDuo {
 		method = MethodDuo
@@ -583,13 +672,17 @@ func (a *App) clearSuccessfulAuthState(r *http.Request, sess Session, emails ...
 	for _, ip := range requestIPKeys(r, &sess) {
 		a.ipFails.reset(ip)
 		a.ipBans.unban(ip)
-		a.banHistory.reset(ip)
+		// 不要 reset banHistory — 一次合法登录不能洗白长期可疑 IP 的封禁历史.
+		// 否则攻击者只要单次成功认证 (自己的真账号 / 一个合法访客码) 就能把所有
+		// 累计的 banHistory 清零, 让升级永久封禁 (IPBanEscalateAt) 永远到不了.
+		// admin 主动 /admin/ratelimit/reset (type=ip_ban) 仍会清 banHistory, 见 1234 行.
 	}
 }
 
 // recordIPFailure 累加 IP 失败计数, 触发阈值就短时冷却.
 // 升级模型仍保留为可配置兜底: 第 1 次到 (IPBanEscalateAt-1) 次 → IPBanDuration 时长;
 // 第 IPBanEscalateAt 次及以上 → 永久封禁 (要 admin 手动解).
+// IPBanEscalateAt <= 0 时显式禁用永久升级 + banHistory 完全短路 (L6).
 // reason 只进日志, 便于排查.
 func (a *App) recordIPFailure(ip, reason string) {
 	a.ipFails.record(ip)
@@ -599,6 +692,13 @@ func (a *App) recordIPFailure(ip, reason string) {
 	}
 	// 已经在封了就别重复封 (避免每次请求都续期 + 计数乱升级).
 	if a.ipBans.isBanned(ip) {
+		return
+	}
+	// L6: 升级模型禁用时不记 banHistory — 历史无意义, 还省一次锁 + dirty.
+	if a.cfg.IPBanEscalateAt <= 0 {
+		a.ipBans.ban(ip, a.cfg.IPBanDuration)
+		log.Printf("IP fail-limit reached, cooldown %s: %s (count=%d window=%s reason=%s, escalation disabled)",
+			a.cfg.IPBanDuration, ip, n, a.cfg.IPFailsWindow, reason)
 		return
 	}
 	banCount := a.banHistory.increment(ip)
@@ -644,12 +744,19 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 		lang = Lang(sess.Lang)
 	}
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		log.Printf("Entra returned error: %s - %s", errParam, r.URL.Query().Get("error_description"))
+		log.Printf("Entra returned error: %q - %q", errParam, r.URL.Query().Get("error_description"))
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
-	if got := r.URL.Query().Get("state"); got != sess.State {
+	got := r.URL.Query().Get("state")
+	if subtle.ConstantTimeCompare([]byte(got), []byte(sess.State)) != 1 {
 		log.Printf("Entra state mismatch")
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
+		return
+	}
+	// 一次性消费 state, 防 cookie 被偷后重放. 第二次同 state 到达直接拒.
+	if !a.usedStates.markUsed(sess.State) {
+		log.Printf("Entra state replay rejected: state-prefix=%s", sess.State[:8])
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
@@ -709,13 +816,19 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	if sess.Lang != "" {
 		lang = Lang(sess.Lang)
 	}
-	if got := r.URL.Query().Get("state"); got != sess.State {
+	got := r.URL.Query().Get("state")
+	if subtle.ConstantTimeCompare([]byte(got), []byte(sess.State)) != 1 {
 		log.Printf("Duo state mismatch")
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
+	if !a.usedStates.markUsed(sess.State) {
+		log.Printf("Duo state replay rejected: state-prefix=%s", sess.State[:8])
+		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
+		return
+	}
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		log.Printf("Duo returned error: %s", errParam)
+		log.Printf("Duo returned error: %q", errParam)
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusBadRequest)
 		return
 	}
@@ -825,8 +938,10 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("grant guest: upn=%s code-suffix=%s client_ip=%s user_ip=%s mac=%s",
 		upn, tailN(c.Code, 4), clientIP(r), sess.UserIP, sess.MAC)
+	// 事件日志只记码尾 4 位, 与终端日志一致. /data/events.jsonl 可能被备份 / 日志聚合
+	// 系统读到, 不能写完整码 — 否则就算码已用完, 历史码列表本身仍是身份信息泄漏面.
 	a.logLogin(upn, ResultSuccess, MethodGuestCode, sess.MAC, sess.UserIP,
-		"code="+c.Code)
+		"code-suffix="+tailN(c.Code, 4))
 	// 成功 → 清理同一设备 / IP 的临时失败状态.
 	a.clearSuccessfulAuthState(r, sess)
 	policy := a.ikuaiPolicies.Get(IKuaiProfileGuest)
@@ -858,7 +973,9 @@ func (a *App) handleAdminLoginStart(w http.ResponseWriter, r *http.Request) {
 		a.renderError(w, r, lang, T(lang, "errors.adminDisabled"), http.StatusNotFound)
 		return
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+	// 只接 POST: GET 写 cookie 违反幂等性, 也方便 <img src=...> 之类被动触发.
+	// admin_login.html 已用 <form method="post">.
+	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
@@ -918,6 +1035,21 @@ func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request, apiMode bool)
 		}
 		return AdminSession{}, false
 	}
+	// CSRF 防护: 状态变更请求必须从同源发起. admin cookie 已经是 SameSite=Strict,
+	// 这里再加 Origin/Referer 校验做双保险 — 同源策略 + 显式头校验.
+	// GET 请求 (页面渲染 / status 查询) 不强制, 因为浏览器很多场景不发 Origin.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if !a.isSameOriginRequest(r) {
+			log.Printf("admin CSRF block: method=%s path=%s origin=%q referer=%q",
+				r.Method, r.URL.Path, r.Header.Get("Origin"), r.Header.Get("Referer"))
+			if apiMode {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross_origin"})
+			} else {
+				http.Error(w, "cross-origin request blocked", http.StatusForbidden)
+			}
+			return AdminSession{}, false
+		}
+	}
 	sess, err := readAdminCookie(r, a.cfg.SessionSecret)
 	if err != nil {
 		if apiMode {
@@ -967,9 +1099,16 @@ func (a *App) handleCodeCreate(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:   time.Now(),
 		DurationMin: parseDurationMin(r),
 		MaxUses:     parseMaxUses(r.FormValue("max_uses")),
-		Note:        strings.TrimSpace(r.FormValue("note")),
+		Note:        capLen(strings.TrimSpace(r.FormValue("note")), 256),
 	}
-	if err := parseExpiry(r, gc); err != nil {
+	// 用户自填的 code 也限长, 防 1MB code 灌进 events.jsonl.
+	if userProvidedCode {
+		if len(gc.Code) > 64 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code_too_long"})
+			return
+		}
+	}
+	if err := parseExpiry(r, gc, false); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -977,9 +1116,15 @@ func (a *App) handleCodeCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "duplicate_code"})
 		return
 	}
-	detail := "add auto-gen code=" + gc.Code
+	// 审计日志不记完整码 — 创建那一刻 UI 已把码值返回给 admin 浏览器, 一次性看见即可.
+	// 长期审计只需"创建过这条"的痕迹 + 末 4 位帮排查.
+	suffix := tailN(gc.Code, 4)
+	detail := "add auto-gen code-suffix=" + suffix
 	if userProvidedCode {
-		detail = "add code=" + gc.Code
+		detail = "add code-suffix=" + suffix
+	}
+	if gc.Note != "" {
+		detail += " note=" + capLen(gc.Note, 64)
 	}
 	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, detail)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "code": gc.Code})
@@ -1012,37 +1157,49 @@ func (a *App) handleCodeBatch(w http.ResponseWriter, r *http.Request) {
 	if length > 32 {
 		length = 32
 	}
-	note := strings.TrimSpace(r.FormValue("note"))
+	note := capLen(strings.TrimSpace(r.FormValue("note")), 256)
 	durationMin := parseDurationMin(r)
 	maxUses := parseMaxUses(r.FormValue("max_uses"))
 	// baseProbe 只用来复用 parseExpiry 的过期计算. 每个码的 CreatedAt 用各自
 	// 的 time.Now(), 保证 List 排序时不会因时间戳相同而顺序抖动.
 	baseProbe := &GuestCode{CreatedAt: time.Now()}
-	if err := parseExpiry(r, baseProbe); err != nil {
+	if err := parseExpiry(r, baseProbe, false); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	generated := make([]string, 0, count)
-	for i := 0; i < count; i++ {
+	// 撞码上限 — 防止 admin 误填 length=4 numeric 且空间几乎堆满时无限循环.
+	maxAttempts := count * 50
+	if maxAttempts < 200 {
+		maxAttempts = 200
+	}
+	// 先 generate 候选 code 列表 (随机性来自 crypto/rand, 同批内撞码概率极低),
+	// 再一次性 AddMany — 避免 N 次 saveLocked 重写整个 guest-codes.json. (H3)
+	pending := make([]*GuestCode, 0, count)
+	pendingSet := make(map[string]struct{}, count)
+	for attempts := 0; len(pending) < count && attempts < maxAttempts; attempts++ {
 		raw, err := generateCode(codeType, length)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "rand_failed"})
 			return
 		}
-		createdAt := time.Now()
-		gc := &GuestCode{
+		k := strings.ToLower(strings.TrimSpace(raw))
+		if _, exists := pendingSet[k]; exists {
+			continue
+		}
+		pendingSet[k] = struct{}{}
+		pending = append(pending, &GuestCode{
 			Code:        raw,
-			CreatedAt:   createdAt,
+			CreatedAt:   time.Now(),
 			ExpiresAt:   baseProbe.ExpiresAt,
 			DurationMin: durationMin,
 			MaxUses:     maxUses,
 			Note:        note,
-		}
-		if !a.guestCodes.Add(gc) {
-			i-- // 撞码了, 重试
-			continue
-		}
-		generated = append(generated, raw)
+		})
+	}
+	generated := a.guestCodes.AddMany(pending)
+	if len(generated) < count {
+		log.Printf("batch code-gen: 仅生成 %d/%d 条 (%d 次尝试后码空间已满 / 大量撞码), type=%s len=%d",
+			len(generated), count, maxAttempts, codeType, length)
 	}
 	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess,
 		fmt.Sprintf("batch count=%d type=%s len=%d", len(generated), codeType, length))
@@ -1067,7 +1224,7 @@ func (a *App) handleCodeDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted := a.guestCodes.Delete(code)
 	if deleted {
-		a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, "delete code="+code)
+		a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess, "delete code-suffix="+tailN(code, 4))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": deleted})
 }
@@ -1104,19 +1261,14 @@ func (a *App) handleCodeDeleteBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	codes := strings.Split(raw, ",")
-	deleted := 0
+	deleted := a.guestCodes.DeleteMany(codes)
 	skipped := 0
 	for _, c := range codes {
-		c = strings.TrimSpace(c)
-		if c == "" {
-			continue
-		}
-		if a.guestCodes.Delete(c) {
-			deleted++
-		} else {
+		if strings.TrimSpace(c) != "" {
 			skipped++
 		}
 	}
+	skipped -= deleted
 	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess,
 		fmt.Sprintf("delete-bulk deleted=%d skipped=%d", deleted, skipped))
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1144,19 +1296,20 @@ func (a *App) handleCodeEdit(w http.ResponseWriter, r *http.Request) {
 	}
 	// 复用 parseExpiry: 它读 expires_at, 写到一个临时 GuestCode 上.
 	probe := &GuestCode{CreatedAt: time.Now()}
-	if err := parseExpiry(r, probe); err != nil {
+	// Edit 路径允许过去时间, 让 admin 能强制让一个码立即失效 (H7).
+	if err := parseExpiry(r, probe, true); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	durationMin := parseDurationMin(r)
 	maxUses := parseMaxUses(r.FormValue("max_uses"))
-	note := strings.TrimSpace(r.FormValue("note"))
+	note := capLen(strings.TrimSpace(r.FormValue("note")), 256)
 	if !a.guestCodes.Edit(code, probe.ExpiresAt, durationMin, maxUses, note) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 		return
 	}
 	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess,
-		"edit code="+code)
+		"edit code-suffix="+tailN(code, 4))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -1171,10 +1324,10 @@ func (a *App) handleRateLimitStatus(w http.ResponseWriter, r *http.Request) {
 	bans := a.ipBans.snapshot()
 	banCounts := a.banHistory.snapshot()
 	type enrichedBan struct {
-		IP          string `json:"ip"`
-		ExpiresAt   int64  `json:"expires_unix"`
-		BanCount    int    `json:"ban_count"`
-		Permanent   bool   `json:"permanent"`
+		IP        string `json:"ip"`
+		ExpiresAt int64  `json:"expires_unix"`
+		BanCount  int    `json:"ban_count"`
+		Permanent bool   `json:"permanent"`
 	}
 	enriched := make([]enrichedBan, 0, len(bans))
 	for _, b := range bans {
@@ -1195,16 +1348,16 @@ func (a *App) handleRateLimitStatus(w http.ResponseWriter, r *http.Request) {
 		"ip_fails":        a.ipFails.snapshot(),
 		"now_unix":        time.Now().Unix(),
 		"thresholds": map[string]any{
-			"email_short":      a.cfg.AuthEmailFailsShort,
-			"email_short_s":    int(a.cfg.AuthEmailWindowShort.Seconds()),
-			"email_long":       a.cfg.AuthEmailFailsLong,
-			"email_long_s":     int(a.cfg.AuthEmailWindowLong.Seconds()),
-			"mac":              a.cfg.GuestCodeMacFails,
-			"mac_s":            int(a.cfg.GuestCodeMacWindow.Seconds()),
-			"ip":               a.cfg.IPFailsLimit,
-			"ip_s":             int(a.cfg.IPFailsWindow.Seconds()),
-			"ip_ban_s":         int(a.cfg.IPBanDuration.Seconds()),
-			"ip_ban_escalate":  a.cfg.IPBanEscalateAt,
+			"email_short":     a.cfg.AuthEmailFailsShort,
+			"email_short_s":   int(a.cfg.AuthEmailWindowShort.Seconds()),
+			"email_long":      a.cfg.AuthEmailFailsLong,
+			"email_long_s":    int(a.cfg.AuthEmailWindowLong.Seconds()),
+			"mac":             a.cfg.GuestCodeMacFails,
+			"mac_s":           int(a.cfg.GuestCodeMacWindow.Seconds()),
+			"ip":              a.cfg.IPFailsLimit,
+			"ip_s":            int(a.cfg.IPFailsWindow.Seconds()),
+			"ip_ban_s":        int(a.cfg.IPBanDuration.Seconds()),
+			"ip_ban_escalate": a.cfg.IPBanEscalateAt,
 		},
 	})
 }
@@ -1230,8 +1383,8 @@ func (a *App) handleRateLimitReset(w http.ResponseWriter, r *http.Request) {
 	switch t {
 	case "ip_ban":
 		a.ipBans.unban(key)
-		a.ipFails.reset(key)       // 同时清 IP 累计计数, 避免刚解封又立刻触发
-		a.banHistory.reset(key)    // 清除历史封禁次数, 不然下次失败直接进 "永久" 分支
+		a.ipFails.reset(key)    // 同时清 IP 累计计数, 避免刚解封又立刻触发
+		a.banHistory.reset(key) // 清除历史封禁次数, 不然下次失败直接进 "永久" 分支
 	case "ip_fails":
 		a.ipFails.reset(key)
 	case "email":
@@ -1281,7 +1434,7 @@ func (a *App) handleDenyMACCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mac := strings.TrimSpace(r.FormValue("mac"))
-	reason := strings.TrimSpace(r.FormValue("reason"))
+	reason := capLen(strings.TrimSpace(r.FormValue("reason")), 256)
 	item, created, err := a.denylist.AddMAC(mac, reason, admin.UPN)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1357,7 +1510,7 @@ func (a *App) handleIKuaiPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		Upload:   parseIntDefault(r.FormValue("upload"), 0),
 		Download: parseIntDefault(r.FormValue("download"), 0),
 		Timeout:  parseIntDefault(r.FormValue("timeout"), 0),
-		Comment:  strings.TrimSpace(r.FormValue("comment")),
+		Comment:  capLen(strings.TrimSpace(r.FormValue("comment")), 128),
 	}
 	if profile == IKuaiProfileGuest {
 		policy.Timeout = 0
@@ -1436,15 +1589,15 @@ func (a *App) handleEventsQuery(w http.ResponseWriter, r *http.Request) {
 	events := a.eventLog.Query(f)
 	// 为前端渲染整理一下 — 附带每条的可读时间戳 (Unix 秒 + ISO8601 都给, 前端自己选)
 	type row struct {
-		Time     int64  `json:"time_unix"`
-		TimeISO  string `json:"time_iso"`
-		Kind     string `json:"kind"`
-		Subject  string `json:"subject"`
-		Result   string `json:"result"`
-		Method   string `json:"method"`
-		MAC      string `json:"mac,omitempty"`
-		IP       string `json:"ip,omitempty"`
-		Detail   string `json:"detail,omitempty"`
+		Time    int64  `json:"time_unix"`
+		TimeISO string `json:"time_iso"`
+		Kind    string `json:"kind"`
+		Subject string `json:"subject"`
+		Result  string `json:"result"`
+		Method  string `json:"method"`
+		MAC     string `json:"mac,omitempty"`
+		IP      string `json:"ip,omitempty"`
+		Detail  string `json:"detail,omitempty"`
 	}
 	out := make([]row, 0, len(events))
 	for _, ev := range events {
@@ -1493,15 +1646,26 @@ func (a *App) handleDenylistExportCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cw := csv.NewWriter(w)
-	defer cw.Flush()
-	_ = cw.Write([]string{"mac", "reason", "banned_by", "banned_at"})
+	// L10 修复: 显式 Flush + 检查 Error, 不用 defer cw.Flush(). Flush 错误是 IO 写
+	// 失败 (客户端断开 / 磁盘满), 失败时只 log — handler 这里没 return error 路径.
+	if err := cw.Write([]string{"mac", "reason", "banned_by", "banned_at"}); err != nil {
+		log.Printf("denylist CSV header write: %v", err)
+		return
+	}
 	for _, item := range items {
-		_ = cw.Write([]string{
+		if err := cw.Write([]string{
 			item.MAC,
 			item.Reason,
 			item.CreatedBy,
 			item.CreatedAt.Local().Format("2006-01-02 15:04:05"),
-		})
+		}); err != nil {
+			log.Printf("denylist CSV row write: %v", err)
+			return
+		}
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		log.Printf("denylist CSV flush: %v", err)
 	}
 }
 
@@ -1532,8 +1696,9 @@ func (a *App) handleDenylistImportCSV(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "parse_failed"})
 		return
 	}
-	imported := 0
-	skipped := 0
+	// 先把所有合法行转成 MACInput 数组, 再一次性 AddMACMany. 避免每行 saveLocked
+	// → 10k 行 CSV 在原实现下要 10k 次重写整个 denylist.json (H2). 现在 1 次.
+	inputs := make([]MACInput, 0, len(rows))
 	errs := []string{}
 	for idx, row := range rows {
 		if len(row) == 0 {
@@ -1546,27 +1711,19 @@ func (a *App) handleDenylistImportCSV(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		mac := first
-		reason := ""
-		if len(row) > 1 {
-			reason = strings.TrimSpace(row[1])
-		}
-		by := admin.UPN
-		if len(row) > 2 && strings.TrimSpace(row[2]) != "" {
-			by = strings.TrimSpace(row[2])
-		}
 		if mac == "" {
 			continue
 		}
-		_, _, err := a.denylist.AddMAC(mac, reason, by)
-		if err != nil {
-			skipped++
-			if len(errs) < 10 {
-				errs = append(errs, fmt.Sprintf("row %d: %s (%v)", idx+1, mac, err))
-			}
-			continue
+		reason := ""
+		if len(row) > 1 {
+			reason = capLen(strings.TrimSpace(row[1]), 256)
 		}
-		imported++
+		// 安全: 始终用当前 admin.UPN 作为 createdBy. CSV 第三列 (banned_by) 是导出的
+		// 信息字段, 不能让导入方任意指定他人 UPN — 否则审计追责被弱化, 任何 admin
+		// 都能伪造"是 alice 封的"的历史记录.
+		inputs = append(inputs, MACInput{MAC: mac, Reason: reason, CreatedBy: admin.UPN})
 	}
+	imported, skipped := a.denylist.AddMACMany(inputs)
 	a.logAdminAction(admin.UPN, clientIP(r), ResultSuccess,
 		fmt.Sprintf("denylist import imported=%d skipped=%d", imported, skipped))
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1577,7 +1734,9 @@ func (a *App) handleDenylistImportCSV(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func parseExpiry(r *http.Request, gc *GuestCode) error {
+// parseExpiry 解析 expires_at 表单字段. allowPast=true 时不强制未来 — Edit 路径用,
+// admin 想让一个还在用的码立即过期得能填过去时间; Create 路径仍强制未来防误填.
+func parseExpiry(r *http.Request, gc *GuestCode, allowPast bool) error {
 	exp := strings.TrimSpace(r.FormValue("expires_at"))
 	if exp == "" {
 		gc.ExpiresAt = time.Time{}
@@ -1591,27 +1750,58 @@ func parseExpiry(r *http.Request, gc *GuestCode) error {
 		}
 		t = t2
 	}
-	if t.Before(time.Now()) {
+	if !allowPast && t.Before(time.Now()) {
 		return fmt.Errorf("expires_at must not be in the past")
 	}
 	gc.ExpiresAt = t
 	return nil
 }
 
+// parseDurationMin 上限取 365*24*60 (一年, 分钟). 防 admin 误填巨值 →
+// h*60+m 整数溢出 → 负数下发到 iKuai (timeout 字段语义错乱).
+//
+// duration_min 字段语义 (M9 修复):
+//
+//	提供且非负 → 直接用, clamp 到 [0, maxDurationMin]
+//	提供且为负 (用户故意填 -1) → 视为 0 = "不限时", 而非 silent fallback 到 18h default
+//	空 (字段未提交)        → 走 duration_h / duration_m default 18:00
+const maxDurationMin = 365 * 24 * 60
+
 func parseDurationMin(r *http.Request) int {
-	mins := parseIntDefault(r.FormValue("duration_min"), -1)
-	if mins >= 0 {
-		return mins
+	rawMin := strings.TrimSpace(r.FormValue("duration_min"))
+	if rawMin != "" {
+		mins, err := strconv.Atoi(rawMin)
+		if err != nil {
+			// 输入垃圾走默认分支
+		} else {
+			if mins < 0 {
+				return 0
+			}
+			if mins > maxDurationMin {
+				return maxDurationMin
+			}
+			return mins
+		}
 	}
 	h := parseIntDefault(r.FormValue("duration_h"), 18)
 	m := parseIntDefault(r.FormValue("duration_m"), 0)
 	if h < 0 {
 		h = 0
 	}
+	if h > maxDurationMin/60 {
+		h = maxDurationMin / 60
+	}
 	if m < 0 {
 		m = 0
 	}
-	return h*60 + m
+	if m > 60*24*7 { // 一周分钟数, 已经远超合理输入
+		m = 60 * 24 * 7
+	}
+	total := h*60 + m
+	if total > maxDurationMin {
+		total = maxDurationMin
+	}
+	return total
 }
 
 // --- 渲染 ---
@@ -1753,13 +1943,13 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 	rows := make([]adminCodeRow, 0, len(raw))
 	for _, c := range raw {
 		row := adminCodeRow{
-			Code:      c.Code,
-			CreatedAt: c.CreatedAt.Local().Format("2006-01-02 15:04"),
-			Status:    c.Status(),
-			UseCount:  c.UseCount(),
+			Code:        c.Code,
+			CreatedAt:   c.CreatedAt.Local().Format("2006-01-02 15:04"),
+			Status:      c.Status(),
+			UseCount:    c.UseCount(),
 			DurationMin: c.DurationMin,
-			MaxUses:   c.MaxUses,
-			Note:      c.Note,
+			MaxUses:     c.MaxUses,
+			Note:        c.Note,
 		}
 		row.Duration = formatDurationMin(c.DurationMin, lang)
 		if c.ExpiresAt.IsZero() {
@@ -1833,15 +2023,18 @@ func (a *App) buildDashboard(allCodes []*GuestCode) DashboardStats {
 	dayAgo := now.Add(-24 * time.Hour)
 	weekAgo := now.Add(-7 * 24 * time.Hour)
 
-	stats.LoginsToday = a.eventLog.Count(EventQueryFilter{
-		Kind: KindLogin, Result: ResultSuccess, Since: dayAgo,
+	// H6 修复: MultiCount 一次锁内扫多过滤. 旧实现 5 次 Count = 5 次锁 + 5 次全表扫,
+	// 100k 事件场景下 admin 刷新 /admin 慢 50-100ms + 阻塞 logLogin.
+	counts := a.eventLog.MultiCount([]EventQueryFilter{
+		{Kind: KindLogin, Result: ResultSuccess, Since: dayAgo},
+		{Kind: KindLogin, Result: ResultSuccess, Since: weekAgo},
+		{Kind: KindLogin, Result: ResultDenied, Since: weekAgo},
+		{Kind: KindLogin, Result: ResultRateLimited, Since: weekAgo},
+		{Kind: KindLogin, Result: ResultError, Since: weekAgo},
 	})
-	stats.LoginsWeek = a.eventLog.Count(EventQueryFilter{
-		Kind: KindLogin, Result: ResultSuccess, Since: weekAgo,
-	})
-	failedWeek := a.eventLog.Count(EventQueryFilter{Kind: KindLogin, Result: ResultDenied, Since: weekAgo}) +
-		a.eventLog.Count(EventQueryFilter{Kind: KindLogin, Result: ResultRateLimited, Since: weekAgo}) +
-		a.eventLog.Count(EventQueryFilter{Kind: KindLogin, Result: ResultError, Since: weekAgo})
+	stats.LoginsToday = counts[0]
+	stats.LoginsWeek = counts[1]
+	failedWeek := counts[2] + counts[3] + counts[4]
 	stats.FailedCount7d = failedWeek
 	terminalWeek := stats.LoginsWeek + failedWeek
 	if terminalWeek > 0 {
@@ -1898,13 +2091,25 @@ func isAllowedDomain(email string, allowed []string) bool {
 	return false
 }
 
-// parseMaxUses: 空 / 0 / 负数 → 0 (不限); 否则原值.
+// parseMaxUses: 空 / 0 / 负数 → 0 (不限); 否则原值. 上限 1e6 防滥配 / 整数溢出后续计算.
 func parseMaxUses(s string) int {
 	n := parseIntDefault(s, 0)
 	if n < 0 {
 		return 0
 	}
+	if n > 1_000_000 {
+		n = 1_000_000
+	}
 	return n
+}
+
+// capLen 字符级截断到 n 字节, 防 admin 输入超长字段被持久化爆磁盘 / 事件日志 OOM.
+// 走字节截断不切 UTF-8 多字节序列, 调用方约定输入主要是 ASCII (note/reason/comment/mac).
+func capLen(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 func parseIntDefault(s string, def int) int {
