@@ -39,6 +39,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -51,17 +52,37 @@ var templateFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
-// 持久化文件路径. 全部固定在容器内 /data/ 下, 由 docker-compose 把 /data
-// bind-mount 到宿主机 ./data/. 这些不暴露成 env, 避免用户错配 — 想换路径改
-// docker-compose 的 volume 一行就行.
-const (
-	dataDir         = "/data"
-	guestCodesPath  = dataDir + "/guest-codes.json"
-	denylistPath    = dataDir + "/denylist.json"
-	ikuaiPolicyPath = dataDir + "/ikuai-policy.json"
-	banHistoryPath  = dataDir + "/ratelimit-state.json"
-	eventLogPath    = dataDir + "/events.jsonl"
-)
+// 内嵌的部署模板文件 — `wifi-portal init <dir>` 子命令把它们写到磁盘,
+// 让裸二进制部署不需要再去 git clone 拿样板. //go:embed 在 build 时把
+// 文件内容打进 binary, 路径相对 go 源码所在目录.
+//
+//go:embed .env.example
+var embeddedEnvExample []byte
+
+//go:embed embed/wifi-portal.service
+var embeddedSystemdUnit []byte
+
+// dataPaths 是从 cfg.DataDir 算出来的所有持久化文件位置. 在 main() 里构造一次
+// 后整个进程复用. 文件名固定 (不暴露成各自的 env), 只目录可改:
+//   - 容器场景: cfg.DataDir = /data (默认), docker-compose bind-mount /data → ./data
+//   - 裸二进制 + systemd: 通常 /var/lib/wifi-portal
+type dataPaths struct {
+	GuestCodes  string
+	Denylist    string
+	IKuaiPolicy string
+	BanHistory  string
+	EventLog    string
+}
+
+func makeDataPaths(dataDir string) dataPaths {
+	return dataPaths{
+		GuestCodes:  filepath.Join(dataDir, "guest-codes.json"),
+		Denylist:    filepath.Join(dataDir, "denylist.json"),
+		IKuaiPolicy: filepath.Join(dataDir, "ikuai-policy.json"),
+		BanHistory:  filepath.Join(dataDir, "ratelimit-state.json"),
+		EventLog:    filepath.Join(dataDir, "events.jsonl"),
+	}
+}
 
 // isSameOriginRequest 校验请求是从 cfg.PublicURL 同源发起.
 // 优先 Origin (浏览器 fetch / form POST 都会发); fallback Referer.
@@ -148,7 +169,81 @@ type App struct {
 	eventLog *EventLog
 }
 
+// runInit 处理 `wifi-portal init [dir]` 子命令: 把内嵌的 .env.example +
+// systemd unit 写到指定目录, 让裸二进制部署不需要 git clone 拿样板.
+//
+// 已存在的目标文件不覆盖, 防止误删用户改过的配置. 返回非 nil 表示需要 exit 1.
+func runInit(args []string) error {
+	dir := "."
+	if len(args) > 0 {
+		dir = args[0]
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("resolve %q: %w", dir, err)
+	}
+	if err := os.MkdirAll(abs, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", abs, err)
+	}
+	// 给 .env 加一段裸二进制场景的 header 注释 + 合理 override.
+	// 模板本身是 Docker 默认 (LISTEN_ADDR=0.0.0.0 / DATA_DIR=/data),
+	// 裸二进制要 LISTEN_ADDR=127.0.0.1 + DATA_DIR=/var/lib/wifi-portal.
+	envContent := []byte(`# 由 ` + "`" + `wifi-portal init` + "`" + ` 生成. 裸二进制 + systemd 部署 (模式 D) 用这些 override:
+#
+#   LISTEN_ADDR=127.0.0.1:28080         # 只听 loopback, 反代访问
+#   DATA_DIR=/var/lib/wifi-portal       # 跟 systemd unit 的 ReadWritePaths 一致
+#   TZ=UTC                              # 显式设, 不依赖宿主 /etc/timezone
+#   TRUST_PROXY=true                    # 反代终结连接时设
+#
+# 下面是完整模板, 填好后挪到 /etc/wifi-portal/wifi-portal.env.
+# ----------------------------------------------------------------------
+
+`)
+	envContent = append(envContent, embeddedEnvExample...)
+	items := []struct {
+		name    string
+		content []byte
+		mode    os.FileMode
+	}{
+		{"wifi-portal.env", envContent, 0o600},
+		{"wifi-portal.service", embeddedSystemdUnit, 0o644},
+	}
+	for _, it := range items {
+		dst := filepath.Join(abs, it.name)
+		if _, err := os.Stat(dst); err == nil {
+			fmt.Fprintf(os.Stderr, "skip %s (already exists, not overwriting)\n", dst)
+			continue
+		}
+		if err := os.WriteFile(dst, it.content, it.mode); err != nil {
+			return fmt.Errorf("write %s: %w", dst, err)
+		}
+		fmt.Fprintf(os.Stderr, "wrote %s\n", dst)
+	}
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "下一步:")
+	fmt.Fprintf(os.Stderr, "  1. 编辑 %s/wifi-portal.env, 填 TENANT_ID / CLIENT_ID / 等\n", abs)
+	fmt.Fprintln(os.Stderr, "  2. systemd 部署:")
+	fmt.Fprintln(os.Stderr, "       sudo useradd -r -s /usr/sbin/nologin -d /var/lib/wifi-portal wifi-portal")
+	fmt.Fprintln(os.Stderr, "       sudo mkdir -p /var/lib/wifi-portal /etc/wifi-portal")
+	fmt.Fprintln(os.Stderr, "       sudo chown wifi-portal:wifi-portal /var/lib/wifi-portal")
+	fmt.Fprintf(os.Stderr, "       sudo cp %s/wifi-portal.env /etc/wifi-portal/\n", abs)
+	fmt.Fprintf(os.Stderr, "       sudo cp %s/wifi-portal.service /etc/systemd/system/\n", abs)
+	fmt.Fprintln(os.Stderr, "       sudo cp wifi-portal /usr/local/bin/   # 二进制本体")
+	fmt.Fprintln(os.Stderr, "       sudo systemctl daemon-reload")
+	fmt.Fprintln(os.Stderr, "       sudo systemctl enable --now wifi-portal")
+	fmt.Fprintln(os.Stderr, "  3. 反代终结 TLS (Nginx / Caddy), 转发到 127.0.0.1:28080")
+	return nil
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "init" {
+		if err := runInit(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "init error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	loadTranslations()
 
 	cfg := loadConfig()
@@ -187,21 +282,22 @@ func main() {
 		log.Printf("admin console: disabled")
 	}
 
-	if err := ensureDataDirWritable(dataDir); err != nil {
+	paths := makeDataPaths(cfg.DataDir)
+	if err := ensureDataDirWritable(cfg.DataDir); err != nil {
 		log.Fatalf("data dir is not writable: %v", err)
 	}
 
-	guestStore, err := newGuestCodeStore(guestCodesPath)
+	guestStore, err := newGuestCodeStore(paths.GuestCodes)
 	if err != nil {
 		log.Fatalf("guest codes store init failed: %v", err)
 	}
 
-	denylistStore, err := newDenylistStore(denylistPath)
+	denylistStore, err := newDenylistStore(paths.Denylist)
 	if err != nil {
 		log.Fatalf("MAC denylist init failed: %v", err)
 	}
 
-	ikuaiPolicyStore, err := newIKuaiPolicyStore(cfg.IKuaiPolicyDefaults, ikuaiPolicyPath)
+	ikuaiPolicyStore, err := newIKuaiPolicyStore(cfg.IKuaiPolicyDefaults, paths.IKuaiPolicy)
 	if err != nil {
 		log.Fatalf("iKuai policy init failed: %v", err)
 	}
@@ -214,17 +310,17 @@ func main() {
 		log.Fatalf("template load failed: %v", err)
 	}
 
-	banHist, err := newBanHistory(banHistoryPath)
+	banHist, err := newBanHistory(paths.BanHistory)
 	if err != nil {
 		log.Fatalf("ban history init failed: %v", err)
 	}
 
-	eventLog, err := newEventLog(eventLogPath, cfg.EventLogRetention)
+	eventLog, err := newEventLog(paths.EventLog, cfg.EventLogRetention)
 	if err != nil {
 		log.Fatalf("event log init failed: %v", err)
 	}
 	log.Printf("data dir: %s (guest codes, MAC denylist, iKuai policy, ban history, event log; event retention %s)",
-		dataDir, cfg.EventLogRetention)
+		cfg.DataDir, cfg.EventLogRetention)
 
 	app := &App{
 		cfg:            cfg,

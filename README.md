@@ -12,16 +12,17 @@
 
 这份 README 覆盖架构、部署、安全模型和运维。
 
-## 三种部署模式
+## 四种部署模式
 
-| | **A — 外部反代** | **B — LAN 盒子** | **C — 预构建镜像 UI** |
-|---|---|---|---|
-| 适合场景 | 公网 VPS, aaPanel/Nginx 管 TLS | 站点内网 Pi / mini-PC | Synology NAS / iKuai UI (Docker 但没 CLI) |
-| 源码 on 设备 | ✓ (git clone) | ✓ | **×** 只上传镜像 tarball |
-| 主要 UI | CLI | CLI | 网页点击 |
-| TLS | 外部反代 | Caddy DNS-01 | Caddy DNS-01 |
-| 公网攻击面 | 有, 靠 App 层三道限流 | **无**, iKuai DNS 劫持 | **无** |
-| admin 远程访问 | ✓ | ✗ (要在 WiFi 网里) | ✗ |
+| | **A — 外部反代** | **B — LAN 盒子** | **C — 预构建镜像 UI** | **D — 裸二进制 + systemd** |
+|---|---|---|---|---|
+| 适合场景 | 公网 VPS, aaPanel/Nginx 管 TLS | 站点内网 Pi / mini-PC | Synology NAS / iKuai UI (Docker 但没 CLI) | 不想跑 Docker 的 Linux 主机 |
+| 容器 | ✓ docker compose | ✓ docker compose | ✓ docker (UI) | ✗ |
+| 源码 on 设备 | ✓ (git clone) | ✓ | **×** 只上传镜像 tarball | **×** 只下载二进制 |
+| 主要 UI | CLI | CLI | 网页点击 | CLI |
+| TLS | 外部反代 | Caddy DNS-01 | Caddy DNS-01 | 外部反代 (nginx / Caddy) |
+| 公网攻击面 | 有, 靠 App 层三道限流 | **无**, iKuai DNS 劫持 | **无** | 取决于反代部署 |
+| admin 远程访问 | ✓ | ✗ (要在 WiFi 网里) | ✗ | ✓ |
 
 **A/B 共用同一份** [`deploy/docker-compose.yml`](./deploy/docker-compose.yml),
 靠 `.env` 里的 `COMPOSE_PROFILES` 切换:
@@ -31,7 +32,9 @@
 **C 用 [`deploy/prebuilt-image/`](./deploy/prebuilt-image/) 下独立的 compose**,
 跳过 build 直接拉已加载的镜像。步骤看 [`deploy/prebuilt-image/README.md`](./deploy/prebuilt-image/README.md)。
 
-三种可以混合部署, `SESSION_SECRET` 共享 → admin 一次登录所有 /admin 都认。
+**D 走 release 二进制 + systemd**, 步骤见下面 "Phase 3D · 裸二进制部署" 段。
+
+四种可以混合部署, `SESSION_SECRET` 共享 → admin 一次登录所有 /admin 都认。
 
 ---
 
@@ -348,6 +351,119 @@ curl -I "https://wifi.login.kazuhahub.com/portal?user_ip=192.168.1.100&mac=aa:bb
 #    Entra 回跳后会报错 (iKuai 放行失败因为 appkey 是假的), 但这一步能到
 #    说明 Entra OIDC 端到端都通了.
 ```
+
+---
+
+## Phase 3D · 裸二进制 + systemd 部署 (模式 D)
+
+不想跑 Docker 时用. 适合不能装 Docker / 想用 systemd 标准化运维 / 想 audit
+进程沙盒细节 (CapabilityBoundingSet 等) 的场景.
+
+### 步骤 1: 下载二进制
+
+去 [Releases](https://github.com/KKazuhaK/WiFi-Roaming-With-iKuai/releases) 下载对应架构的二进制:
+- `wifi-portal-vX.Y.Z-linux-amd64`
+- `wifi-portal-vX.Y.Z-linux-arm64`
+
+或者从 source 自己编 (需要 Go 1.25+):
+
+```bash
+git clone https://github.com/KKazuhaK/WiFi-Roaming-With-iKuai.git
+cd WiFi-Roaming-With-iKuai/portal
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/wifi-portal .
+```
+
+### 步骤 2: 用内嵌的 init 命令生成模板
+
+二进制内嵌了 `.env.example` 和 `wifi-portal.service` (systemd unit),
+跑 `init` 写到指定目录:
+
+```bash
+./wifi-portal init ./tmpconfig
+# 输出:
+#   wrote ./tmpconfig/wifi-portal.env
+#   wrote ./tmpconfig/wifi-portal.service
+#   下一步:
+#     1. 编辑 .../wifi-portal.env, 填 TENANT_ID / CLIENT_ID / 等
+#     2. systemd 部署: sudo useradd ... cp ... systemctl ...
+```
+
+### 步骤 3: 编辑 `wifi-portal.env`
+
+`init` 出来的 `.env` 顶部有一段 header 提醒裸二进制场景的合理 override:
+
+```bash
+LISTEN_ADDR=127.0.0.1:28080         # 只听 loopback, 反代访问
+DATA_DIR=/var/lib/wifi-portal       # 跟 systemd unit 的 ReadWritePaths 一致
+TZ=UTC
+TRUST_PROXY=true                    # 反代终结连接时设
+```
+
+剩下的 TENANT_ID / CLIENT_ID / SESSION_SECRET 等按 [`portal/.env.example`](./portal/.env.example) 填.
+
+### 步骤 4: 安装到系统
+
+```bash
+# 1. 跑 portal 的 系统用户 (不能登录, 没 home shell)
+sudo useradd -r -s /usr/sbin/nologin -d /var/lib/wifi-portal wifi-portal
+
+# 2. 数据目录 + 配置目录
+sudo mkdir -p /var/lib/wifi-portal /etc/wifi-portal
+sudo chown wifi-portal:wifi-portal /var/lib/wifi-portal
+
+# 3. 部署文件
+sudo cp ./tmpconfig/wifi-portal.env /etc/wifi-portal/
+sudo chmod 600 /etc/wifi-portal/wifi-portal.env
+sudo cp ./tmpconfig/wifi-portal.service /etc/systemd/system/
+sudo cp ./wifi-portal /usr/local/bin/
+
+# 4. 启用 + 启动
+sudo systemctl daemon-reload
+sudo systemctl enable --now wifi-portal
+sudo systemctl status wifi-portal      # 看运行状态
+sudo journalctl -u wifi-portal -f      # 看实时日志
+```
+
+### 步骤 5: 反代 (跟模式 A 一样)
+
+Portal 只听 `127.0.0.1:28080` HTTP. nginx / Caddy / aaPanel 终结 TLS, 转发过来.
+配置参考 [`deploy/aapanel-nginx-snippet.conf`](./deploy/aapanel-nginx-snippet.conf).
+
+### graceful shutdown
+
+`systemctl stop` 发 SIGTERM, Portal 接到后:
+1. `srv.Shutdown` (停接新连接, 在飞中请求 10s grace)
+2. flush `banHistory` 到 `/var/lib/wifi-portal/ratelimit-state.json`
+3. close EventLog file handle
+4. 日志打 `clean exit`
+
+systemd unit 的 `TimeoutStopSec=15s` 给这段时间; 超时才 SIGKILL.
+
+### 沙盒 / hardening (已经在 unit 里启用)
+
+`wifi-portal.service` 默认带这些保护, 可按需放宽:
+
+| Directive | 作用 |
+|---|---|
+| `User=wifi-portal` | 不以 root 跑 |
+| `NoNewPrivileges=true` | 进程不能 setuid |
+| `ProtectSystem=strict` + `ReadWritePaths=/var/lib/wifi-portal` | `/` 只读, 只 `/var/lib/wifi-portal` 可写 |
+| `ProtectHome=true` | 看不见 `/home` `/root` |
+| `PrivateTmp=true` | 私有 `/tmp` 命名空间 |
+| `CapabilityBoundingSet=` | 清空所有 Linux capability |
+| `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX` | 只许 TCP/UDP/Unix |
+| `LockPersonality=true` | 不能 setpersonality (老 ABI 兼容用) |
+
+### 升级
+
+```bash
+# 拿新二进制 (替换前 stop, 防文件忙)
+sudo systemctl stop wifi-portal
+sudo cp wifi-portal-vNEW-linux-amd64 /usr/local/bin/wifi-portal
+sudo systemctl start wifi-portal
+```
+
+数据 (`/var/lib/wifi-portal/*.json`) 跨升级保留, 升级期间 < 1s downtime.
 
 ---
 
