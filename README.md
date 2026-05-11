@@ -389,8 +389,27 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/wifi-portal .
 #     2. systemd 部署: sudo useradd ... cp ... systemctl ...
 ```
 
-> 想 init 到别的目录: `./wifi-portal init /etc/wifi-portal`. 已设关键 env (容器
-> 场景 / systemd EnvironmentFile= 场景) 时本步跳过, 直接启动 server.
+生成的 systemd unit 默认值:
+
+| Unit 字段 | 默认值 |
+|---|---|
+| `EnvironmentFile=` | `<当前目录>/wifi-portal.env` |
+| `ExecStart=` | `/usr/local/bin/wifi-portal` |
+| `ReadWritePaths=` (and `DATA_DIR`) | `/var/lib/wifi-portal` |
+
+#### 想换路径? 全部走 flag
+
+```bash
+# 全自定义部署路径 (举例):
+./wifi-portal init \
+    --out-dir   ./tmpconfig            # .env / .service 写到这里 (本地编辑)
+    --conf-dir  /etc/wifi-portal       # systemd EnvironmentFile= 指向这里
+    --data-dir  /srv/wifi-portal       # 数据 + ReadWritePaths
+    --bin-path  /opt/wp/wifi-portal    # ExecStart
+```
+
+flag 顺序任意，省略走默认。**没有 positional 参数** — `./wifi-portal init /etc/wifi-portal`
+会报错。已设关键 env (容器场景 / systemd `EnvironmentFile=` 场景) 时本步跳过, 直接启动 server.
 
 ### 步骤 3: 编辑 `wifi-portal.env`
 
