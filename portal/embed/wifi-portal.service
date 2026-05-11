@@ -5,13 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# 安装时 useradd -r -s /usr/sbin/nologin -d /var/lib/wifi-portal wifi-portal
+# 安装时 useradd -r -s /usr/sbin/nologin -d __DATA_DIR__ wifi-portal
 User=wifi-portal
 Group=wifi-portal
 
-# 配置 + 二进制位置. 改了路径同时改这里.
-EnvironmentFile=/etc/wifi-portal/wifi-portal.env
-ExecStart=/usr/local/bin/wifi-portal
+# 配置 + 二进制位置. wifi-portal init 时根据 --conf-dir / --bin-path / --data-dir
+# flag 替换这三个占位符. 默认值在 .env header 注释里有说明.
+EnvironmentFile=__CONF_DIR__/wifi-portal.env
+ExecStart=__BIN_PATH__
 
 Restart=on-failure
 RestartSec=5s
@@ -20,15 +21,14 @@ RestartSec=5s
 KillSignal=SIGTERM
 TimeoutStopSec=15s
 
-# /var/lib/wifi-portal 是默认 DATA_DIR, install 时 mkdir + chown wifi-portal
-# 跟 .env 里的 DATA_DIR 必须一致.
+# DATA_DIR (跟 .env 里的 DATA_DIR 必须一致, 否则 ProtectSystem=strict 下 Portal 写不了盘)
 
 # === 沙盒 / hardening ===
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/wifi-portal
+ReadWritePaths=__DATA_DIR__
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

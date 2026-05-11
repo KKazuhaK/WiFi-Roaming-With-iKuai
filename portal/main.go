@@ -30,6 +30,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -174,42 +175,65 @@ type App struct {
 //
 // 已存在的目标文件不覆盖, 防止误删用户改过的配置. 返回非 nil 表示需要 exit 1.
 func runInit(args []string) error {
-	dir := "."
-	if len(args) > 0 {
-		dir = args[0]
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	outDir := fs.String("out-dir", ".", "把 wifi-portal.env 和 wifi-portal.service 写到哪里 (本地编辑用)")
+	confDir := fs.String("conf-dir", "", "systemd unit 里 EnvironmentFile 指向的目录 (default: 等于 --out-dir)")
+	dataDir := fs.String("data-dir", "/var/lib/wifi-portal", "运行时数据目录, systemd unit 的 ReadWritePaths + .env 的 DATA_DIR")
+	binPath := fs.String("bin-path", "/usr/local/bin/wifi-portal", "wifi-portal 二进制最终位置, systemd unit 的 ExecStart")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	abs, err := filepath.Abs(dir)
+	if fs.NArg() > 0 {
+		return fmt.Errorf("意外的 positional 参数 %q. 所有路径都用 flag 指定: --out-dir / --conf-dir / --data-dir / --bin-path", fs.Arg(0))
+	}
+	absOut, err := filepath.Abs(*outDir)
 	if err != nil {
-		return fmt.Errorf("resolve %q: %w", dir, err)
+		return fmt.Errorf("resolve %q: %w", *outDir, err)
 	}
-	if err := os.MkdirAll(abs, 0o700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", abs, err)
+	if *confDir == "" {
+		*confDir = absOut
 	}
-	// 给 .env 加一段裸二进制场景的 header 注释 + 合理 override.
-	// 模板本身是 Docker 默认 (LISTEN_ADDR=0.0.0.0 / DATA_DIR=/data),
-	// 裸二进制要 LISTEN_ADDR=127.0.0.1 + DATA_DIR=/var/lib/wifi-portal.
-	envContent := []byte(`# 由 ` + "`" + `wifi-portal init` + "`" + ` 生成. 裸二进制 + systemd 部署 (模式 D) 用这些 override:
+	if err := os.MkdirAll(absOut, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", absOut, err)
+	}
+
+	// .env header: 反映实际部署路径, 用户填好后能直接拷到 conf-dir + systemctl start.
+	// 同时把 DATA_DIR= 设好, 跟 systemd unit 的 ReadWritePaths 自动对齐.
+	envHeader := fmt.Sprintf(`# 由 `+"`"+`wifi-portal init`+"`"+` 生成. 实际部署路径 (本 .env 自身已对齐):
 #
-#   LISTEN_ADDR=127.0.0.1:28080         # 只听 loopback, 反代访问
-#   DATA_DIR=/var/lib/wifi-portal       # 跟 systemd unit 的 ReadWritePaths 一致
-#   TZ=UTC                              # 显式设, 不依赖宿主 /etc/timezone
-#   TRUST_PROXY=true                    # 反代终结连接时设
+#   配置文件        %s/wifi-portal.env       (systemd EnvironmentFile=)
+#   数据目录        %s     (DATA_DIR + systemd ReadWritePaths=)
+#   二进制          %s   (systemd ExecStart=)
 #
-# 下面是完整模板, 填好后挪到 /etc/wifi-portal/wifi-portal.env.
+# 想换路径下次跑 init 时改 flag:
+#   wifi-portal init --conf-dir <path> --data-dir <path> --bin-path <path> --out-dir <path>
+#
+# 关键 override (裸二进制 / systemd 场景):
+#   LISTEN_ADDR=127.0.0.1:28080    # loopback, 反代访问
+#   DATA_DIR=%s    # 已默认设, 跟 systemd ReadWritePaths 一致
+#   TZ=UTC
+#   TRUST_PROXY=true               # 反代终结连接时设
 # ----------------------------------------------------------------------
 
-`)
-	envContent = append(envContent, embeddedEnvExample...)
+DATA_DIR=%s
+`, *confDir, *dataDir, *binPath, *dataDir, *dataDir)
+	envContent := append([]byte(envHeader), embeddedEnvExample...)
+
+	// systemd unit: 替换 3 个 placeholder.
+	unitContent := strings.ReplaceAll(string(embeddedSystemdUnit), "__CONF_DIR__", *confDir)
+	unitContent = strings.ReplaceAll(unitContent, "__DATA_DIR__", *dataDir)
+	unitContent = strings.ReplaceAll(unitContent, "__BIN_PATH__", *binPath)
+
 	items := []struct {
 		name    string
 		content []byte
 		mode    os.FileMode
 	}{
 		{"wifi-portal.env", envContent, 0o600},
-		{"wifi-portal.service", embeddedSystemdUnit, 0o644},
+		{"wifi-portal.service", []byte(unitContent), 0o644},
 	}
 	for _, it := range items {
-		dst := filepath.Join(abs, it.name)
+		dst := filepath.Join(absOut, it.name)
 		if _, err := os.Stat(dst); err == nil {
 			fmt.Fprintf(os.Stderr, "skip %s (already exists, not overwriting)\n", dst)
 			continue
@@ -221,14 +245,20 @@ func runInit(args []string) error {
 	}
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "下一步:")
-	fmt.Fprintf(os.Stderr, "  1. 编辑 %s/wifi-portal.env, 填 TENANT_ID / CLIENT_ID / 等\n", abs)
+	fmt.Fprintf(os.Stderr, "  1. 编辑 %s/wifi-portal.env, 填 TENANT_ID / CLIENT_ID / 等\n", absOut)
 	fmt.Fprintln(os.Stderr, "  2. systemd 部署:")
-	fmt.Fprintln(os.Stderr, "       sudo useradd -r -s /usr/sbin/nologin -d /var/lib/wifi-portal wifi-portal")
-	fmt.Fprintln(os.Stderr, "       sudo mkdir -p /var/lib/wifi-portal /etc/wifi-portal")
-	fmt.Fprintln(os.Stderr, "       sudo chown wifi-portal:wifi-portal /var/lib/wifi-portal")
-	fmt.Fprintf(os.Stderr, "       sudo cp %s/wifi-portal.env /etc/wifi-portal/\n", abs)
-	fmt.Fprintf(os.Stderr, "       sudo cp %s/wifi-portal.service /etc/systemd/system/\n", abs)
-	fmt.Fprintln(os.Stderr, "       sudo cp wifi-portal /usr/local/bin/   # 二进制本体")
+	fmt.Fprintf(os.Stderr, "       sudo useradd -r -s /usr/sbin/nologin -d %s wifi-portal\n", *dataDir)
+	if *confDir != absOut {
+		fmt.Fprintf(os.Stderr, "       sudo mkdir -p %s %s\n", *dataDir, *confDir)
+		fmt.Fprintf(os.Stderr, "       sudo chown wifi-portal:wifi-portal %s\n", *dataDir)
+		fmt.Fprintf(os.Stderr, "       sudo cp %s/wifi-portal.env %s/\n", absOut, *confDir)
+	} else {
+		fmt.Fprintf(os.Stderr, "       sudo mkdir -p %s\n", *dataDir)
+		fmt.Fprintf(os.Stderr, "       sudo chown wifi-portal:wifi-portal %s\n", *dataDir)
+		fmt.Fprintf(os.Stderr, "       # wifi-portal.env 已在 conf-dir (%s) 里, 不用再 cp\n", *confDir)
+	}
+	fmt.Fprintf(os.Stderr, "       sudo cp %s/wifi-portal.service /etc/systemd/system/\n", absOut)
+	fmt.Fprintf(os.Stderr, "       sudo cp wifi-portal %s   # 二进制本体\n", *binPath)
 	fmt.Fprintln(os.Stderr, "       sudo systemctl daemon-reload")
 	fmt.Fprintln(os.Stderr, "       sudo systemctl enable --now wifi-portal")
 	fmt.Fprintln(os.Stderr, "  3. 反代终结 TLS (Nginx / Caddy), 转发到 127.0.0.1:28080")

@@ -381,9 +381,43 @@ func TestMakeDataPaths_OverrideDir(t *testing.T) {
 	}
 }
 
+func TestRunInit_RejectsPositional(t *testing.T) {
+	dir := t.TempDir()
+	if err := runInit([]string{dir}); err == nil {
+		t.Error("positional arg should be rejected with clear error")
+	}
+}
+
+func TestRunInit_CustomPathsFlowIntoUnit(t *testing.T) {
+	dir := t.TempDir()
+	if err := runInit([]string{
+		"--out-dir", dir,
+		"--conf-dir", "/etc/wifi-portal",
+		"--data-dir", "/srv/wifi-portal",
+		"--bin-path", "/opt/wp/bin",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unit, _ := os.ReadFile(dir + "/wifi-portal.service")
+	s := string(unit)
+	for _, want := range []string{
+		"EnvironmentFile=/etc/wifi-portal/wifi-portal.env",
+		"ReadWritePaths=/srv/wifi-portal",
+		"ExecStart=/opt/wp/bin",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("systemd unit missing %q\n--- unit ---\n%s", want, s)
+		}
+	}
+	env, _ := os.ReadFile(dir + "/wifi-portal.env")
+	if !strings.Contains(string(env), "DATA_DIR=/srv/wifi-portal") {
+		t.Error(".env should set DATA_DIR matching --data-dir")
+	}
+}
+
 func TestRunInit_WritesFiles(t *testing.T) {
 	dir := t.TempDir()
-	if err := runInit([]string{dir}); err != nil {
+	if err := runInit([]string{"--out-dir", dir}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -464,7 +498,7 @@ func TestRunInit_DoesNotOverwriteExisting(t *testing.T) {
 	if err := os.WriteFile(envPath, []byte("MY-EXISTING-CONFIG=xxx\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := runInit([]string{dir}); err != nil {
+	if err := runInit([]string{"--out-dir", dir}); err != nil {
 		t.Fatal(err)
 	}
 	// .env 应该保持原内容
