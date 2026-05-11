@@ -503,11 +503,34 @@ sudo systemctl start wifi-portal
 ### iKuai 免认证白名单 (必须)
 
 Captive Portal 启动后, 浏览器必须能**先**访问这些域名才能走完登录流程。
-把它们全部加到 iKuai 的 "免认证 IP / 免认证域名" (iKuai 支持通配,
-`*.example.com` 这种写法可以用):
+把它们全部加到 iKuai 的 "免认证 IP / 免认证域名".
+
+> ⚠️ **iKuai 通配规则**: iKuai **不支持** `*.example.com` 这种显式星号写法.
+> 写裸域名 (例如 `microsoftonline.com`) iKuai 会**自动包含**所有子域名 —
+> 等于 `*.microsoftonline.com` + `microsoftonline.com` 自己. 所以下面列表用
+> 裸域形式即可, 别加星号.
 
 ```
-# Microsoft Entra (必需)
+# Microsoft Entra (必需) — 写裸域, iKuai 自动覆盖子域
+microsoftonline.com    # 覆盖 login.microsoftonline.com / device.login.microsoftonline.com 等
+microsoft.com          # 覆盖 login.microsoft.com
+windows.net            # 覆盖 login.windows.net
+live.com               # 覆盖 login.live.com
+msftauth.net           # 覆盖 aadcdn.msftauth.net
+msauth.net             # 覆盖 aadcdn.msauth.net / logincdn.msauth.net
+
+# Duo (启用 Duo 才需要; 你的 DUO_API_HOST 也被覆盖)
+duosecurity.com
+
+# 自家域名 (Portal hostname 通常没子域要求, 但裸域写法仍然兼容)
+kazuhahub.com          # 覆盖 wifi.login.kazuhahub.com
+ikuai8-wifi.com        # 覆盖 portal.ikuai8-wifi.com
+```
+
+如果不放心 "裸域自动覆盖子域" 的语义, 退一步用**完整 FQDN** 列出每个子域也 OK
+(precise 一些, 攻击面更小):
+
+```
 login.microsoftonline.com
 login.microsoft.com
 login.windows.net
@@ -516,11 +539,7 @@ aadcdn.msftauth.net
 aadcdn.msauth.net
 logincdn.msauth.net
 device.login.microsoftonline.com
-
-# Duo (启用 Duo 才需要; 你的 DUO_API_HOST 也包含在通配里)
-*.duosecurity.com
-
-# 自家域名
+api-XXXXXXXX.duosecurity.com     # 改成你实际 DUO_API_HOST
 wifi.login.kazuhahub.com
 portal.ikuai8-wifi.com
 ```
