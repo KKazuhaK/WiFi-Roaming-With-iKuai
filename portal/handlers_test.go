@@ -420,6 +420,44 @@ func TestRunInit_WritesFiles(t *testing.T) {
 	}
 }
 
+func TestLooksUninitialized(t *testing.T) {
+	keys := []string{"TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "IKUAI_APPKEY", "PUBLIC_URL", "SESSION_SECRET"}
+
+	// 备份 + 清空所有关键 env
+	saved := map[string]string{}
+	for _, k := range keys {
+		saved[k] = os.Getenv(k)
+		os.Unsetenv(k)
+	}
+	defer func() {
+		for k, v := range saved {
+			if v == "" {
+				os.Unsetenv(k)
+			} else {
+				os.Setenv(k, v)
+			}
+		}
+	}()
+
+	// 全空 → uninitialized
+	if !looksUninitialized() {
+		t.Error("all empty env should report uninitialized")
+	}
+
+	// 只设一个 → 已视为 initialized (mustEnv 会报具体缺哪个)
+	os.Setenv("TENANT_ID", "xxx")
+	if looksUninitialized() {
+		t.Error("partial env should NOT trigger first-run (mustEnv reports specific missing key)")
+	}
+	os.Unsetenv("TENANT_ID")
+
+	// 空格不算设
+	os.Setenv("PUBLIC_URL", "   ")
+	if !looksUninitialized() {
+		t.Error("whitespace-only env should still be considered empty")
+	}
+}
+
 func TestRunInit_DoesNotOverwriteExisting(t *testing.T) {
 	dir := t.TempDir()
 	envPath := dir + "/wifi-portal.env"

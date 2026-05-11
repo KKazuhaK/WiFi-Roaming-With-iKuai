@@ -373,20 +373,24 @@ cd WiFi-Roaming-With-iKuai/portal
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/wifi-portal .
 ```
 
-### 步骤 2: 用内嵌的 init 命令生成模板
+### 步骤 2: 直接跑一次, 自动生成配置模板
 
-二进制内嵌了 `.env.example` 和 `wifi-portal.service` (systemd unit),
-跑 `init` 写到指定目录:
+二进制内嵌了 `.env.example` 和 `wifi-portal.service` (systemd unit).
+**直接跑**, 检测到关键 env 没设就自动生成模板到当前目录:
 
 ```bash
-./wifi-portal init ./tmpconfig
+./wifi-portal
 # 输出:
-#   wrote ./tmpconfig/wifi-portal.env
-#   wrote ./tmpconfig/wifi-portal.service
+#   wifi-portal: 检测到关键 env 未设, 进入 first-run 配置流程
+#   wrote ./wifi-portal.env
+#   wrote ./wifi-portal.service
 #   下一步:
-#     1. 编辑 .../wifi-portal.env, 填 TENANT_ID / CLIENT_ID / 等
+#     1. 编辑 ./wifi-portal.env, 填 TENANT_ID / CLIENT_ID / 等
 #     2. systemd 部署: sudo useradd ... cp ... systemctl ...
 ```
+
+> 想 init 到别的目录: `./wifi-portal init /etc/wifi-portal`. 已设关键 env (容器
+> 场景 / systemd EnvironmentFile= 场景) 时本步跳过, 直接启动 server.
 
 ### 步骤 3: 编辑 `wifi-portal.env`
 
