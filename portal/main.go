@@ -235,9 +235,39 @@ func runInit(args []string) error {
 	return nil
 }
 
+// looksUninitialized: 关键 env *一个都没设* 时, 大概率是用户第一次裸跑二进制
+// 还没 source .env / 没接 systemd EnvironmentFile=. 这种情况下进 first-run init
+// 流程 — 自动生成配置模板而不是抛 mustEnv fatal.
+//
+// 只有"全部为空"才触发, 部分空仍走 mustEnv 报具体缺哪个 (用户已经填到一半的
+// 配置不应被误判成 first-run).
+func looksUninitialized() bool {
+	keys := []string{"TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "IKUAI_APPKEY", "PUBLIC_URL", "SESSION_SECRET"}
+	for _, k := range keys {
+		if strings.TrimSpace(os.Getenv(k)) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 func main() {
+	// 显式 init 子命令 — 可指定目录, 适合 ops "我想 init 到 /etc/wifi-portal"
 	if len(os.Args) > 1 && os.Args[1] == "init" {
 		if err := runInit(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "init error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// First-run auto init: 关键 env 全空 = 用户裸跑还没配, 自动生成模板到当前目录.
+	// 跳过条件: 容器场景 / systemd EnvironmentFile= 场景 — env 已设, 直接走启动.
+	if looksUninitialized() {
+		fmt.Fprintln(os.Stderr, "wifi-portal: 检测到关键 env 未设, 进入 first-run 配置流程")
+		fmt.Fprintln(os.Stderr, "(若想 init 到其它目录用 `wifi-portal init <dir>`; 已设 env 时本步跳过)")
+		fmt.Fprintln(os.Stderr, "")
+		if err := runInit(nil); err != nil {
 			fmt.Fprintln(os.Stderr, "init error:", err)
 			os.Exit(1)
 		}
