@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -342,6 +343,100 @@ func TestParseDurationMinClamp(t *testing.T) {
 	got := parseDurationMin(r)
 	if got < 0 || got > maxDurationMin {
 		t.Fatalf("parseDurationMin overflow / out of range: got %d, expected 0..%d", got, maxDurationMin)
+	}
+}
+
+// --- DATA_DIR / init 子命令 (模式 D 裸二进制部署) ---
+
+func TestMakeDataPaths_DefaultData(t *testing.T) {
+	p := makeDataPaths("/data")
+	if p.GuestCodes != "/data/guest-codes.json" {
+		t.Errorf("guest path: %q", p.GuestCodes)
+	}
+	if p.EventLog != "/data/events.jsonl" {
+		t.Errorf("event log path: %q", p.EventLog)
+	}
+}
+
+func TestMakeDataPaths_OverrideDir(t *testing.T) {
+	p := makeDataPaths("/var/lib/wifi-portal")
+	wants := map[string]string{
+		"guest":    "/var/lib/wifi-portal/guest-codes.json",
+		"denylist": "/var/lib/wifi-portal/denylist.json",
+		"policy":   "/var/lib/wifi-portal/ikuai-policy.json",
+		"banhist":  "/var/lib/wifi-portal/ratelimit-state.json",
+		"events":   "/var/lib/wifi-portal/events.jsonl",
+	}
+	got := map[string]string{
+		"guest":    p.GuestCodes,
+		"denylist": p.Denylist,
+		"policy":   p.IKuaiPolicy,
+		"banhist":  p.BanHistory,
+		"events":   p.EventLog,
+	}
+	for k, want := range wants {
+		if got[k] != want {
+			t.Errorf("%s = %q, want %q", k, got[k], want)
+		}
+	}
+}
+
+func TestRunInit_WritesFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := runInit([]string{dir}); err != nil {
+		t.Fatal(err)
+	}
+
+	// .env 应存在,权限 0600 (因含 secret)
+	envPath := dir + "/wifi-portal.env"
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Errorf(".env mode = %o, want no group/other access", info.Mode().Perm())
+	}
+	// 内容应包含 .env.example 内容 + init header
+	data, _ := os.ReadFile(envPath)
+	if !strings.Contains(string(data), "wifi-portal init") {
+		t.Error(".env missing init header")
+	}
+	if !strings.Contains(string(data), "TENANT_ID") {
+		t.Error(".env missing embedded template (TENANT_ID)")
+	}
+
+	// systemd unit 应存在,权限 0644 (system 可读)
+	servicePath := dir + "/wifi-portal.service"
+	info, err = os.Stat(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf(".service mode = %o, want 0644", info.Mode().Perm())
+	}
+	data, _ = os.ReadFile(servicePath)
+	if !strings.Contains(string(data), "[Unit]") || !strings.Contains(string(data), "[Service]") {
+		t.Errorf(".service file missing systemd sections")
+	}
+}
+
+func TestRunInit_DoesNotOverwriteExisting(t *testing.T) {
+	dir := t.TempDir()
+	envPath := dir + "/wifi-portal.env"
+	if err := os.WriteFile(envPath, []byte("MY-EXISTING-CONFIG=xxx\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runInit([]string{dir}); err != nil {
+		t.Fatal(err)
+	}
+	// .env 应该保持原内容
+	data, _ := os.ReadFile(envPath)
+	if string(data) != "MY-EXISTING-CONFIG=xxx\n" {
+		t.Errorf("existing .env was overwritten: %q", string(data))
+	}
+	// systemd unit 没存在过, 应被写入
+	if _, err := os.Stat(dir + "/wifi-portal.service"); err != nil {
+		t.Error(".service should be written when missing")
 	}
 }
 

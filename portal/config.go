@@ -34,6 +34,9 @@ type Config struct {
 	// 当 Portal 直接暴露公网时务必置 false, 否则攻击者可伪造 IP 绕过限流.
 	// 启动时若 LISTEN_ADDR 不是 loopback 且 TRUST_PROXY 显式为 false, 仅按 remote addr 计.
 	TrustProxy bool
+	// DataDir: 持久化文件根目录. 默认 /data 兼容容器场景 (docker-compose bind-mount
+	// /data → ./data). 裸二进制 + systemd 部署时通常设 /var/lib/wifi-portal.
+	DataDir string
 
 	// --- 品牌化 ---
 	BrandName    string
@@ -134,6 +137,7 @@ func loadConfig() Config {
 		EventLogRetention: time.Duration(envOrInt("EVENT_LOG_RETENTION_DAYS", 7)) * 24 * time.Hour,
 
 		TrustProxy: envOrBool("TRUST_PROXY", true),
+		DataDir:    envOr("DATA_DIR", "/data"),
 	}
 
 	secretHex := mustEnv("SESSION_SECRET")
