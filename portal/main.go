@@ -1258,9 +1258,15 @@ func (a *App) handleCodeCreate(w http.ResponseWriter, r *http.Request) {
 		Note:        capLen(strings.TrimSpace(r.FormValue("note")), 256),
 	}
 	// 用户自填的 code 也限长, 防 1MB code 灌进 events.jsonl.
+	// 同时强制下限 6 字符: tailN(code, 4) 用作审计 suffix, 5 字符以下相当于全码裸暴露,
+	// 跟 batch 生成的 length 下限对齐 (admin.go: generateCode 也是 length<6 强抬到 6).
 	if userProvidedCode {
 		if len(gc.Code) > 64 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code_too_long"})
+			return
+		}
+		if len(gc.Code) < 6 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code_too_short"})
 			return
 		}
 	}
@@ -1809,7 +1815,8 @@ func (a *App) handleDenylistExportCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, item := range items {
-		if err := cw.Write([]string{
+		// 数据行过 sanitizeCSVCell 中和 Excel 公式注入 (CSV 注入防护).
+		if err := writeCSVRowSafe(cw, []string{
 			item.MAC,
 			item.Reason,
 			item.CreatedBy,

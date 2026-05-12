@@ -11,9 +11,11 @@ package main
 //   - usedStateSet TTL 自动过期
 
 import (
+	"fmt"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -537,6 +539,65 @@ func TestClientIP_XRealIPWinsOverXFF(t *testing.T) {
 	}
 }
 
+func TestClientIP_RejectsMalformedXRealIP(t *testing.T) {
+	prev := trustProxyHeaders
+	trustProxyHeaders = true
+	defer func() { trustProxyHeaders = prev }()
+
+	// 攻击者通过错配反代往 X-Real-IP 注入任意字符串. 旧实现直接当 IP 用 →
+	// 污染 failCounter / ipBans 的 map key + 把垃圾写进事件日志.
+	// 新实现应识别为非法并回退到 r.RemoteAddr.
+	cases := []string{
+		"not-an-ip",
+		"192.168.1.1; rm -rf /",
+		"<script>alert(1)</script>",
+		" 10.0.0.1 extra junk",
+		"",
+	}
+	for _, val := range cases {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.RemoteAddr = "203.0.113.5:11111"
+		r.Header.Set("X-Real-IP", val)
+		if got := clientIP(r); got != "203.0.113.5" {
+			t.Errorf("X-Real-IP=%q: clientIP = %q, want fallback 203.0.113.5", val, got)
+		}
+	}
+}
+
+func TestClientIP_RejectsMalformedXForwardedFor(t *testing.T) {
+	prev := trustProxyHeaders
+	trustProxyHeaders = true
+	defer func() { trustProxyHeaders = prev }()
+
+	// rightmost 段非法时应继续往左找首个合法 IP; 全非法则回退 RemoteAddr.
+	t.Run("rightmost garbage falls through to next legal", func(t *testing.T) {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.RemoteAddr = "203.0.113.5:11111"
+		r.Header.Set("X-Forwarded-For", "1.2.3.4, 5.6.7.8, bogus-value")
+		if got := clientIP(r); got != "5.6.7.8" {
+			t.Errorf("clientIP = %q, want 5.6.7.8 (skip rightmost bogus)", got)
+		}
+	})
+
+	t.Run("all garbage falls back to RemoteAddr", func(t *testing.T) {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.RemoteAddr = "203.0.113.5:11111"
+		r.Header.Set("X-Forwarded-For", "not-ip, also-not-ip")
+		if got := clientIP(r); got != "203.0.113.5" {
+			t.Errorf("clientIP = %q, want 203.0.113.5 (all XFF bogus)", got)
+		}
+	})
+
+	t.Run("ipv6 accepted", func(t *testing.T) {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.RemoteAddr = "203.0.113.5:11111"
+		r.Header.Set("X-Forwarded-For", "2001:db8::1")
+		if got := clientIP(r); got != "2001:db8::1" {
+			t.Errorf("clientIP = %q, want 2001:db8::1", got)
+		}
+	})
+}
+
 func TestClientIP_TrustProxyFalseIgnoresHeaders(t *testing.T) {
 	prev := trustProxyHeaders
 	trustProxyHeaders = false
@@ -549,6 +610,37 @@ func TestClientIP_TrustProxyFalseIgnoresHeaders(t *testing.T) {
 
 	if got := clientIP(r); got != "203.0.113.5" {
 		t.Fatalf("clientIP = %q, want RemoteAddr host 203.0.113.5 (headers should be ignored)", got)
+	}
+}
+
+// TestBanHistory_ShutdownIsSafeConcurrentlyAndIdempotent: 多 goroutine 同时
+// 调 shutdown() 不能 panic (close of closed channel). 旧实现用 select+close
+// 模式有 TOCTOU race; 用 sync.Once 兜底.
+func TestBanHistory_ShutdownIsSafeConcurrentlyAndIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	bh, err := newBanHistory(filepath.Join(dir, "ratelimit-state.json"))
+	if err != nil {
+		t.Fatalf("newBanHistory: %v", err)
+	}
+	bh.increment("1.1.1.1") // 产生 dirty 让 shutdown 走 flush 分支
+
+	// 触发 N 个并发 shutdown — 任何一次 panic 都会让进程崩, t.Fatal 也不会跑到
+	const N = 20
+	done := make(chan error, N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					done <- fmt.Errorf("panic: %v", r)
+				}
+			}()
+			done <- bh.shutdown()
+		}()
+	}
+	for i := 0; i < N; i++ {
+		if err := <-done; err != nil {
+			t.Errorf("shutdown #%d: %v", i, err)
+		}
 	}
 }
 

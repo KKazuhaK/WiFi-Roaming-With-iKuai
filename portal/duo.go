@@ -17,7 +17,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -116,7 +115,8 @@ func (c *DuoClient) call(method, path string, params url.Values, out any) error 
 		return fmt.Errorf("duo http: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	// 限定 body 上限, 防 Duo 服务异常 / 中间人塞巨大响应 OOM (审计 #13).
+	body, err := readBoundedBody(resp.Body, duoMaxResponseBytes)
 	if err != nil {
 		return fmt.Errorf("duo read body: %w", err)
 	}

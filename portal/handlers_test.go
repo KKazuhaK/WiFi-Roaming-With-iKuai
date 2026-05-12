@@ -83,6 +83,29 @@ func TestHandleCodeCreate_RejectsLongCode(t *testing.T) {
 	}
 }
 
+// TestHandleCodeCreate_RejectsShortCode: 审计 #9.
+// admin 自填的 code 太短 (< 6 字符) 时, tailN(code, 4) 几乎等于完整码,
+// 等于把"短码"完整持久化进事件日志. 服务端拒掉, 强制 admin 用至少 6 位
+// (跟批量生成的 length 下限对齐).
+func TestHandleCodeCreate_RejectsShortCode(t *testing.T) {
+	app := mkAdminTestApp(t)
+	for _, short := range []string{"1", "12", "123", "1234", "12345"} {
+		form := url.Values{"code": {short}}
+		w := httptest.NewRecorder()
+		app.handleCodeCreate(w, adminPOST(t, app, "/admin/codes/create", form))
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("short code %q: status = %d, want 400", short, w.Code)
+		}
+	}
+	// 6 字符及以上接受
+	form := url.Values{"code": {"abcdef"}}
+	w := httptest.NewRecorder()
+	app.handleCodeCreate(w, adminPOST(t, app, "/admin/codes/create", form))
+	if w.Code != http.StatusOK {
+		t.Errorf("6-char code: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+}
+
 // TestHandleCodeCreate_AuditDoesNotLeakFullCode: H2 关键回归.
 // admin 创建访客码时, 审计 detail 不能写完整码 — 备份 / SIEM 泄露后等于身份信息.
 func TestHandleCodeCreate_AuditDoesNotLeakFullCode(t *testing.T) {

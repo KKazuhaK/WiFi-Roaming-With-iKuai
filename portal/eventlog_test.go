@@ -10,12 +10,30 @@ package main
 //   - 不记录敏感数据 — 由调用方保证, 这里只测便捷函数转发正确
 
 import (
+	"bytes"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// testCSVResponseWriter: 仅供 CSV 测试用的 minimal http.ResponseWriter,
+// 收集 body 到 bytes.Buffer.
+type testCSVResponseWriter struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func newTestCSVResponseWriter() *testCSVResponseWriter {
+	return &testCSVResponseWriter{header: make(http.Header)}
+}
+
+func (w *testCSVResponseWriter) Header() http.Header       { return w.header }
+func (w *testCSVResponseWriter) Write(b []byte) (int, error) { return w.body.Write(b) }
+func (w *testCSVResponseWriter) WriteHeader(code int)        { w.status = code }
 
 func TestEventLog_AppendAndQuery(t *testing.T) {
 	e, _ := newEventLog("", time.Hour)
@@ -218,6 +236,77 @@ func TestLogLogin_PreservesFields(t *testing.T) {
 	if ev.Kind != KindLogin || ev.Subject != "user@x" || ev.Method != MethodGuestCode ||
 		ev.MAC != "aa:bb" || ev.IP != "1.1.1.1" || ev.Detail != "code-suffix=1234" {
 		t.Errorf("event fields wrong: %+v", ev)
+	}
+}
+
+// --- CSV formula injection 防护 (审计指出的 #3) ---
+
+// sanitizeCSVCell: 任何以 = + - @ Tab CR 起头的字段都会被 Excel/LibreOffice
+// 解析成公式 (=cmd|'/c calc'!A0 之类). 写 CSV 前必须在前面加一个单引号
+// 把它降级成纯文本.
+func TestSanitizeCSVCell_NeutralizesFormulaPrefixes(t *testing.T) {
+	dangerous := []string{
+		"=1+1",
+		"=cmd|'/c calc'!A0",
+		"+1",
+		"-1",
+		"@SUM(A1:A10)",
+		"\t=1+1",
+		"\r=1+1",
+	}
+	for _, in := range dangerous {
+		got := sanitizeCSVCell(in)
+		if got == in {
+			t.Errorf("sanitizeCSVCell(%q) returned unchanged %q, want '-prefix", in, got)
+		}
+		if !strings.HasPrefix(got, "'") {
+			t.Errorf("sanitizeCSVCell(%q) = %q, want leading single quote", in, got)
+		}
+	}
+}
+
+func TestSanitizeCSVCell_PassesThroughSafeText(t *testing.T) {
+	safe := []string{
+		"",
+		"alice@example.com", // @ 在中间是合法 email, 不该改
+		"aa:bb:cc:dd:ee:ff",
+		"some note",
+		"123",
+		"normal text",
+	}
+	for _, in := range safe {
+		got := sanitizeCSVCell(in)
+		if got != in {
+			t.Errorf("sanitizeCSVCell(%q) = %q, want unchanged", in, got)
+		}
+	}
+}
+
+func TestWriteEventsCSV_SanitizesFormulaInjection(t *testing.T) {
+	rec := newTestCSVResponseWriter()
+	events := []Event{
+		{
+			Time:    time.Unix(1700000000, 0),
+			Kind:    KindLogin,
+			Subject: "=BAD()",         // 攻击者控制的 subject
+			Result:  ResultSuccess,
+			Method:  MethodSSO,
+			MAC:     "aa:bb:cc:dd:ee:ff",
+			IP:      "1.1.1.1",
+			Detail:  "+evil",
+		},
+	}
+	if err := WriteEventsCSV(rec, events); err != nil {
+		t.Fatalf("WriteEventsCSV: %v", err)
+	}
+	body := rec.body.String()
+	// 攻击 cell 必须被前缀化, 不能保留 leading = / +
+	if strings.Contains(body, ",=BAD()") || strings.Contains(body, ",+evil") {
+		t.Errorf("CSV body did not sanitize formula prefix: %s", body)
+	}
+	// 合法 Email 形 IP / MAC / 时间不受影响
+	if !strings.Contains(body, "aa:bb:cc:dd:ee:ff") {
+		t.Errorf("MAC missing from CSV: %s", body)
 	}
 }
 

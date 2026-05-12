@@ -334,6 +334,7 @@ type banHistory struct {
 	dirty       bool
 	flushStop   chan struct{}
 	flushDone   chan struct{}
+	stopOnce    sync.Once // 保证 close(flushStop) 至多调一次, 防并发 shutdown panic
 }
 
 // banHistoryFlushInterval flusher 周期. 30s — 攻击场景下丢最多 30s 的 escalation
@@ -432,16 +433,17 @@ func (b *banHistory) writeSnapshot(snapshot map[string]int) error {
 
 // shutdown 停 flusher goroutine 并做最后一次 flush. 启动后未调 → 进程退出时丢
 // 最多一个周期的 ban history (一般可接受). 单元测试 / 优雅退出时应调.
+//
+// 并发安全: 多 goroutine 同时调走 sync.Once, 只有第一个真正 close(flushStop);
+// 后续调用照样 <-b.flushDone 等待停妥, 然后返回 nil. 旧实现 select+default 的
+// 检查与 close 非原子, 触发过 "close of closed channel" panic.
 func (b *banHistory) shutdown() error {
 	if b.persistPath == "" {
 		return nil
 	}
-	select {
-	case <-b.flushStop:
-		// 已经 stop, 防 close panic
-	default:
+	b.stopOnce.Do(func() {
 		close(b.flushStop)
-	}
+	})
 	<-b.flushDone
 	return nil
 }
@@ -593,19 +595,25 @@ var trustProxyHeaders = true
 //	$proxy_add_x_forwarded_for 会把上一跳的源 IP append 到末尾,
 //	攻击者发的伪造 XFF 被推到左侧. 取最左等于直接读攻击者输入.
 //
+//	header 值必须 net.ParseIP 合法; 非法值视同未设, 防止反代错配导致
+//	攻击者把任意字符串注入 failCounter / ipBans 的 map key (内存污染 +
+//	事件日志污染). XFF 从右往左扫, 跳过非法段直到首个合法 IP.
+//
 // trustProxyHeaders=false (公网直暴露):
 //
 //	完全忽略 header, 只用 r.RemoteAddr.
 func clientIP(r *http.Request) string {
 	if trustProxyHeaders {
-		if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		if xri := validIP(r.Header.Get("X-Real-IP")); xri != "" {
 			return xri
 		}
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.LastIndex(xff, ","); i >= 0 {
-				return strings.TrimSpace(xff[i+1:])
+			parts := strings.Split(xff, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				if ip := validIP(parts[i]); ip != "" {
+					return ip
+				}
 			}
-			return strings.TrimSpace(xff)
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -613,4 +621,18 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// validIP trim 后用 net.ParseIP 验证, 合法返回规范化后的字符串 (剔除多余空格),
+// 非法返回 "". 调用方据此判定该 header 段是否可信.
+func validIP(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
