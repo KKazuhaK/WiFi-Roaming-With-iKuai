@@ -30,7 +30,7 @@
   "errors.adminDisabled": "Admin console is not configured (ADMIN_EMAILS or ADMIN_GROUP_IDS).",
   "errors.notAdminMember": "Your account is not on the admin list. Please contact your administrator.",
 
-  "common.footer": "© %s · WiFi",
+  "common.footer": "© %s · Wi-Fi",
   "common.back": "Back",
   "common.cancel": "Cancel",
   "common.retry": "Retry",

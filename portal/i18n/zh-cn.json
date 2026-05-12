@@ -30,7 +30,7 @@
   "errors.adminDisabled": "Admin 后台未配置 (ADMIN_EMAILS 或 ADMIN_GROUP_IDS)。",
   "errors.notAdminMember": "你的账号不在 admin 列表, 请联系管理员。",
 
-  "common.footer": "© %s · WiFi",
+  "common.footer": "© %s · Wi-Fi",
   "common.back": "返回",
   "common.cancel": "取消",
   "common.retry": "重试",
