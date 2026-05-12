@@ -1,14 +1,14 @@
 package main
 
 // ratelimit_test.go
-// 失败计数 / 冷却 / 永久封禁 升级 的核心语义. 重点测:
-//   - failCounter 窗口边界
-//   - failCounter reset / resetAll 行为
-//   - ipBanList 自动过期
+// Core semantics for failure counts, cooldowns, and permanent-ban escalation. Focus:
+//   - failCounter window boundaries
+//   - failCounter reset / resetAll behavior
+//   - ipBanList automatic expiry
 //   - banHistory increment / reset
-//   - clearSuccessfulAuthState **不**清 banHistory (M3 修复回归)
-//   - recordIPFailure 触发冷却 / 触发永久升级
-//   - usedStateSet TTL 自动过期
+//   - clearSuccessfulAuthState does not clear banHistory (M3 regression)
+//   - recordIPFailure triggers cooldown and permanent escalation
+//   - usedStateSet TTL expiry
 
 import (
 	"fmt"
@@ -33,11 +33,11 @@ func TestFailCounter_WindowBoundary(t *testing.T) {
 	if got := c.countIn("a", time.Minute); got != 3 {
 		t.Errorf("countIn 1m = %d, want 3", got)
 	}
-	// 远超的 0 长度窗口应该返回 0.
+	// A far-too-small zero-length window should return 0.
 	if got := c.countIn("a", time.Nanosecond); got != 0 {
 		t.Errorf("countIn 1ns = %d, want 0 (timestamps are older)", got)
 	}
-	// 不同 key 不串.
+	// Different keys do not interact.
 	if got := c.countIn("b", time.Minute); got != 0 {
 		t.Errorf("unrelated key counted as %d, want 0", got)
 	}
@@ -70,8 +70,8 @@ func TestFailCounter_OldEntriesIgnoredByCount(t *testing.T) {
 	c := newFailCounter(time.Hour)
 	c.mu.Lock()
 	c.entries["k"] = []time.Time{
-		time.Now().Add(-30 * time.Minute), // 30 分钟前
-		time.Now().Add(-2 * time.Minute),  // 2 分钟前
+		time.Now().Add(-30 * time.Minute), // 30 minutes ago.
+		time.Now().Add(-2 * time.Minute),  // 2 minutes ago.
 		time.Now(),
 	}
 	c.mu.Unlock()
@@ -104,7 +104,7 @@ func TestIPBanList_ExpiryOfRespectsExpiry(t *testing.T) {
 	if !exp.After(time.Now()) {
 		t.Errorf("expiry %v should be in future", exp)
 	}
-	// 不在列表里时
+	// Not in the list.
 	if _, ok := b.expiryOf("2.2.2.2"); ok {
 		t.Error("expiryOf for unbanned IP must return ok=false")
 	}
@@ -127,7 +127,7 @@ func TestIPBanList_UnbanReturnsWhetherWasBanned(t *testing.T) {
 // --- banHistory ---
 
 func TestBanHistory_IncrementCounts(t *testing.T) {
-	bh, err := newBanHistory("") // 内存模式不落盘
+	bh, err := newBanHistory("") // Memory mode, no disk writes.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,16 +159,16 @@ func TestBanHistory_ResetClearsOnlyTarget(t *testing.T) {
 	}
 }
 
-// --- M3 关键回归: clearSuccessfulAuthState 不应清 banHistory ---
+// --- M3 regression: clearSuccessfulAuthState must not clear banHistory ---
 
 func TestClearSuccessfulAuthState_PreservesBanHistory(t *testing.T) {
-	// 这是 M3 核心场景: 攻击者积累了 IP 封禁历史 (banHistory),
-	// 一次合法登录就把历史归零 → 升级永久永远到不了. 修复后必须保留.
+	// Core M3 scenario: an attacker accumulated IP ban history; one legitimate login must not reset
+	// that history, or permanent escalation could never be reached.
 	app := mkTestApp(t)
 	const ip = "5.5.5.5"
 	const email = "alice@example.com"
 
-	// 模拟该 IP 之前已经被冷却过 3 次, 冷却次数累积在 banHistory.
+	// Simulate this IP having already been cooled down three times in banHistory.
 	app.banHistory.increment(ip)
 	app.banHistory.increment(ip)
 	app.banHistory.increment(ip)
@@ -176,16 +176,16 @@ func TestClearSuccessfulAuthState_PreservesBanHistory(t *testing.T) {
 		t.Fatalf("setup: banHistory should be 3, got %d", app.banHistory.get(ip))
 	}
 
-	// 同时模拟当前还有失败计数 + 冷却中.
+	// Also simulate current failure count and active cooldown.
 	app.ipFails.record(ip)
 	app.ipFails.record(ip)
 	app.ipBans.ban(ip, time.Hour)
 	app.authEmailFails.record(email)
 
-	// 该 IP 现在合法登录 (eg 用真账号). clearSuccessfulAuthState 应该:
-	//   - 清 ipFails
-	//   - 解 ipBans 当前冷却
-	//   - **保留** banHistory 历史 — 这是 M3 修复的核心点
+	// This IP now logs in legitimately. clearSuccessfulAuthState should:
+	//   - clear ipFails
+	//   - clear the current ipBans cooldown
+	//   - preserve banHistory, which is the core M3 fix
 	r, _ := http.NewRequest("GET", "/", nil)
 	r.RemoteAddr = ip + ":12345"
 	prev := trustProxyHeaders
@@ -209,7 +209,7 @@ func TestClearSuccessfulAuthState_PreservesBanHistory(t *testing.T) {
 	}
 }
 
-// --- recordIPFailure: 阈值触发冷却 / 升级永久 ---
+// --- recordIPFailure: threshold-triggered cooldown / permanent escalation ---
 
 func TestRecordIPFailure_TriggersCooldownAtThreshold(t *testing.T) {
 	app := mkTestApp(t)
@@ -235,11 +235,11 @@ func TestRecordIPFailure_EscalatesToPermanent(t *testing.T) {
 	app.cfg.IPFailsLimit = 1
 	app.cfg.IPFailsWindow = time.Hour
 	app.cfg.IPBanDuration = time.Minute
-	app.cfg.IPBanEscalateAt = 3 // 第 3 次冷却 = 永久
+	app.cfg.IPBanEscalateAt = 3 // Third cooldown becomes permanent.
 
 	const ip = "8.8.8.8"
 
-	// 第 1 次: 触发短时冷却, banHistory=1.
+	// First time: trigger short cooldown, banHistory=1.
 	app.recordIPFailure(ip, "test")
 	exp, _ := app.ipBans.expiryOf(ip)
 	if IsPermanent(exp) {
@@ -249,14 +249,14 @@ func TestRecordIPFailure_EscalatesToPermanent(t *testing.T) {
 		t.Errorf("banHistory after 1st = %d, want 1", app.banHistory.get(ip))
 	}
 
-	// 模拟冷却到期. 攻击者再发一次失败.
+	// Simulate cooldown expiry. Attacker fails again.
 	app.ipBans.unban(ip)
 	app.recordIPFailure(ip, "test")
 	if app.banHistory.get(ip) != 2 {
 		t.Errorf("banHistory after 2nd = %d, want 2", app.banHistory.get(ip))
 	}
 
-	// 第 3 次: 触发永久封禁.
+	// Third time: trigger permanent ban.
 	app.ipBans.unban(ip)
 	app.recordIPFailure(ip, "test")
 	exp3, ok := app.ipBans.expiryOf(ip)
@@ -269,7 +269,7 @@ func TestRecordIPFailure_EscalatesToPermanent(t *testing.T) {
 }
 
 func TestRecordIPFailure_DoesNotRebanWhileCooling(t *testing.T) {
-	// 已经冷却中, 又来 N 次失败 — banHistory 不应该再升一次, 也不该续冷却.
+	// More failures while already cooling down should not increment banHistory or extend cooldown.
 	app := mkTestApp(t)
 	app.cfg.IPFailsLimit = 1
 	app.cfg.IPBanDuration = time.Hour
@@ -281,7 +281,7 @@ func TestRecordIPFailure_DoesNotRebanWhileCooling(t *testing.T) {
 		t.Fatalf("setup: banHistory should be 1, got %d", app.banHistory.get(ip))
 	}
 
-	// 已经在封了, 再 record 一堆.
+	// Already banned; record more failures.
 	for i := 0; i < 5; i++ {
 		app.recordIPFailure(ip, "test")
 	}
@@ -316,19 +316,19 @@ func TestRequestIPKeys_DeduplicatesClientAndSessionIP(t *testing.T) {
 	r, _ := http.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "1.1.1.1:1111"
 
-	// session IP 跟 client IP 相同 → 只返回一个
+	// Same session IP and client IP -> return one key.
 	keys := requestIPKeys(r, &Session{UserIP: "1.1.1.1"})
 	if len(keys) != 1 || keys[0] != "1.1.1.1" {
 		t.Errorf("identical client/session IPs should dedupe, got %v", keys)
 	}
 
-	// session IP 不同 → 都包含 (限流要双向覆盖, 反代 IP + iKuai 上报 IP)
+	// Different session IP -> include both reverse-proxy IP and iKuai-reported IP.
 	keys = requestIPKeys(r, &Session{UserIP: "2.2.2.2"})
 	if len(keys) != 2 {
 		t.Errorf("different IPs should both appear, got %v", keys)
 	}
 
-	// 没 session
+	// No session.
 	keys = requestIPKeys(r, nil)
 	if len(keys) != 1 || keys[0] != "1.1.1.1" {
 		t.Errorf("no session: only client IP, got %v", keys)
@@ -350,7 +350,7 @@ func TestProceedTokenStore_OneTimeConsumption(t *testing.T) {
 	if e.URL != "/somewhere" {
 		t.Errorf("URL mismatch: %q", e.URL)
 	}
-	// 第二次必须失败
+	// Second use must fail.
 	if _, ok := s.take(tok); ok {
 		t.Fatal("second take of same token must fail (one-time)")
 	}
@@ -365,13 +365,13 @@ func TestProceedTokenStore_ExpiredRejected(t *testing.T) {
 	}
 }
 
-// --- H4 回归: admin POST 必须被同源校验拦截 ---
+// --- H4 regression: admin POST must be blocked by same-origin validation ---
 
 func TestRequireAdmin_BlocksCrossOriginPOST(t *testing.T) {
 	app := mkTestApp(t)
 	app.cfg.AdminEmails = []string{"admin@example.com"}
 
-	// 即使带着合法的 admin cookie, 跨站 Origin 应该被拦截.
+	// Cross-site Origin should be blocked even with a valid admin cookie.
 	rec := httptest.NewRecorder()
 	_ = writeAdminCookie(rec, app.cfg.SessionSecret, AdminSession{
 		UPN: "admin@example.com",
@@ -422,8 +422,8 @@ func TestRequireAdmin_AllowsSameOriginPOST(t *testing.T) {
 }
 
 func TestRequireAdmin_BlocksPOSTWithoutOriginHeader(t *testing.T) {
-	// 防御深度: 浏览器现在 form POST 都会带 Origin/Referer. 缺失通常是 curl /
-	// 伪造客户端 / 老浏览器 — 拒掉.
+	// Defense in depth: modern browser form POSTs include Origin/Referer. Missing headers are usually
+	// curl, forged clients, or old browsers, so reject them.
 	app := mkTestApp(t)
 	app.cfg.AdminEmails = []string{"admin@example.com"}
 
@@ -448,7 +448,7 @@ func TestRequireAdmin_BlocksPOSTWithoutOriginHeader(t *testing.T) {
 }
 
 func TestRequireAdmin_AllowsGETWithoutOrigin(t *testing.T) {
-	// GET (页面渲染 / status 查询) 不强制 Origin — 浏览器很多 GET 不发 Origin.
+	// GET for page rendering/status queries does not require Origin because many browser GETs omit it.
 	app := mkTestApp(t)
 	app.cfg.AdminEmails = []string{"admin@example.com"}
 
@@ -470,12 +470,12 @@ func TestRequireAdmin_AllowsGETWithoutOrigin(t *testing.T) {
 	}
 }
 
-// --- handleAuthProceed: state 不匹配应拒绝 ---
+// --- handleAuthProceed: mismatched state must be rejected ---
 
 func TestHandleAuthProceed_StateMismatchRejected(t *testing.T) {
 	app := mkTestApp(t)
 
-	// 浏览器 cookie 里 session.State = "session-state"
+	// Browser cookie has session.State = "session-state".
 	rec := httptest.NewRecorder()
 	sess := Session{
 		State: "session-state",
@@ -487,7 +487,7 @@ func TestHandleAuthProceed_StateMismatchRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// proceed token 绑的是另一个 state — 模拟攻击者拿到他人的 token 试图重放.
+	// proceed token is bound to another state, simulating replay with someone else's token.
 	tok, _ := app.proceedStore.put("/login?hint=victim@example.com",
 		"OTHER-STATE", "victim@example.com")
 
@@ -500,13 +500,13 @@ func TestHandleAuthProceed_StateMismatchRejected(t *testing.T) {
 	if rec2.Code != http.StatusBadRequest {
 		t.Errorf("state mismatch should return 400, got %d", rec2.Code)
 	}
-	// 不能 302 到 token 内的真 URL
+	// Must not 302 to the real URL inside the token.
 	if loc := rec2.Header().Get("Location"); strings.Contains(loc, "victim@example.com") {
 		t.Errorf("must not redirect to mismatched URL: %q", loc)
 	}
 }
 
-// --- clientIP / 反代信任边界 (H1 修复) ---
+// --- clientIP / reverse-proxy trust boundary (H1 fix) ---
 
 func TestClientIP_RightmostXFFWhenProxied(t *testing.T) {
 	prev := trustProxyHeaders
@@ -515,7 +515,7 @@ func TestClientIP_RightmostXFFWhenProxied(t *testing.T) {
 
 	r, _ := http.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "127.0.0.1:54321"
-	// 攻击者伪造的 XFF + 反代 (nginx $proxy_add_x_forwarded_for) append 的真客户端 IP
+	// Attacker-forged XFF plus the real client IP appended by the reverse proxy.
 	r.Header.Set("X-Forwarded-For", "1.2.3.4, 5.6.7.8, 9.9.9.9")
 
 	got := clientIP(r)
@@ -544,9 +544,8 @@ func TestClientIP_RejectsMalformedXRealIP(t *testing.T) {
 	trustProxyHeaders = true
 	defer func() { trustProxyHeaders = prev }()
 
-	// 攻击者通过错配反代往 X-Real-IP 注入任意字符串. 旧实现直接当 IP 用 →
-	// 污染 failCounter / ipBans 的 map key + 把垃圾写进事件日志.
-	// 新实现应识别为非法并回退到 r.RemoteAddr.
+	// An attacker injects arbitrary X-Real-IP through proxy misconfiguration. The old implementation
+	// used it directly, polluting failCounter/ipBans keys and event logs. The new one falls back.
 	cases := []string{
 		"not-an-ip",
 		"192.168.1.1; rm -rf /",
@@ -569,7 +568,7 @@ func TestClientIP_RejectsMalformedXForwardedFor(t *testing.T) {
 	trustProxyHeaders = true
 	defer func() { trustProxyHeaders = prev }()
 
-	// rightmost 段非法时应继续往左找首个合法 IP; 全非法则回退 RemoteAddr.
+	// If the rightmost segment is invalid, scan left for the first valid IP; all invalid falls back.
 	t.Run("rightmost garbage falls through to next legal", func(t *testing.T) {
 		r, _ := http.NewRequest("GET", "/", nil)
 		r.RemoteAddr = "203.0.113.5:11111"
@@ -613,18 +612,17 @@ func TestClientIP_TrustProxyFalseIgnoresHeaders(t *testing.T) {
 	}
 }
 
-// TestBanHistory_ShutdownIsSafeConcurrentlyAndIdempotent: 多 goroutine 同时
-// 调 shutdown() 不能 panic (close of closed channel). 旧实现用 select+close
-// 模式有 TOCTOU race; 用 sync.Once 兜底.
+// TestBanHistory_ShutdownIsSafeConcurrentlyAndIdempotent: multiple goroutines calling shutdown()
+// must not panic with close-of-closed-channel. sync.Once fixes the old select+close TOCTOU race.
 func TestBanHistory_ShutdownIsSafeConcurrentlyAndIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	bh, err := newBanHistory(filepath.Join(dir, "ratelimit-state.json"))
 	if err != nil {
 		t.Fatalf("newBanHistory: %v", err)
 	}
-	bh.increment("1.1.1.1") // 产生 dirty 让 shutdown 走 flush 分支
+	bh.increment("1.1.1.1") // Produce dirty state so shutdown takes the flush branch.
 
-	// 触发 N 个并发 shutdown — 任何一次 panic 都会让进程崩, t.Fatal 也不会跑到
+	// Trigger N concurrent shutdowns. Any panic would crash the process before t.Fatal runs.
 	const N = 20
 	done := make(chan error, N)
 	for i := 0; i < N; i++ {
@@ -644,7 +642,7 @@ func TestBanHistory_ShutdownIsSafeConcurrentlyAndIdempotent(t *testing.T) {
 	}
 }
 
-// --- usedStateSet (M2 OIDC state 重放防护) ---
+// --- usedStateSet (M2 OIDC state replay defense) ---
 
 func TestUsedStateSet_BlocksReplay(t *testing.T) {
 	s := newUsedStateSet(10 * time.Second)
@@ -667,7 +665,7 @@ func TestUsedStateSet_EmptyStateRejected(t *testing.T) {
 	}
 }
 
-// --- failCounter 容量上限 (H3 内存增长 DOS) ---
+// --- failCounter capacity cap (H3 memory-growth DOS) ---
 
 func TestFailCounterCapacity(t *testing.T) {
 	c := newFailCounter(time.Hour)
@@ -693,16 +691,16 @@ func uniqKey(i int) string {
 
 // --- helpers ---
 
-// mkTestApp 构造一个最小可用的 *App, 适合限流 / 中间件路径测试.
-// 不启动 gcLoop, 不连 OIDC, 不写盘. 模板 + i18n 用真实文件加载,
-// 这样 renderError 不会 nil panic.
+// mkTestApp builds a minimal usable *App for rate-limit and middleware-path tests.
+// It does not start gcLoop, connect OIDC, or write to disk. Templates and i18n use real files so
+// renderError does not nil-panic.
 func mkTestApp(t *testing.T) *App {
 	t.Helper()
 	loadTranslations()
 	cfg := Config{
 		SessionSecret: testSecret(t),
 		PublicURL:     "https://wifi.test",
-		// 限流默认值, 单测里大多数会覆盖这些.
+		// Rate-limit defaults; most tests override these.
 		AuthEmailFailsShort:  5,
 		AuthEmailWindowShort: 3 * time.Minute,
 		AuthEmailFailsLong:   20,

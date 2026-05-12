@@ -1,10 +1,10 @@
 package main
 
 // duo.go
-// Duo Auth API v2 — 只保留 preauth 一个用途 (探测用户是否在 Duo 里).
-// 实际 2FA 交互交给 Duo Universal Prompt (duo_universal.go), 不再用这条 API 直接发推送.
+// Duo Auth API v2 is kept only for preauth, which checks whether a user exists in Duo.
+// Actual 2FA is handled by Duo Universal Prompt (duo_universal.go), not direct pushes from this API.
 //
-// 签名算法:
+// Signing algorithm:
 //   canon = date + "\n" + METHOD + "\n" + lowercase(host) + "\n" + path + "\n" + canonicalParams
 //   sig   = HMAC-SHA1(skey, canon).hex
 //   Authorization: Basic base64(ikey:sig)
@@ -47,7 +47,7 @@ type duoEnvelope struct {
 	Response json.RawMessage `json:"response"`
 }
 
-// PreauthResult: "result" 取值 auth / allow / enroll / deny.
+// PreauthResult.Result can be auth / allow / enroll / deny.
 type PreauthResult struct {
 	Result    string          `json:"result"`
 	StatusMsg string          `json:"status_msg"`
@@ -61,8 +61,8 @@ type PreauthDevice struct {
 }
 
 func (p *PreauthResult) HasUniversalPromptCapable() bool {
-	// Universal Prompt 几乎所有 factor 都能用 (push / passcode / phone / WebAuthn),
-	// 只要用户有任何一个注册过的设备就行. devices 数组非空意味着注册过.
+	// Universal Prompt can use almost any factor (push, passcode, phone, WebAuthn).
+	// Any registered device is enough; a non-empty devices array means the user is enrolled.
 	return len(p.Devices) > 0
 }
 
@@ -76,7 +76,7 @@ func (c *DuoClient) Preauth(username string) (*PreauthResult, error) {
 	return &res, nil
 }
 
-// --- 内部 ---
+// --- Internals ---
 
 func (c *DuoClient) call(method, path string, params url.Values, out any) error {
 	date := time.Now().UTC().Format(time.RFC1123Z)
@@ -115,7 +115,7 @@ func (c *DuoClient) call(method, path string, params url.Values, out any) error 
 		return fmt.Errorf("duo http: %w", err)
 	}
 	defer resp.Body.Close()
-	// 限定 body 上限, 防 Duo 服务异常 / 中间人塞巨大响应 OOM (审计 #13).
+	// Bound the body size to avoid OOM from Duo failures or oversized MITM responses (audit #13).
 	body, err := readBoundedBody(resp.Body, duoMaxResponseBytes)
 	if err != nil {
 		return fmt.Errorf("duo read body: %w", err)

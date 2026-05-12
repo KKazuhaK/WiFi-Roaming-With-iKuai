@@ -356,7 +356,7 @@
   </style>
 </head>
 <body>
-  <!-- Lucide icon sprite. 引用方式: <svg class="icon"><use href="#i-X"/></svg> -->
+  <!-- Lucide icon sprite. Usage: <svg class="icon"><use href="#i-X"/></svg> -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <defs>
       <symbol id="i-plus" viewBox="0 0 24 24">
@@ -535,7 +535,7 @@
     </div>
     </section>
 
-    <!-- iKuai 放行策略 -->
+    <!-- iKuai allow-list policy -->
     <section id="section-ikuai-policy" class="admin-section">
       <div class="toolbar" style="margin-bottom: 16px;">
         <div style="font-weight: 600; font-size: 16px; flex: 1;">{{ T .Lang "admin.policy.title" }}</div>
@@ -582,7 +582,7 @@
       </div>
     </section>
 
-    <!-- MAC 封禁 -->
+    <!-- MAC denylist -->
     <section id="section-macs" class="admin-section">
       <div class="toolbar" style="margin-bottom: 16px;">
         <div style="font-weight: 600; font-size: 16px; flex: 1;">{{ T .Lang "admin.macs.title" }}</div>
@@ -626,7 +626,7 @@
       </div>
     </section>
 
-    <!-- 限流状态 -->
+    <!-- Rate-limit status -->
     <section id="section-ratelimit" class="admin-section">
       <div class="toolbar" style="margin-bottom: 16px;">
         <div style="font-weight: 600; font-size: 16px; flex: 1;">{{ T .Lang "admin.rl.title" }}</div>
@@ -652,7 +652,7 @@
       </div>
     </section>
 
-    <!-- 事件日志 -->
+    <!-- Event log -->
     <section id="section-events" class="admin-section">
       <div class="toolbar" style="margin-bottom: 12px;">
         <div style="font-weight: 600; font-size: 16px;">{{ T .Lang "admin.events.title" }}</div>
@@ -709,7 +709,7 @@
     </section>
   </main>
 
-  <!-- 单条添加 -->
+  <!-- Add one item -->
   <div class="modal-backdrop" id="modal-add">
     <div class="modal">
       <h2>{{ T .Lang "admin.modal.add.title" }}</h2>
@@ -748,7 +748,7 @@
     </div>
   </div>
 
-  <!-- 批量生成 -->
+  <!-- Batch generation -->
   <div class="modal-backdrop" id="modal-batch">
     <div class="modal">
       <h2>{{ T .Lang "admin.modal.batch.title" }}</h2>
@@ -798,7 +798,7 @@
     </div>
   </div>
 
-  <!-- 编辑访客码 -->
+  <!-- Edit guest code -->
   <div class="modal-backdrop" id="modal-edit">
     <div class="modal">
       <h2>{{ T .Lang "admin.modal.edit.titleFmt" }} <span id="edit-code-display" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;color:var(--text-muted);"></span></h2>
@@ -834,7 +834,7 @@
     </div>
   </div>
 
-  <!-- 事件详情 -->
+  <!-- Event detail -->
   <div class="modal-backdrop" id="modal-event-detail">
     <div class="modal" style="max-width: 560px;">
       <h2>{{ T .Lang "admin.events.detail.title" }}</h2>
@@ -845,7 +845,7 @@
     </div>
   </div>
 
-  <!-- 批量结果 -->
+  <!-- Batch result -->
   <div class="modal-backdrop" id="modal-result">
     <div class="modal">
       <h2>{{ T .Lang "admin.modal.result.titleFmt" "" }} · <span id="result-count">0</span></h2>
@@ -862,9 +862,9 @@
   <script>
     'use strict';
 
-    // i18n 字符串桥接: server 端把所有 i18n key 注入这里 (login.* / admin.* /
-    // units.* / errors.* 全都在). JS 用全 key: T("admin.toast.added", "abc"),
-    // 占位符 %s/%d 按出现顺序替换. 找不到 key 直接返回 key 字面量, 便于定位漏翻.
+    // i18n bridge: server injects all i18n keys here (login.*, admin.*, units.*, errors.*).
+    // JS uses full keys, e.g. T("admin.toast.added", "abc"). Placeholders %s/%d are replaced in
+    // order. Missing keys return the literal key for easy diagnosis.
     var __I18N = {{ jsonI18N .Lang "" }};
     function T(key) {
       var s = __I18N[key];
@@ -880,10 +880,9 @@
     var activeFilter = 'all';
     var searchQuery = '';
 
-    // Admin session 服务端 1h 后到期, /admin/* JSON 接口会返 401 not_logged_in.
-    // 现存的 fetch 调用都是 .catch(noop) 或只看 b.ok, 401 静默丢掉, 用户看到的是
-    // 一直停留在管理页 + 自动刷新拉不到数据. 包一下 fetch: /admin/* 拿到 401 立刻
-    // 跳 /admin/login, 让用户主动点击后再重新 SSO 登录.
+    // Admin session expires server-side after 1h, and /admin/* JSON APIs return 401 not_logged_in.
+    // Existing fetch calls often ignore 401, leaving the user on a stale admin page. Wrap fetch so
+    // /admin/* 401 immediately redirects to /admin/login for an explicit SSO re-login.
     var __adminRedirecting = false;
     var __origFetch = window.fetch;
     window.fetch = function(input, init) {
@@ -928,7 +927,7 @@
         var searchOK = !q || (row.dataset.search || '').toLowerCase().indexOf(q) !== -1;
         row.style.display = (statusOK && searchOK) ? '' : 'none';
       }
-      // filter 改变后, 之前选中但现在被隐藏的行不应计入. 重算.
+      // After filters change, previously selected but now hidden rows should not count. Recompute.
       if (typeof updateBulkCount === 'function') updateBulkCount();
     }
     document.querySelectorAll('.tab').forEach(function(t) {
@@ -1071,12 +1070,12 @@
         });
     }
 
-    // ===== 选中删除 =====
+    // ===== Delete selected =====
 
     function selectedCodes() {
       var out = [];
       document.querySelectorAll('.code-check').forEach(function(cb) {
-        // 只算当前可见 (filter / search 过滤后) 的行
+        // Count only currently visible rows after filter/search.
         if (cb.checked && cb.closest('tr').style.display !== 'none') {
           out.push(cb.dataset.code);
         }
@@ -1099,18 +1098,18 @@
       updateBulkCount();
     }
 
-    // ===== 编辑访客码 =====
+    // ===== Edit guest code =====
 
     function openEditCode(btn) {
       var d = btn.dataset;
       $('edit-code').value = d.code;
       $('edit-code-display').textContent = d.code;
-      $('edit-expires-at').value = d.expires;       // 已经是 datetime-local 格式
+      $('edit-expires-at').value = d.expires;       // Already datetime-local format.
       var durationMin = parseInt(d.durationMin || '1080', 10);
       if (durationMin < 0) durationMin = 0;
       $('edit-duration-h').value = Math.floor(durationMin / 60);
       $('edit-duration-m').value = durationMin % 60;
-      $('edit-max-uses').value = d.maxUses;          // dataset 自动 camelCase
+      $('edit-max-uses').value = d.maxUses;          // dataset auto-camelCases.
       $('edit-note').value = d.note || '';
       openModal('modal-edit');
     }
@@ -1164,7 +1163,7 @@
       b.addEventListener('click', function(e) { if (e.target === b) b.classList.remove('active'); });
     });
 
-    // ===== 限流管理 =====
+    // ===== Rate-limit management =====
 
     function createDeniedMAC(mac, reason, reload) {
       var fd = new FormData();
@@ -1252,7 +1251,7 @@
       var now = body.now_unix;
       var rows = [];
 
-      // IP 冷却 (最紧急, 排最前)
+      // IP cooldowns are most urgent, so show first.
       (body.ip_bans || []).forEach(function(b) {
         var remain = b.expires_unix - now;
         var label = b.permanent
@@ -1271,7 +1270,7 @@
         });
       });
 
-      // 曾被封但当前没在封的 IP — 显示历史次数, 方便 admin 观察"累犯"
+      // IPs banned before but not currently banned; show history counts for repeat-offender review.
       var activeIPs = {};
       (body.ip_bans || []).forEach(function(b) { activeIPs[b.ip] = 1; });
       Object.keys(body.ban_history || {}).forEach(function(ip) {
@@ -1287,7 +1286,7 @@
         });
       });
 
-      // 邮箱失败计数
+      // Email failure counts.
       (body.email_fails || []).forEach(function(e) {
         var exceedShort = e.count >= th.email_short;
         var exceedLong = e.count >= th.email_long;
@@ -1301,7 +1300,7 @@
         });
       });
 
-      // MAC 失败计数
+      // MAC failure counts.
       (body.guest_mac_fails || []).forEach(function(m) {
         var exceed = m.count >= th.mac;
         rows.push({
@@ -1315,9 +1314,9 @@
         });
       });
 
-      // IP 失败计数 (非封禁)
+      // IP failure counts, excluding bans.
       (body.ip_fails || []).forEach(function(i) {
-        // 如果已经在 ip_bans 里出现过, 别重复列
+        // Do not duplicate rows already shown in ip_bans.
         var already = (body.ip_bans || []).some(function(b) { return b.ip === i.key; });
         if (already) return;
         var approaching = i.count >= Math.ceil(th.ip * 0.5);
@@ -1413,11 +1412,11 @@
         .catch(function() { toast(T('admin.toast.netError')); });
     }
 
-    // 首次加载 + 每 15 秒自动刷新
+    // Initial load plus auto-refresh every 15 seconds.
     refreshRL();
     setInterval(refreshRL, 15000);
 
-    // ===== 事件日志 =====
+    // ===== Event log =====
 
     function buildEventQuery() {
       var p = new URLSearchParams();
@@ -1449,11 +1448,11 @@
           var methodLabel = { sso: T('admin.events.method.sso'), duo: T('admin.events.method.duo'), guest_code: T('admin.events.method.guestCode'), admin: T('admin.events.method.admin') };
           var resultLabel = { started: T('admin.events.result.started'), success: T('admin.events.result.success'), denied: T('admin.events.result.denied'), rate_limited: T('admin.events.result.rateLimited'), error: T('admin.events.result.error') };
           var kindLabel = { login: T('admin.events.kind.login'), admin_action: T('admin.events.kind.adminAction') };
-          // 缓存当前批次, 详情按钮点了直接从这里取, 不用再查 server.
+          // Cache the current batch so detail buttons can read locally without querying server again.
           window.__lastEvents = b.events;
           b.events.forEach(function(e, idx) {
             var tr = document.createElement('tr');
-            // detail 截断到 60 字符 + 一个 info 按钮打开完整详情 (modal).
+            // Truncate detail to 60 chars and add an info button that opens full detail in a modal.
             var detailShort = (e.detail || '');
             if (detailShort.length > 60) detailShort = detailShort.substring(0, 60) + '…';
             var detailCell = e.detail
@@ -1517,13 +1516,13 @@
       window.__evSubjectT = setTimeout(refreshEvents, 300);
     });
 
-    // 事件日志每 30 秒自动刷新 (只在对应 tab 活动时才刷)
+    // Auto-refresh event log every 30 seconds, only while its tab is active.
     setInterval(function() {
       var ev = document.getElementById('section-events');
       if (ev && ev.classList.contains('active')) refreshEvents();
     }, 30000);
 
-    // ===== Denylist CSV 导入 =====
+    // ===== Denylist CSV import =====
 
     function importDenylistCSV(input) {
       if (!input.files || !input.files[0]) return;
@@ -1532,7 +1531,7 @@
       fetch('/admin/denylist/import', { method: 'POST', body: fd, credentials: 'same-origin' })
         .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, body: b }; }); })
         .then(function(res) {
-          input.value = ''; // 重置 file input, 允许再次选同一个文件
+          input.value = ''; // Reset file input so the same file can be selected again.
           if (res.ok && res.body.ok) {
             var msg = T('admin.toast.imported', res.body.imported, res.body.skipped);
             if (res.body.errors && res.body.errors.length) {

@@ -1,10 +1,10 @@
 package main
 
 // session.go
-// 两种签名 cookie:
-//   - kz_wifi_sess   短命 (15 分钟), 撑 OIDC round-trip (Entra 或 Duo Universal Prompt)
-//   - kz_admin_sess  较长 (1 小时), admin 登录后访问 /admin 用
-// 都是 HMAC-SHA256 签名的 JSON, 不加密.
+// Two signed cookies:
+//   - kz_wifi_sess   short-lived (15 minutes), used for OIDC round-trips.
+//   - kz_admin_sess  longer-lived (1 hour), used after admin login for /admin.
+// Both are HMAC-SHA256-signed JSON and are not encrypted.
 
 import (
 	"crypto/hmac"
@@ -27,12 +27,12 @@ const (
 	adminSessionTTL   = time.Hour
 )
 
-// Session: state/nonce 可被 Entra 或 Duo 任一 OAuth 流程复用.
-// Email 在用户提交邮箱后填入 (/auth/start 写).
-// Purpose 决定 /auth/callback (Entra 回调) 或 /auth/duo-callback (Duo 回调) 之后干什么:
+// Session state/nonce can be reused by either Entra or Duo OAuth flows.
+// Email is populated after the user submits it in /auth/start.
+// Purpose decides what happens after /auth/callback or /auth/duo-callback:
 //
-//	""/"wifi"  → 放行 iKuai
-//	"admin"    → 验 admin UPN 后写 admin cookie
+//	""/"wifi"  -> allow-list in iKuai
+//	"admin"    -> verify admin UPN and write the admin cookie
 type Session struct {
 	UserIP  string `json:"user_ip,omitempty"`
 	MAC     string `json:"mac,omitempty"`
@@ -64,7 +64,7 @@ func newSession(userIP, mac, lang string) (Session, error) {
 	}, nil
 }
 
-// newAdminPreloginSession: /admin/login → Entra 的 round-trip, 不带 IP/MAC.
+// newAdminPreloginSession is the /admin/login -> Entra round-trip and does not include IP/MAC.
 func newAdminPreloginSession(lang string) (Session, error) {
 	state, err := randomHex(16)
 	if err != nil {
@@ -161,9 +161,8 @@ func writeAdminCookie(w http.ResponseWriter, secret []byte, s AdminSession, secu
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   secure,
-		// admin 不需要跨站发起请求 — 用 Strict 比 Lax 更严, 阻断跨站 form POST
-		// 类 CSRF (受害者 admin 在另一个 tab 访问攻击页, <form action=...> 自动 submit
-		// 即可触发 admin 操作). 配合 requireAdmin 里的 Origin 校验做双保险.
+		// Admin does not need cross-site request initiation. Strict is stronger than Lax and blocks
+		// cross-site form POST CSRF; requireAdmin Origin checks provide a second layer.
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(adminSessionTTL.Seconds()),
 	})
@@ -208,7 +207,7 @@ func clearAdminCookie(w http.ResponseWriter, secure bool) {
 	})
 }
 
-// --- 密码学小工具 ---
+// --- Crypto helpers ---
 
 func sign(secret []byte, data string) string {
 	m := hmac.New(sha256.New, secret)

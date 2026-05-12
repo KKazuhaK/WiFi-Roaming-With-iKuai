@@ -1,16 +1,16 @@
 package main
 
 // session_test.go
-// HMAC 签名 cookie 的安全语义:
-//   - sign+verify 走通
-//   - 用错的 secret 验签必失败 (防签名伪造)
-//   - 篡改 payload 必失败
-//   - 篡改 sig 必失败
-//   - 过期必失败
-//   - cookie 格式错乱必失败
-//   - admin cookie 跟 wifi cookie 用同一签名机制 (复用)
+// Security semantics for HMAC-signed cookies:
+//   - sign+verify succeeds.
+//   - verification with the wrong secret fails, preventing signature forgery.
+//   - tampered payload fails.
+//   - tampered sig fails.
+//   - expired cookie fails.
+//   - malformed cookie fails.
+//   - admin and wifi cookies reuse the same signing mechanism.
 //
-// 这些是攻击者在偷不到 SESSION_SECRET 时唯一能尝试的攻击面.
+// These are the only attack surfaces left when attackers do not have SESSION_SECRET.
 
 import (
 	"encoding/base64"
@@ -24,15 +24,15 @@ import (
 
 func testSecret(t *testing.T) []byte {
 	t.Helper()
-	// 32 bytes 随机. 测试间互相隔离.
+	// 32 random bytes; isolated across tests.
 	return []byte("\x00\x01\x02\x03\x04\x05\x06\x07" +
 		"\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f" +
 		"\x10\x11\x12\x13\x14\x15\x16\x17" +
 		"\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f")
 }
 
-// roundTrip 把 session 写进 ResponseRecorder 的 cookie, 再把 cookie 头复制
-// 到一个新 Request 上读回, 模拟浏览器一来一回.
+// roundTrip writes a session cookie into ResponseRecorder, copies it to a new request, and reads it
+// back to simulate a browser request/response round-trip.
 func roundTrip(t *testing.T, secret []byte, sess Session) (Session, error) {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -73,7 +73,7 @@ func TestSession_RoundTrip(t *testing.T) {
 func TestSession_WrongSecretRejected(t *testing.T) {
 	secret := testSecret(t)
 	other := append([]byte(nil), secret...)
-	other[0] ^= 0xff // 改 1 byte 即不同 key
+	other[0] ^= 0xff // Changing one byte makes a different key.
 
 	rec := httptest.NewRecorder()
 	if err := writeSessionCookie(rec, secret, Session{
@@ -109,7 +109,7 @@ func TestSession_TamperedPayloadRejected(t *testing.T) {
 		t.Fatalf("malformed cookie: %q", cookies[0].Value)
 	}
 
-	// 解码 payload, 改 IP, 重新编码 — 模拟攻击者改 cookie 内容但保留原 sig.
+	// Decode payload, change IP, and re-encode to simulate tampering while keeping original sig.
 	body, _ := base64.RawURLEncoding.DecodeString(parts[0])
 	var s Session
 	_ = json.Unmarshal(body, &s)
@@ -135,7 +135,7 @@ func TestSession_TamperedSigRejected(t *testing.T) {
 
 	cookies := rec.Result().Cookies()
 	parts := strings.SplitN(cookies[0].Value, ".", 2)
-	// 翻转 sig 第一个 hex 字符
+	// Flip the first hex character in sig.
 	var flip byte = '0'
 	if parts[1][0] != '0' {
 		flip = '0'
@@ -166,13 +166,13 @@ func TestSession_ExpiredRejected(t *testing.T) {
 func TestSession_MalformedRejected(t *testing.T) {
 	secret := testSecret(t)
 	cases := []string{
-		"",             // 空
-		"abc",          // 没有点分隔
-		"abc.def.ghi",  // 多个点
-		".sigonly",     // 空 payload
-		"payloadonly.", // 空 sig
-		"!!!.@@@",      // 不是合法 base64
-		"YWJj.0",       // 合法 base64 + 1 字符 sig (不可能匹配)
+		"",             // Empty.
+		"abc",          // No dot separator.
+		"abc.def.ghi",  // Multiple dots.
+		".sigonly",     // Empty payload.
+		"payloadonly.", // Empty sig.
+		"!!!.@@@",      // Invalid base64.
+		"YWJj.0",       // Valid base64 plus 1-char sig, impossible to match.
 	}
 	for _, val := range cases {
 		r, _ := http.NewRequest("GET", "/", nil)
@@ -247,7 +247,7 @@ func TestAdminSession_WrongSecretRejected(t *testing.T) {
 }
 
 func TestAdminSession_StrictSameSite(t *testing.T) {
-	// H4 修复: admin cookie 改成 SameSite=Strict, 防 admin POST 被跨站 form 触发.
+	// H4 fix: admin cookie uses SameSite=Strict to stop admin POST from cross-site forms.
 	rec := httptest.NewRecorder()
 	_ = writeAdminCookie(rec, testSecret(t), AdminSession{
 		UPN: "x@y", Exp: time.Now().Add(time.Hour).Unix(),
@@ -266,8 +266,8 @@ func TestAdminSession_StrictSameSite(t *testing.T) {
 }
 
 func TestSessionCookie_LaxSameSite(t *testing.T) {
-	// wifi session cookie 必须保持 Lax — Entra/Duo 跨站回跳后浏览器要带回 cookie
-	// 才能验 state/nonce. 改 Strict 会让所有 OIDC round-trip 失败.
+	// Wifi session cookie must stay Lax; Entra/Duo cross-site callbacks need the browser to send it
+	// for state/nonce validation. Strict would break every OIDC round-trip.
 	rec := httptest.NewRecorder()
 	_ = writeSessionCookie(rec, testSecret(t), Session{
 		State: "x", Nonce: "y",
@@ -281,7 +281,7 @@ func TestSessionCookie_LaxSameSite(t *testing.T) {
 }
 
 func TestNewSession_RandomState(t *testing.T) {
-	// state 必须每次不同 — 否则 OIDC CSRF 防护就废了.
+	// state must differ each time, or OIDC CSRF protection is useless.
 	a, err := newSession("ip", "mac", "zh-cn")
 	if err != nil {
 		t.Fatal(err)

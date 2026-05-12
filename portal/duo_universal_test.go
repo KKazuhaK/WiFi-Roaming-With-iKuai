@@ -11,9 +11,8 @@ import (
 )
 
 // helper: build a JWT with arbitrary claims, signed with the given secret.
-// 故意手写而不复用 signJWTHS512 — 测试要能构造不带 exp 的非法 token,
-// 而 signJWTHS512 不会主动剔 exp; 但日后如果 signJWTHS512 改成强制注入 exp,
-// 测试也不能跟着崩.
+// Intentionally hand-written instead of reusing signJWTHS512: tests need to construct invalid tokens
+// without exp. If signJWTHS512 later starts injecting exp, these tests should remain independent.
 func mintTestJWT(t *testing.T, claims map[string]any, secret string) string {
 	t.Helper()
 	header := map[string]string{"alg": "HS512", "typ": "JWT"}
@@ -34,7 +33,7 @@ func mintTestJWT(t *testing.T, claims map[string]any, secret string) string {
 
 func TestVerifyJWTHS512_RejectsMissingExp(t *testing.T) {
 	secret := "test-secret-do-not-use-in-prod"
-	// 故意不带 exp 字段
+	// Intentionally omit exp.
 	tok := mintTestJWT(t, map[string]any{
 		"iss": "client-id",
 		"aud": "client-id",
@@ -49,7 +48,7 @@ func TestVerifyJWTHS512_RejectsMissingExp(t *testing.T) {
 
 func TestVerifyJWTHS512_RejectsNonNumericExp(t *testing.T) {
 	secret := "test-secret-do-not-use-in-prod"
-	// exp 是字符串 — 旧实现 type assertion 失败后悄无声息走过, 现在必须拒
+	// exp is a string. The old implementation silently skipped this after type assertion failure.
 	tok := mintTestJWT(t, map[string]any{
 		"iss": "client-id",
 		"aud": "client-id",
@@ -78,7 +77,7 @@ func TestVerifyJWTHS512_AcceptsValidExp(t *testing.T) {
 	}
 }
 
-// --- readBoundedBody (审计 #13 — io.ReadAll 无上限) ---
+// --- readBoundedBody (audit #13: unbounded io.ReadAll) ---
 
 func TestReadBoundedBody_UnderLimit(t *testing.T) {
 	r := strings.NewReader("small payload")
@@ -92,7 +91,7 @@ func TestReadBoundedBody_UnderLimit(t *testing.T) {
 }
 
 func TestReadBoundedBody_AtLimit(t *testing.T) {
-	// 恰好等于上限 — 必须读完, 不报错
+	// Exactly at the limit must read fully without error.
 	payload := strings.Repeat("x", 1024)
 	got, err := readBoundedBody(strings.NewReader(payload), 1024)
 	if err != nil {
@@ -104,8 +103,8 @@ func TestReadBoundedBody_AtLimit(t *testing.T) {
 }
 
 func TestReadBoundedBody_OverLimitRejected(t *testing.T) {
-	// 多出 1 byte → 报错而非默默截断 (静默截断会破坏 JSON parse,
-	// 错误信息也不指向真因, 排查 painful).
+	// One byte over the limit must error rather than silently truncating; truncation would break JSON
+	// parsing with a misleading error.
 	payload := strings.Repeat("x", 1025)
 	if _, err := readBoundedBody(strings.NewReader(payload), 1024); err == nil {
 		t.Fatalf("expected error when body exceeds limit, got nil")
@@ -114,7 +113,7 @@ func TestReadBoundedBody_OverLimitRejected(t *testing.T) {
 
 func TestVerifyJWTHS512_RejectsExpiredExp(t *testing.T) {
 	secret := "test-secret-do-not-use-in-prod"
-	// 1 小时前过期, 远超 30 秒容错窗口
+	// Expired one hour ago, far beyond the 30-second leeway.
 	tok := mintTestJWT(t, map[string]any{
 		"iss": "client-id",
 		"aud": "client-id",

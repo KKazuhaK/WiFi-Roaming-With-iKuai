@@ -1,8 +1,8 @@
 package main
 
 // regressions_test.go
-// 第二轮审计 (功能性 bug + perf) 的回归测试. 写在修复**之前**, 确认它们会失败,
-// 修完应该全 PASS. 按 finding 编号注释.
+// Regression tests from the second audit round (functional bugs + performance). They were written
+// before fixes to confirm failures, and should all pass after fixes. Comments use finding IDs.
 
 import (
 	"bytes"
@@ -19,16 +19,16 @@ import (
 )
 
 // ============================================================================
-// C1: GuestCodeStore.List() 返回内部 *GuestCode 指针, race 与 Validate
-// 通过 race detector 跑这个测试 (`go test -race`) 会爆出来.
-// 修复后 List 应返回值副本, 调用方读 Uses 不会再 race.
+// C1: GuestCodeStore.List() returned internal *GuestCode pointers and raced with Validate.
+// Running this under the race detector should catch the old behavior. After the fix, List returns
+// value copies and callers can read Uses without racing.
 // ============================================================================
 
 func TestC1_ListReturnsCopiesNotInternalPointers(t *testing.T) {
 	s, _ := newGuestCodeStore("")
 	s.Add(&GuestCode{Code: "abc", CreatedAt: time.Now(), MaxUses: 100})
 
-	// List 拿到的对象修改, 不应影响 store 内部.
+	// Mutating objects returned by List must not affect store internals.
 	got := s.List()
 	if len(got) != 1 {
 		t.Fatalf("len = %d", len(got))
@@ -36,7 +36,7 @@ func TestC1_ListReturnsCopiesNotInternalPointers(t *testing.T) {
 	got[0].Code = "MUTATED"
 	got[0].Note = "mutated by caller"
 
-	// 重新 List, 应该看到原始值
+	// Listing again should show the original value.
 	again := s.List()
 	if again[0].Code != "abc" {
 		t.Errorf("List leaked internal pointer: caller mutation propagated, code = %q",
@@ -48,16 +48,16 @@ func TestC1_ListReturnsCopiesNotInternalPointers(t *testing.T) {
 	}
 }
 
-// TestC1_ConcurrentValidateAndList: 这是真正会触发 race detector 的测试.
-// 跑 `go test -race -run TestC1_ConcurrentValidateAndList` 修复前应该 fail.
+// TestC1_ConcurrentValidateAndList is the test that actually triggers the race detector.
+// Before the fix, `go test -race -run TestC1_ConcurrentValidateAndList` should fail.
 func TestC1_ConcurrentValidateAndList(t *testing.T) {
 	s, _ := newGuestCodeStore("")
-	s.Add(&GuestCode{Code: "code1", CreatedAt: time.Now(), MaxUses: 0}) // 不限次
+	s.Add(&GuestCode{Code: "code1", CreatedAt: time.Now(), MaxUses: 0}) // Unlimited uses.
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 
-	// 多个 goroutine 反复 Validate (写 Uses)
+	// Multiple goroutines repeatedly Validate, writing Uses.
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {
@@ -73,7 +73,7 @@ func TestC1_ConcurrentValidateAndList(t *testing.T) {
 		}()
 	}
 
-	// 多个 goroutine 反复 List + 读 Uses (模拟 renderAdmin 路径)
+	// Multiple goroutines repeatedly List and read Uses, simulating renderAdmin.
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {
@@ -103,7 +103,7 @@ func TestC1_ConcurrentValidateAndList(t *testing.T) {
 }
 
 // ============================================================================
-// C2: EventLog Append vs Prune 重复落盘
+// C2: EventLog Append vs Prune duplicate disk writes.
 // ============================================================================
 
 func TestC2_AppendDuringPruneDoesNotDuplicateOnDisk(t *testing.T) {
@@ -114,13 +114,13 @@ func TestC2_AppendDuringPruneDoesNotDuplicateOnDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 准备一个会被 Prune 跨过去的旧事件
+	// Prepare an old event that Prune will cross.
 	e.Append(Event{Time: time.Now().Add(-2 * time.Hour), Subject: "OLD", Kind: KindLogin})
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 
-	// 频繁 Append
+	// Frequent Append.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -136,7 +136,7 @@ func TestC2_AppendDuringPruneDoesNotDuplicateOnDisk(t *testing.T) {
 		}
 	}()
 
-	// 频繁 Prune (模拟 gcLoop 跑的频率)
+	// Frequent Prune, simulating gcLoop cadence.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -155,11 +155,11 @@ func TestC2_AppendDuringPruneDoesNotDuplicateOnDisk(t *testing.T) {
 	close(stop)
 	wg.Wait()
 
-	// 内存里和文件里的事件计数应该一致 (允许某些 in-flight 落差,
-	// 但绝不应该出现"文件里事件 > 内存里事件"的情况, 那是 dup 的信号)
+	// Event counts in memory and file should be consistent. Some in-flight gap is allowed, but the
+	// file must never have more events than memory because that signals duplicates.
 	memEvents := e.Query(EventQueryFilter{})
 
-	// 解析文件计数事件行数
+	// Count event lines in the file.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -167,26 +167,26 @@ func TestC2_AppendDuringPruneDoesNotDuplicateOnDisk(t *testing.T) {
 	fileLines := bytes.Count(data, []byte{'\n'})
 
 	if fileLines > len(memEvents)+5 {
-		// +5 容忍 in-flight (Append 解锁但还没写文件)
+		// +5 tolerates in-flight Appends that unlocked before writing.
 		t.Errorf("file has %d lines but memory has %d events — likely duplicate writes from Append/Prune race",
 			fileLines, len(memEvents))
 	}
 }
 
 // ============================================================================
-// C3: Status() 把 partial-use 码当 inactive 删除
+// C3: Status() treated partial-use codes as inactive and deleted them.
 // ============================================================================
 
 func TestC3_DeleteInactivePreservesPartiallyUsedMultiUseCode(t *testing.T) {
 	s, _ := newGuestCodeStore("")
-	// MaxUses=3, 已用 1 次 — 还能用 2 次
+	// MaxUses=3, used once, so two uses remain.
 	s.Add(&GuestCode{
 		Code:      "multi-use",
 		CreatedAt: time.Now(),
 		MaxUses:   3,
 		Uses:      []CodeUse{{At: time.Now(), MAC: "aa"}},
 	})
-	// 一个真正用尽的码
+	// One truly exhausted code.
 	s.Add(&GuestCode{
 		Code:      "exhausted",
 		CreatedAt: time.Now(),
@@ -199,16 +199,16 @@ func TestC3_DeleteInactivePreservesPartiallyUsedMultiUseCode(t *testing.T) {
 		t.Errorf("DeleteInactive removed %d codes, want 1 (only exhausted)", n)
 	}
 
-	// multi-use 码必须保留 — 它还能用
+	// Multi-use code must remain because it is still usable.
 	if s.Validate("multi-use", "m", "i", "g") == nil {
 		t.Error("multi-use code with remaining uses must NOT be deleted by DeleteInactive")
 	}
 }
 
 // ============================================================================
-// C4: banHistory 异步 flush — 高频 increment 不应阻塞热路径
-// 不能直接测 "异步" 行为, 但可以测: increment 不再每次都触发文件 mtime 更新.
-// 修复后, 100 次 increment 在 < 100ms 应只看到 1-2 次文件写.
+// C4: banHistory async flush; high-frequency increment should not block hot paths.
+// Async behavior cannot be tested directly, but increment should no longer update file mtime each time.
+// After the fix, 100 increments in <100ms should show only 1-2 file writes.
 // ============================================================================
 
 func TestC4_BanHistoryDoesNotWriteOnEveryIncrement(t *testing.T) {
@@ -218,22 +218,22 @@ func TestC4_BanHistoryDoesNotWriteOnEveryIncrement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer bh.shutdown() // 修复后 banHistory 加 shutdown 关闭 flusher
+	defer bh.shutdown() // After the fix, banHistory has shutdown to stop the flusher.
 
-	// 100 次 increment
+	// 100 increments.
 	start := time.Now()
 	for i := 0; i < 100; i++ {
 		bh.increment("1.1.1.1")
 	}
 	elapsed := time.Since(start)
 
-	// 修复前: 每次都同步写整个文件, 100 次 ≥ 几 ms × 100 = 几百 ms
-	// 修复后: 只标记 dirty, 100 次应在 < 10ms 完成
+	// Before fix: every increment synchronously wrote the whole file.
+	// After fix: only marks dirty, so 100 increments should finish quickly.
 	if elapsed > 50*time.Millisecond {
 		t.Errorf("100 increments took %v, want < 50ms (sign of sync writes per increment)", elapsed)
 	}
 
-	// 确认 increment 自己仍然返回正确的 count
+	// Confirm increment itself still returns the correct count.
 	if got := bh.get("1.1.1.1"); got != 100 {
 		t.Errorf("get = %d, want 100", got)
 	}
@@ -252,7 +252,7 @@ func TestC4_BanHistoryFlushesOnShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 重开应该读回 2
+	// Reopen should read back 2.
 	bh2, err := newBanHistory(path)
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestC4_BanHistoryFlushesOnShutdown(t *testing.T) {
 }
 
 // ============================================================================
-// H1/H2/H3: 批量操作只 saveLocked 一次 — 我们用文件 mtime 间接验证
+// H1/H2/H3: batch operations should call saveLocked once, verified indirectly via file mtime.
 // ============================================================================
 
 func TestH1_DeleteBulkDoesNotRewriteFilePerCode(t *testing.T) {
@@ -274,10 +274,10 @@ func TestH1_DeleteBulkDoesNotRewriteFilePerCode(t *testing.T) {
 		s.Add(&GuestCode{Code: "code" + intToStr(i), CreatedAt: time.Now()})
 	}
 
-	// 记录修改前 mtime
+	// Record mtime before modification.
 	stat1, _ := os.Stat(path)
 
-	// 批量删 30 条
+	// Batch-delete 30 entries.
 	codes := []string{}
 	for i := 0; i < 30; i++ {
 		codes = append(codes, "code"+intToStr(i))
@@ -287,13 +287,13 @@ func TestH1_DeleteBulkDoesNotRewriteFilePerCode(t *testing.T) {
 		t.Errorf("DeleteMany = %d, want 30", n)
 	}
 
-	// 应该只有 1 次文件 mtime 变更 — 我们没法直接测次数, 但可以测最终状态
+	// There should be one file mtime change. We cannot directly count writes, so verify final state.
 	stat2, _ := os.Stat(path)
 	if !stat2.ModTime().After(stat1.ModTime()) {
 		t.Error("file should have been touched")
 	}
 
-	// 重新加载验证一致
+	// Reload and verify consistency.
 	s2, err := newGuestCodeStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -308,7 +308,7 @@ func TestH3_AddManyDoesNotRewriteFilePerCode(t *testing.T) {
 	path := filepath.Join(dir, "guest-codes.json")
 	s, _ := newGuestCodeStore(path)
 
-	// 放 100 个码到 store, 用 AddMany 一次性
+	// Put 100 codes into the store with one AddMany call.
 	codes := make([]*GuestCode, 100)
 	for i := 0; i < 100; i++ {
 		codes[i] = &GuestCode{Code: "bulk-" + intToStr(i), CreatedAt: time.Now()}
@@ -325,7 +325,7 @@ func TestH3_AddManyDoesNotRewriteFilePerCode(t *testing.T) {
 }
 
 // ============================================================================
-// H7: handleCodeEdit 应允许填过去的 ExpiresAt (admin 想强制让码过期)
+// H7: handleCodeEdit should allow past ExpiresAt so admins can force-expire a code.
 // ============================================================================
 
 func TestH7_EditAcceptsPastExpiry(t *testing.T) {
@@ -350,7 +350,7 @@ func TestH7_EditAcceptsPastExpiry(t *testing.T) {
 			w.Code, w.Body.String())
 	}
 
-	// 该码现在应该 IsExpired
+	// The code should now be expired.
 	got := app.guestCodes.List()
 	if len(got) != 1 {
 		t.Fatalf("want 1 code, got %d", len(got))
@@ -361,28 +361,28 @@ func TestH7_EditAcceptsPastExpiry(t *testing.T) {
 }
 
 // ============================================================================
-// M1: Stats() 把半使用多次性码归 used, 跟 Dashboard.ActiveGuestCodes 计数不一致.
-// 修复后 Stats.unused 应等于 IsActive() 的码数, Dashboard 用同一标准.
+// M1: Stats() counted partially used multi-use codes as used, disagreeing with Dashboard.ActiveGuestCodes.
+// After the fix, Stats.unused equals the number of IsActive() codes and the dashboard uses that standard.
 // ============================================================================
 
 func TestM1_StatsAlignsWithDashboardActive(t *testing.T) {
 	s, _ := newGuestCodeStore("")
 	s.Add(&GuestCode{Code: "fresh", CreatedAt: time.Now()})                                          // unused, IsActive
-	s.Add(&GuestCode{Code: "partial", MaxUses: 5, Uses: []CodeUse{{}}, CreatedAt: time.Now()})       // 半用, IsActive
-	s.Add(&GuestCode{Code: "exhausted", MaxUses: 1, Uses: []CodeUse{{}}, CreatedAt: time.Now()})     // 用尽
-	s.Add(&GuestCode{Code: "expired", ExpiresAt: time.Now().Add(-time.Hour), CreatedAt: time.Now()}) // 过期
+	s.Add(&GuestCode{Code: "partial", MaxUses: 5, Uses: []CodeUse{{}}, CreatedAt: time.Now()})       // Partially used, IsActive.
+	s.Add(&GuestCode{Code: "exhausted", MaxUses: 1, Uses: []CodeUse{{}}, CreatedAt: time.Now()})     // Exhausted.
+	s.Add(&GuestCode{Code: "expired", ExpiresAt: time.Now().Add(-time.Hour), CreatedAt: time.Now()}) // Expired.
 	s.Add(&GuestCode{Code: "expired-and-used", MaxUses: 1, Uses: []CodeUse{{}}, ExpiresAt: time.Now().Add(-time.Hour), CreatedAt: time.Now()})
 
 	total, used, unused, expired := s.Stats()
 	if total != 5 {
 		t.Errorf("total = %d, want 5", total)
 	}
-	// "unused" 应该是"还能用的" (== IsActive 数). 这里 fresh + partial = 2.
+	// "unused" should mean still usable (IsActive count). Here fresh + partial = 2.
 	if unused != 2 {
 		t.Errorf("unused = %d, want 2 (fresh+partial — both IsActive)", unused)
 	}
 
-	// Dashboard 用 IsActive() 算 active. Stats.unused 必须等于 active 数.
+	// Dashboard uses IsActive() for active count. Stats.unused must match active count.
 	activeCount := 0
 	for _, c := range s.List() {
 		if c.IsActive() {
@@ -393,7 +393,7 @@ func TestM1_StatsAlignsWithDashboardActive(t *testing.T) {
 		t.Errorf("M1 不一致: Stats.unused=%d vs Dashboard active count=%d", unused, activeCount)
 	}
 
-	// expired 包括 "expired" 和 "expired-and-used" (过期优先)
+	// expired includes "expired" and "expired-and-used"; expiration wins.
 	if expired != 2 {
 		t.Errorf("expired = %d, want 2", expired)
 	}
@@ -404,9 +404,8 @@ func TestM1_StatsAlignsWithDashboardActive(t *testing.T) {
 }
 
 // ============================================================================
-// M5: matchEvent 在 Query 循环里每次 strings.ToLower(filter.Subject) 浪费.
-// 修复后 filter.Subject 在 Query 入口 lower 一次. 这里测**过滤结果不变**,
-// 性能差异不能直接测 (机器抖动太大).
+// M5: matchEvent wasted work by calling strings.ToLower(filter.Subject) inside the Query loop.
+// After the fix, Query lowers filter.Subject once. This tests unchanged filtering behavior; perf is noisy.
 // ============================================================================
 
 func TestM5_QuerySubjectFilterCaseInsensitive(t *testing.T) {
@@ -435,10 +434,9 @@ func TestM5_QuerySubjectFilterCaseInsensitive(t *testing.T) {
 }
 
 // ============================================================================
-// M8: /auth/start 中 proceedStore.put 失败时, 之前已经 record(email) 不应留下.
-// 修复后调换顺序 — 先 put, put 成功后才 record. 没法直接 mock put 失败 (需要
-// rand 失败), 但可以测调用顺序: 当 put 成功时 record 也被调; 修复正确性靠
-// code review 保证不会调换错.
+// M8: /auth/start must not leave a record(email) entry if proceedStore.put fails.
+// The fix puts first and records only after put succeeds. rand failure is hard to mock directly, so
+// this tests the success path and code review preserves ordering.
 // ============================================================================
 
 func TestM8_AuthStartRecordsAfterProceedStorePut(t *testing.T) {
@@ -450,7 +448,7 @@ func TestM8_AuthStartRecordsAfterProceedStorePut(t *testing.T) {
 		Exp: time.Now().Add(time.Minute).Unix(),
 	}, false)
 
-	// 正常路径: put 不会失败. 记完应该看到 record.
+	// Normal path: put does not fail and record should be visible afterward.
 	form := url.Values{"email": {"alice@example.com"}}
 	r, _ := http.NewRequest("POST", "/auth/start", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -462,11 +460,11 @@ func TestM8_AuthStartRecordsAfterProceedStorePut(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
-	// record 应该已发生
+	// record should have happened.
 	if got := app.authEmailFails.countIn("alice@example.com", time.Hour); got != 1 {
 		t.Errorf("expected 1 fail recorded, got %d", got)
 	}
-	// proceedStore 应该有 1 条
+	// proceedStore should have one entry.
 	app.proceedStore.mu.Lock()
 	storeCount := len(app.proceedStore.entries)
 	app.proceedStore.mu.Unlock()
@@ -476,7 +474,7 @@ func TestM8_AuthStartRecordsAfterProceedStorePut(t *testing.T) {
 }
 
 // ============================================================================
-// H6: 多个 Count 一次扫多过滤. 验证 MultiCount 结果与多次 Count 等价.
+// H6: count several filters in one scan. Verify MultiCount equals repeated Count calls.
 // ============================================================================
 
 func TestH6_MultiCountMatchesIndividualCounts(t *testing.T) {
@@ -510,14 +508,14 @@ func TestH6_MultiCountMatchesIndividualCounts(t *testing.T) {
 }
 
 // ============================================================================
-// M6: NTP 跳回时, events 切片不再单调时间序. matchEvent 倒序遍历 + early break
-// (依赖时间单调) 会漏算. 修复: Query/Count 不依赖时间序, 完整扫.
+// M6: when NTP moves backward, events are no longer monotonic. Reverse traversal with early break
+// relied on monotonic time and missed matches. Fix: Query/Count scan fully without time-order assumptions.
 // ============================================================================
 
 func TestM6_QueryHandlesOutOfOrderTimes(t *testing.T) {
 	e, _ := newEventLog("", time.Hour)
 	now := time.Now()
-	// 模拟 NTP 跳回: 先写 t1, 再写 t0 (t0 < t1)
+	// Simulate NTP moving backward: write t1, then t0 (t0 < t1).
 	e.Append(Event{Time: now, Subject: "later", Kind: KindLogin})
 	e.Append(Event{Time: now.Add(-time.Minute), Subject: "earlier", Kind: KindLogin})
 	e.Append(Event{Time: now.Add(time.Second), Subject: "newest", Kind: KindLogin})
@@ -527,10 +525,10 @@ func TestM6_QueryHandlesOutOfOrderTimes(t *testing.T) {
 		t.Errorf("Query out-of-order events: got %d, want 3", len(got))
 	}
 
-	// 时间窗口过滤也要正确, 即使内存里乱序
+	// Time-window filtering must be correct even if memory order is scrambled.
 	since := now.Add(-30 * time.Second)
 	got = e.Query(EventQueryFilter{Since: since})
-	// "earlier" (now-1min) 不应出现, "later" 和 "newest" 应该出现
+	// "earlier" (now-1min) should not appear; "later" and "newest" should appear.
 	for _, ev := range got {
 		if ev.Subject == "earlier" {
 			t.Error("earlier event should be filtered by Since")
@@ -542,33 +540,32 @@ func TestM6_QueryHandlesOutOfOrderTimes(t *testing.T) {
 }
 
 // ============================================================================
-// L6: IPBanEscalateAt = 0 时 banHistory.increment 应被 short-circuit, 不消耗 dirty 写盘.
+// L6: IPBanEscalateAt = 0 should short-circuit banHistory.increment and avoid dirty disk writes.
 // ============================================================================
 
 func TestL6_DisablesBanHistoryWhenEscalateAtZero(t *testing.T) {
 	app := mkTestApp(t)
-	app.cfg.IPBanEscalateAt = 0 // 显式禁用永久升级
-	app.cfg.IPFailsLimit = 1    // 立即触发冷却
+	app.cfg.IPBanEscalateAt = 0 // Explicitly disable permanent escalation.
+	app.cfg.IPFailsLimit = 1    // Trigger cooldown immediately.
 
 	app.recordIPFailure("3.3.3.3", "test")
 
-	// banHistory 不应该有 entry — 因为 escalate 关了, 历史无意义.
+	// banHistory should not have an entry because escalation is disabled.
 	if got := app.banHistory.get("3.3.3.3"); got != 0 {
 		t.Errorf("banHistory.get with EscalateAt=0 = %d, want 0 (disabled)", got)
 	}
-	// 但短时冷却应仍然生效
+	// Short cooldown should still work.
 	if !app.ipBans.isBanned("3.3.3.3") {
 		t.Error("temporary ban should still trigger even with EscalateAt=0")
 	}
 }
 
 // ============================================================================
-// M9: parseDurationMin 把 duration_min=-1 (用户故意填) 当 fallback, 应返回 0
-// (即"不限时") 而不是 18h default.
+// M9: parseDurationMin should treat duration_min=-1 as 0 (unlimited), not fallback to 18h default.
 // ============================================================================
 
 func TestM9_ParseDurationMinNegativeReturnsZero(t *testing.T) {
-	// 每个 case 新建 Request — r.FormValue 第一次后会 cache r.Form, 后面改 PostForm 不生效.
+	// Create a new Request per case; r.FormValue caches r.Form after first use.
 	mk := func(form map[string][]string) *http.Request {
 		r, _ := http.NewRequest("POST", "/", nil)
 		r.PostForm = form
@@ -613,6 +610,6 @@ func intToStr(i int) string {
 	return out
 }
 
-// 防止 testing 包用不到导致 import 报警 (只在没有 test 用到 json/bytes 时)
+// Keep imports used if no test currently references json/bytes.
 var _ = json.Marshal
 var _ = bytes.NewReader

@@ -1,16 +1,16 @@
 package main
 
 // i18n.go
-// 三语字符串表 + 语言判定. 字符串本体在 portal/i18n/<lang>.json,
-// 启动时 go:embed 烤进二进制, 单例 map 缓存. 模板里通过 T 函数查询,
-// JS 通过 jsonI18N 注入命名空间子集.
+// Trilingual string table and language detection. Strings live in portal/i18n/<lang>.json,
+// are embedded into the binary at build time, and cached in a singleton map. Templates query via T,
+// and JS receives namespace subsets through jsonI18N.
 //
-// 设计取舍:
-//   - 不做 type-safe struct: 字段太多会臃肿, 且现在 admin 那边量级 ~150 条
-//   - 启动期校验所有 lang 必须有所有 key (以 EN 为基准), 缺则 fatal — 把
-//     "type-safe struct 的编译期保证" 退化成"启动期保证"
-//   - 缺 key 运行时 fallback: 当前 lang → EN → key 字面量 (便于定位)
-//   - 不引入复数 / 复杂格式化, 用 fmt.Sprintf 套 %s/%d 就够了
+// Tradeoffs:
+//   - No type-safe struct: there are many fields, and admin already has around 150 strings.
+//   - Startup validates that every language has every EN key; missing keys are fatal. This replaces
+//     compile-time struct guarantees with startup guarantees.
+//   - Runtime fallback for missing keys is current lang -> EN -> literal key for easy diagnosis.
+//   - No pluralization or complex formatting; fmt.Sprintf with %s/%d is enough.
 
 import (
 	"embed"
@@ -34,14 +34,14 @@ const (
 	LangEN   Lang = "en"
 )
 
-// supportedLangs: 启动校验时遍历用. 加新语言只改这一行 + 新加 json 文件.
+// supportedLangs is used during startup validation. Add a language here and add its JSON file.
 var supportedLangs = []Lang{LangZHCN, LangZHTW, LangEN}
 
-// translations[lang][key] = value. 启动后只读, 多 goroutine 并发安全.
+// translations[lang][key] = value. Read-only after startup and safe for concurrent goroutines.
 var translations map[Lang]map[string]string
 
-// loadTranslations: 启动时读所有 i18n/*.json + 校验. 任一失败 fatal.
-// 在 loadConfig 之后、handler 注册之前调用.
+// loadTranslations reads and validates all i18n/*.json files at startup. Any failure is fatal.
+// Call after loadConfig and before handler registration.
 func loadTranslations() {
 	translations = make(map[Lang]map[string]string, len(supportedLangs))
 	for _, l := range supportedLangs {
@@ -56,7 +56,7 @@ func loadTranslations() {
 		}
 		translations[l] = m
 	}
-	// 校验: 以 EN 为 source-of-truth, 其它 lang 必须有所有 key.
+	// Validate: EN is the source of truth; every other language must contain every key.
 	base := translations[LangEN]
 	if base == nil {
 		log.Fatalf("i18n: en.json failed to load")
@@ -82,9 +82,8 @@ func loadTranslations() {
 	log.Printf("i18n: loaded %d langs, %d keys each", len(supportedLangs), len(base))
 }
 
-// T: 按 lang 查 key. 找不到 → fallback 到 EN. 还找不到 → 返回 key 字面量
-// (生产环境如果出现这种情况, key 会原样显示在页面上, 一眼能定位忘加翻译的地方).
-// 有 args 时套 fmt.Sprintf, 字符串里用 %s/%d 占位.
+// T looks up key for lang. Missing keys fall back to EN, then to the literal key so missing
+// translations are visible in production. Args are formatted with fmt.Sprintf using %s/%d.
 func T(lang Lang, key string, args ...any) string {
 	s, ok := translations[lang][key]
 	if !ok {
@@ -99,12 +98,11 @@ func T(lang Lang, key string, args ...any) string {
 	return s
 }
 
-// jsonI18N: 给前端 JS 用. 返回所有以 prefix 开头的 key=value 的 JSON
-// 字符串 (key 去掉 prefix 缩短). 注入方式:
+// jsonI18N is used by frontend JS. It returns a JSON object with every key=value whose key starts
+// with prefix, stripping the prefix to shorten keys. Injection:
 //   <script>window.__I18N = {{ jsonI18N .Lang "admin." }};</script>
-// 然后 JS: __I18N["toast.added"] / __I18N["btn.delete"].
-// 返回 template.JS 而非 string, 让 html/template 不再做转义 (返回值已经是
-// 合法 JSON 文本, 可直接当 JS 表达式).
+// Then JS reads __I18N["toast.added"] / __I18N["btn.delete"].
+// It returns template.JS instead of string so html/template does not escape already-valid JSON.
 func jsonI18N(lang Lang, prefix string) (template.JS, error) {
 	src := translations[lang]
 	if src == nil {

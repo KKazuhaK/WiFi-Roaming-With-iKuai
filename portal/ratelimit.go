@@ -1,16 +1,16 @@
 package main
 
 // ratelimit.go
-// 三套失败计数 / 冷却机制, 全内存, 单容器场景够用:
+// Three in-memory failure-count and cooldown mechanisms, sufficient for a single-container deployment:
 //
-//   failCounter  记时间戳列表, 支持查询任意窗口内的失败次数, 支持成功清零.
-//                用于规则 1 (邮箱双窗口 5m/1h) 和规则 5 (MAC 1h).
+//   failCounter  Stores timestamp lists, supports counts within arbitrary windows, and resets on success.
+//                Used by rule 1 (email dual windows) and rule 5 (MAC).
 //
-//   ipBanList    记 IP → 冷却到期时间, 到期自动失效.
-//                用于规则 6: 单 IP 累计失败超限 → 短时冷却.
+//   ipBanList    Stores IP -> cooldown expiry, with automatic expiry cleanup.
+//                Used by rule 6: failures by one IP over limit -> short cooldown.
 //
-//   clientIP     从反代 header (X-Real-IP / X-Forwarded-For) 提取真实客户端 IP.
-//                Portal 只绑 127.0.0.1, 所有连接都过 Nginx 反代, header 可信.
+//   clientIP     Extracts the real client IP from reverse-proxy headers.
+//                The portal normally binds 127.0.0.1 and all traffic arrives through a trusted proxy.
 
 import (
 	"encoding/json"
@@ -26,17 +26,16 @@ import (
 	"time"
 )
 
-// maxFailCounterEntries 单个 failCounter 容纳的最大 key 数. 防内存增长 DOS:
-// 攻击者用大量伪造 key (邮箱 / 伪造 IP) 灌爆. 触顶后 record 跑同步 prune,
-// 仍满则丢弃最老 key (LRU 近似 — 用 latest 时间戳排序).
+// maxFailCounterEntries caps keys in one failCounter to prevent memory-growth DOS from many forged
+// keys. When full, record prunes synchronously and then evicts the oldest key if still full.
 const maxFailCounterEntries = 100000
 
-// failCounter 每个 key 存一串失败时间戳, 支持 countIn(key, window) 查近 window 次数.
-// 成功时 reset(key) 清零. gcLoop 定期 prune 老时间戳 + 空 key.
+// failCounter stores failure timestamps per key, supports countIn(key, window), and resets on success.
+// gcLoop periodically prunes old timestamps and empty keys.
 type failCounter struct {
 	mu        sync.Mutex
 	entries   map[string][]time.Time
-	maxWindow time.Duration // GC 裁剪依据: 比这老的时间戳全丢
+	maxWindow time.Duration // GC cutoff: timestamps older than this are dropped.
 }
 
 func newFailCounter(maxWindow time.Duration) *failCounter {
@@ -55,8 +54,9 @@ func (c *failCounter) record(key string) {
 	c.entries[key] = append(c.entries[key], time.Now())
 }
 
-// evictOldestLocked: 触顶时同步剔除最老的 key. 先按窗口 prune 一遍 (gcLoop 的活儿)
-// 还满则按"最近一次失败时间最早"剔到 90% 容量. 必须持锁.
+// evictOldestLocked synchronously evicts old keys when capacity is reached. It first performs the
+// same window prune as gcLoop, then evicts keys with the oldest latest-failure time down to 90%.
+// Must be called with the lock held.
 func (c *failCounter) evictOldestLocked() {
 	cutoff := time.Now().Add(-c.maxWindow)
 	for k, ts := range c.entries {
@@ -96,7 +96,7 @@ func (c *failCounter) evictOldestLocked() {
 	}
 }
 
-// countIn 返回近 window 时间内该 key 的失败次数.
+// countIn returns the number of failures for key within the recent window.
 func (c *failCounter) countIn(key string, window time.Duration) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -120,7 +120,7 @@ func (c *failCounter) reset(key string) {
 	delete(c.entries, key)
 }
 
-// resetAll 清空所有 key. 仅供 admin "一键解除" 用.
+// resetAll clears every key. It is only used by the admin clear-all action.
 func (c *failCounter) resetAll() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -129,16 +129,16 @@ func (c *failCounter) resetAll() int {
 	return n
 }
 
-// FailSnapshot 给 admin 面板用: 某个 key 近 maxWindow 内累计多少次失败.
+// FailSnapshot is for the admin panel: how many failures a key has within maxWindow.
 type FailSnapshot struct {
 	Key    string `json:"key"`
 	Count  int    `json:"count"`
-	Latest int64  `json:"latest_unix"` // 最近一次失败时间 Unix
+	Latest int64  `json:"latest_unix"` // Latest failure time as Unix seconds.
 }
 
-// snapshot 返回所有 count > 0 的 key 的快照, 按 Count 降序.
-// 窗口用的是 maxWindow (也就是失败数据保留多久), 比业务用的短窗口或长窗口都宽,
-// 这样 admin 能看到所有相关 key, 不只是那些真触发限流的.
+// snapshot returns every key with count > 0, sorted by Count descending.
+// It uses maxWindow, which is wider than business short/long windows, so admins can see all relevant
+// keys rather than only those currently triggering rate limits.
 func (c *failCounter) snapshot() []FailSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -159,7 +159,7 @@ func (c *failCounter) snapshot() []FailSnapshot {
 			out = append(out, FailSnapshot{Key: k, Count: n, Latest: latest.Unix()})
 		}
 	}
-	// Count 降序 + Key 升序, 让最 "热" 的 key 顶上去, 同级时顺序稳定.
+	// Count descending + Key ascending puts the hottest keys first with stable ties.
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Count != out[j].Count {
 			return out[i].Count > out[j].Count
@@ -192,7 +192,7 @@ func (c *failCounter) gcLoop() {
 	}
 }
 
-// ipBanList 单 IP 冷却列表 + 到期时间. isBanned 读取时顺手清理到期项.
+// ipBanList stores per-IP cooldown expiries. isBanned also cleans up expired entries.
 type ipBanList struct {
 	mu   sync.Mutex
 	bans map[string]time.Time // ip → banUntil
@@ -202,7 +202,7 @@ func newIPBanList() *ipBanList {
 	return &ipBanList{bans: make(map[string]time.Time)}
 }
 
-// maxIPBanEntries 单个 ipBanList 容纳的最大 IP 数. 触顶时清掉已过期项, 仍满则丢最早到期的.
+// maxIPBanEntries caps IPs in one ipBanList. When full, expired entries are removed first, then the earliest expiry is evicted.
 const maxIPBanEntries = 50000
 
 func (b *ipBanList) ban(ip string, d time.Duration) {
@@ -248,8 +248,8 @@ func (b *ipBanList) isBanned(ip string) bool {
 	return true
 }
 
-// expiryOf 返回该 IP 冷却到期时间, ok=false 表示没在冷却.
-// 跟 isBanned 一样会顺手清掉过期条目.
+// expiryOf returns an IP cooldown expiry. ok=false means the IP is not cooling down.
+// Like isBanned, it also cleans expired entries.
 func (b *ipBanList) expiryOf(ip string) (time.Time, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -279,7 +279,7 @@ func (b *ipBanList) gcLoop() {
 	}
 }
 
-// unban: admin 手动解封指定 IP. 返回是否之前真的被封着.
+// unban manually removes one IP from cooldown and reports whether it was present.
 func (b *ipBanList) unban(ip string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -290,7 +290,7 @@ func (b *ipBanList) unban(ip string) bool {
 	return false
 }
 
-// unbanAll: admin "一键解封" 清空所有封禁. 返回清了几条.
+// unbanAll clears all cooldowns for the admin clear-all action and returns the number removed.
 func (b *ipBanList) unbanAll() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -299,13 +299,13 @@ func (b *ipBanList) unbanAll() int {
 	return n
 }
 
-// BanSnapshot 给 admin 面板用.
+// BanSnapshot is used by the admin panel.
 type BanSnapshot struct {
 	IP        string `json:"ip"`
-	ExpiresAt int64  `json:"expires_unix"` // 封禁到期 Unix
+	ExpiresAt int64  `json:"expires_unix"` // Ban expiry as Unix seconds.
 }
 
-// snapshot 返回所有仍在封禁中的 IP, 按到期时间升序 (最快解封的排前).
+// snapshot returns currently banned IPs sorted by expiry ascending.
 func (b *ipBanList) snapshot() []BanSnapshot {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -320,30 +320,30 @@ func (b *ipBanList) snapshot() []BanSnapshot {
 	return out
 }
 
-// banHistory 记录每个 IP 被冷却过多少次. 默认不持久化、不升级永久。
-// 如果管理员显式把 IPBanEscalateAt 调小并设置持久化, 仍可作为升级模型使用。
-// 内容只有 {ip: count}, 不涉及积累失败计数 (那些重启清零对合法用户更友好).
+// banHistory records how many times each IP has been cooled down. It is non-persistent and does not
+// escalate by default. If admins lower IPBanEscalateAt and enable persistence, it can still support
+// escalation. It stores only {ip: count}, not accumulated failures, because clearing those on restart
+// is friendlier to legitimate users.
 //
-// **持久化策略**: 每次 increment 只标记 dirty, 不同步写盘 — 攻击下高频失败时,
-// 同步写整个 ratelimit-state.json 会让 disk IO 串行化, 拖累所有 portal handler.
-// 后台 flusher 周期 (默认 30s) flush 一次. shutdown 时同步 flush 一次保证不丢.
+// Persistence strategy: increment only marks dirty instead of writing synchronously. Under attack,
+// syncing the whole ratelimit-state.json on every failure would serialize disk IO and slow every
+// portal handler. A background flusher writes periodically and shutdown flushes once.
 type banHistory struct {
 	mu          sync.Mutex
-	counts      map[string]int // ip → 被封过几次
-	persistPath string         // 空 = 内存模式, 非空 = JSON 文件持久化
+	counts      map[string]int // IP -> cooldown count.
+	persistPath string         // Empty = memory mode; non-empty = JSON persistence.
 	dirty       bool
 	flushStop   chan struct{}
 	flushDone   chan struct{}
-	stopOnce    sync.Once // 保证 close(flushStop) 至多调一次, 防并发 shutdown panic
+	stopOnce    sync.Once // Ensures close(flushStop) runs at most once during concurrent shutdown.
 }
 
-// banHistoryFlushInterval flusher 周期. 30s — 攻击场景下丢最多 30s 的 escalation
-// 历史可接受 (反正 IPBanEscalateAt 默认 999999 等于不用; 真用时丢一两次 increment
-// 不影响最终升级判断, 攻击者要么够多次要么不够).
+// banHistoryFlushInterval is the flusher period. Losing at most 30s of escalation history is
+// acceptable, especially because IPBanEscalateAt defaults to effectively disabled.
 var banHistoryFlushInterval = 30 * time.Second
 
-// newBanHistory: persistPath 空则纯内存; 非空则尝试从文件加载, 失败直接 err
-// (启动阶段暴露, 不静默覆盖旧数据). 启动时同时拉起 flusher goroutine.
+// newBanHistory uses memory only when persistPath is empty; otherwise it loads from disk and returns
+// startup errors instead of silently overwriting old data. It also starts the flusher goroutine.
 func newBanHistory(persistPath string) (*banHistory, error) {
 	b := &banHistory{
 		counts:      make(map[string]int),
@@ -370,7 +370,7 @@ func newBanHistory(persistPath string) (*banHistory, error) {
 	return b, nil
 }
 
-// flushLoop 周期性把 dirty 的 banHistory 落盘. shutdown() 通过 close(flushStop) 退出.
+// flushLoop periodically writes dirty banHistory state. shutdown exits it by closing flushStop.
 func (b *banHistory) flushLoop() {
 	defer close(b.flushDone)
 	t := time.NewTicker(banHistoryFlushInterval)
@@ -392,7 +392,7 @@ func (b *banHistory) flushIfDirty() {
 		b.mu.Unlock()
 		return
 	}
-	// marshal 在锁内拿快照, 写盘移到锁外.
+	// Marshal a snapshot under the lock, then write outside the lock.
 	snapshot := make(map[string]int, len(b.counts))
 	for k, v := range b.counts {
 		snapshot[k] = v
@@ -402,7 +402,7 @@ func (b *banHistory) flushIfDirty() {
 
 	if err := b.writeSnapshot(snapshot); err != nil {
 		log.Printf("ban history flush failed: %v", err)
-		// 写失败 → 标回 dirty, 下次重试
+		// Write failed; mark dirty again and retry next time.
 		b.mu.Lock()
 		b.dirty = true
 		b.mu.Unlock()
@@ -431,12 +431,11 @@ func (b *banHistory) writeSnapshot(snapshot map[string]int) error {
 	return nil
 }
 
-// shutdown 停 flusher goroutine 并做最后一次 flush. 启动后未调 → 进程退出时丢
-// 最多一个周期的 ban history (一般可接受). 单元测试 / 优雅退出时应调.
+// shutdown stops the flusher goroutine and performs one final flush. If not called before process
+// exit, at most one flush period of ban history is lost. Tests and graceful shutdown should call it.
 //
-// 并发安全: 多 goroutine 同时调走 sync.Once, 只有第一个真正 close(flushStop);
-// 后续调用照样 <-b.flushDone 等待停妥, 然后返回 nil. 旧实现 select+default 的
-// 检查与 close 非原子, 触发过 "close of closed channel" panic.
+// Concurrent safe: sync.Once ensures only the first goroutine closes flushStop; later callers still
+// wait on flushDone. The old select+default check was non-atomic with close and could panic.
 func (b *banHistory) shutdown() error {
 	if b.persistPath == "" {
 		return nil
@@ -448,9 +447,8 @@ func (b *banHistory) shutdown() error {
 	return nil
 }
 
-// increment: IP 被封一次, 计数 +1, 返回新的总封禁次数 (从 1 开始).
-// 只标记 dirty, 由 flushLoop 周期性落盘. 攻击下不会因每次失败都同步写文件
-// 阻塞热路径 (C4 修复).
+// increment records one IP cooldown, increments its count, and returns the new total starting at 1.
+// It only marks dirty; flushLoop writes periodically so attack traffic does not block on file IO.
 func (b *banHistory) increment(ip string) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -459,14 +457,14 @@ func (b *banHistory) increment(ip string) int {
 	return b.counts[ip]
 }
 
-// get: 返回该 IP 已被封次数 (0 = 从未).
+// get returns how many times the IP has been cooled down; 0 means never.
 func (b *banHistory) get(ip string) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.counts[ip]
 }
 
-// reset: admin 手动清除一个 IP 的封禁历史 (让他回到"初犯"状态).
+// reset clears one IP's ban history so it returns to first-offense status.
 func (b *banHistory) reset(ip string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -476,7 +474,7 @@ func (b *banHistory) reset(ip string) {
 	}
 }
 
-// resetAll: admin "一键解封" 清空所有封禁历史 (所有 IP 回到初犯). 返回清了几条.
+// resetAll clears all ban history so every IP returns to first-offense status. It returns removed count.
 func (b *banHistory) resetAll() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -488,7 +486,7 @@ func (b *banHistory) resetAll() int {
 	return n
 }
 
-// snapshot: admin UI 用, 返回 {ip: count} 的副本.
+// snapshot returns a {ip: count} copy for the admin UI.
 func (b *banHistory) snapshot() map[string]int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -499,10 +497,9 @@ func (b *banHistory) snapshot() map[string]int {
 	return out
 }
 
-// usedStateSet 记一段时间内消费过的 OIDC state, 防 cookie 偷取后重放. callback
-// 验完 state 立刻 markUsed; 同一个 state 第二次来直接拒. TTL 跟 sessionTTL 对齐
-// (15 分钟) — cookie 本身过期了, state 也没再用价值. 内存有限 maxUsedStates 触顶
-// LRU 淘汰最早条目.
+// usedStateSet records recently consumed OIDC states to prevent replay after cookie theft. The
+// callback marks a state used immediately after validation; a second use is rejected. TTL matches
+// sessionTTL, after which the cookie and state are both useless. maxUsedStates evicts oldest entries.
 const maxUsedStates = 50000
 
 type usedStateSet struct {
@@ -518,7 +515,7 @@ func newUsedStateSet(ttl time.Duration) *usedStateSet {
 	}
 }
 
-// markUsed 若 state 之前没用过 (或已过 TTL), 记下来并返回 true. 已用过返回 false.
+// markUsed records state and returns true if it was unused or expired; reused states return false.
 func (s *usedStateSet) markUsed(state string) bool {
 	if state == "" {
 		return false
@@ -530,13 +527,13 @@ func (s *usedStateSet) markUsed(state string) bool {
 		return false
 	}
 	if len(s.states) >= maxUsedStates {
-		// 同步 prune 过期项
+		// Synchronously prune expired entries.
 		for k, exp := range s.states {
 			if now.After(exp) {
 				delete(s.states, k)
 			}
 		}
-		// 仍满则丢最早过期的
+		// If still full, drop the earliest expiry.
 		if len(s.states) >= maxUsedStates {
 			type kv struct {
 				k   string
@@ -572,36 +569,35 @@ func (s *usedStateSet) gcLoop() {
 	}
 }
 
-// PermanentBanUntil 我们用来标记"永久封禁"的时间点. 实际是 1 百年后的某个 Unix 时间,
-// 大得不可能被正常到期逻辑跨过去, 又能走正常的时间比较路径不用特殊分支.
+// PermanentBanUntil marks a "permanent" ban as a Unix time about 100 years in the future.
+// It is large enough that normal expiry will not cross it, while still using normal time comparisons.
 var PermanentBanUntil = time.Date(2125, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// IsPermanent 判断一个到期时间点是不是"永久"标记.
+// IsPermanent reports whether an expiry time is the permanent marker.
 func IsPermanent(t time.Time) bool {
 	return t.After(time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC))
 }
 
-// trustProxyHeaders 启动时由 main 从 cfg.TrustProxy 注入. 默认 true 保持反代部署兼容.
-// 直接暴露公网时, env TRUST_PROXY=false 让 clientIP 只信 r.RemoteAddr — 否则攻击者
-// 可任意伪造 X-Real-IP / X-Forwarded-For 绕过所有 IP 限流 + 永久封禁.
+// trustProxyHeaders is injected by main from cfg.TrustProxy at startup. It defaults to true for
+// reverse-proxy compatibility. When directly exposed, set TRUST_PROXY=false so clientIP only trusts
+// r.RemoteAddr; otherwise attackers can spoof X-Real-IP / X-Forwarded-For.
 var trustProxyHeaders = true
 
-// clientIP 取真实客户端 IP.
+// clientIP returns the real client IP.
 //
-// trustProxyHeaders=true (默认, 反代部署):
+// trustProxyHeaders=true (default, reverse-proxy deployment):
 //
-//	X-Real-IP 优先 (推荐反代设 X-Real-IP $remote_addr, nginx/Caddy 都支持).
-//	没设 X-Real-IP 时回退 X-Forwarded-For — **取最右**, 因为 nginx
-//	$proxy_add_x_forwarded_for 会把上一跳的源 IP append 到末尾,
-//	攻击者发的伪造 XFF 被推到左侧. 取最左等于直接读攻击者输入.
+//	X-Real-IP has priority. If absent, fall back to X-Forwarded-For and take the rightmost
+//	valid IP because nginx $proxy_add_x_forwarded_for appends the previous hop to the end.
+//	Attacker-supplied spoofed XFF values are pushed left, so taking leftmost reads attacker input.
 //
-//	header 值必须 net.ParseIP 合法; 非法值视同未设, 防止反代错配导致
-//	攻击者把任意字符串注入 failCounter / ipBans 的 map key (内存污染 +
-//	事件日志污染). XFF 从右往左扫, 跳过非法段直到首个合法 IP.
+//	Header values must pass net.ParseIP; invalid values are ignored to prevent proxy
+//	misconfiguration from injecting arbitrary strings into failCounter/ipBans keys or event logs.
+//	XFF is scanned right-to-left, skipping invalid segments until the first valid IP.
 //
-// trustProxyHeaders=false (公网直暴露):
+// trustProxyHeaders=false (direct public exposure):
 //
-//	完全忽略 header, 只用 r.RemoteAddr.
+//	Ignore headers entirely and use only r.RemoteAddr.
 func clientIP(r *http.Request) string {
 	if trustProxyHeaders {
 		if xri := validIP(r.Header.Get("X-Real-IP")); xri != "" {
@@ -623,8 +619,8 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// validIP trim 后用 net.ParseIP 验证, 合法返回规范化后的字符串 (剔除多余空格),
-// 非法返回 "". 调用方据此判定该 header 段是否可信.
+// validIP trims and validates with net.ParseIP. Valid input returns the normalized string; invalid
+// input returns "". Callers use this to decide whether a header segment is trustworthy.
 func validIP(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {

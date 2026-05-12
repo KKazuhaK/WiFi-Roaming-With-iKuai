@@ -1,31 +1,31 @@
 # docker-compose.yml
-# 一份 compose, 两种部署拓扑:
+# One compose file, two deployment topologies:
 #
-#   模式 A — 外部反代 (默认)
-#     .env 里 COMPOSE_PROFILES 留空 / 不设
-#     只起 portal 容器, 监听 127.0.0.1:28080
-#     TLS 由宿主机上的 aaPanel Nginx / 其它反代处理
-#     适合: 公网 VPS + aaPanel 已经在管 Nginx / ACME
+#   Mode A - external reverse proxy (default)
+#     Leave COMPOSE_PROFILES empty or unset in .env.
+#     Start only the portal container, exposed on host 127.0.0.1:28080.
+#     TLS is handled by aaPanel Nginx or another host-level reverse proxy.
+#     Best for public VPS where aaPanel already manages Nginx / ACME.
 #
-#   模式 B — 内置 Caddy + DNS-01 TLS
-#     .env 里设 COMPOSE_PROFILES=caddy (再把 Caddy 那几个变量填上)
-#     多起一个 caddy 容器, 监听 ${PORTAL_HTTPS_PORT:-28081}, 自动 Cloudflare DNS-01 拿证书
-#     适合: 内网 LAN 盒子 + iKuai 站内 DNS 劫持, 不想依赖外部 Nginx
+#   Mode B - built-in Caddy + DNS-01 TLS
+#     Set COMPOSE_PROFILES=caddy in .env and fill Caddy variables.
+#     Starts an extra caddy container on ${PORTAL_HTTPS_PORT:-28081} with automatic Cloudflare DNS-01 certificates.
+#     Best for LAN boxes with iKuai internal DNS hijack and no external Nginx dependency.
 #
-# 目录布局:
-#   /opt/wifi-portal/ (或 /opt/wifi-portal-intranet/)
-#   ├── docker-compose.yml      <- 本文件
-#   ├── Caddyfile               <- 只有模式 B 会读
-#   ├── Dockerfile.caddy        <- 只有模式 B 会 build
-#   ├── .env                    <- 从 .env.example 拷贝并填值
-#   └── portal/                 <- Portal Go 源码目录
+# Directory layout:
+#   /opt/wifi-portal/ (or /opt/wifi-portal-intranet/)
+#   ├── docker-compose.yml      <- this file
+#   ├── Caddyfile               <- used only by Mode B
+#   ├── Dockerfile.caddy        <- built only by Mode B
+#   ├── .env                    <- copied from .env.example and filled
+#   └── portal/                 <- Portal Go source directory
 #
-# 常用命令:
-#   docker compose up -d --build          起容器 (按 .env 里 COMPOSE_PROFILES 决定是否带 caddy)
-#   docker compose logs -f portal         看 Portal 日志
-#   docker compose logs -f caddy          看 Caddy 日志 (模式 B)
-#   docker compose restart portal         改了 .env 只影响 Portal 时用
-#   docker compose down                   停掉 (named volume 保留)
+# Common commands:
+#   docker compose up -d --build          start containers based on COMPOSE_PROFILES in .env
+#   docker compose logs -f portal         watch Portal logs
+#   docker compose logs -f caddy          watch Caddy logs in Mode B
+#   docker compose restart portal         use after .env changes that affect only Portal
+#   docker compose down                   stop containers while keeping named volumes
 
 services:
   portal:
@@ -36,38 +36,35 @@ services:
     container_name: wifi-portal
     restart: unless-stopped
 
-    # 只从 .env 文件读环境变量, 不从当前 shell 继承, 避免意外泄漏.
+    # Read environment variables only from .env, not the current shell, to avoid accidental leaks.
     env_file:
       - .env
 
     environment:
-      # 强制监听 0.0.0.0:28080 (容器内). Portal 的默认是 127.0.0.1:28080 — 只让
-      # 容器内自己 loopback 访问, 结果 docker port publish / Caddy 反代都打不到.
-      # healthcheck 里也是 127.0.0.1, 打自己能通 → 容器会被标 healthy 但外部 502.
-      # 这里写死覆盖 .env, 避免被漏填或手抖注释掉导致难排查的 502.
+      # Force listen on 0.0.0.0:28080 inside the container. Portal defaults to 127.0.0.1:28080,
+      # which only accepts container loopback and breaks docker port publishing / Caddy reverse proxy.
+      # The healthcheck uses 127.0.0.1 and would still pass, causing confusing external 502s.
       - LISTEN_ADDR=0.0.0.0:28080
 
-    # 端口映射: 容器里 28080 → 宿主机 127.0.0.1:28080
-    # 绑 127.0.0.1 关键! 模式 A 给外部 Nginx 用; 模式 B 即使绑了也只有本机能连 —
-    # Caddy 通过 compose 网络 (service 名 "portal:28080") 访问, 用不到这个 host 映射.
-    # 不要写 28080:28080 或 0.0.0.0, 否则 Portal 直接暴露到公网.
+    # Port mapping: container 28080 -> host 127.0.0.1:28080.
+    # Binding 127.0.0.1 is important. Mode A uses it from external Nginx; Mode B reaches Portal over
+    # the compose network as portal:28080 and does not need this host mapping. Do not expose publicly.
     ports:
       - "127.0.0.1:28080:28080"
 
-    # 所有持久化文件 (访客码 / MAC 封禁 / iKuai 放行策略 / 事件日志) 默认写到容器
-    # 内 /data/. 这里把 /data bind-mount 到宿主机 ./data/, 跨 docker compose
-    # up --build / down / rm 都不丢数据. 要换位置改这一行即可.
+    # Persistent files default to /data inside the container. Bind-mount /data to host ./data so
+    # docker compose up --build / down / rm do not lose data. Change this line to move storage.
     volumes:
       - ./data:/data
 
-    # 日志限制: 每文件 10MB * 最多 3 个 = 30MB 上限, 防小 VPS 爆磁盘.
+    # Log limit: 10MB per file * 3 files = 30MB cap to protect small VPS disks.
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
-    # Healthcheck 通过容器内 wget 打 /healthz. Alpine 默认有 wget.
+    # Healthcheck hits /healthz with wget inside the container. Alpine includes wget by default.
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:28080/healthz"]
       interval: 30s
@@ -75,9 +72,9 @@ services:
       retries: 3
       start_period: 10s
 
-  # Caddy 只在模式 B 启动. 启用方式: .env 里写
+  # Caddy starts only in Mode B. Enable it in .env with:
   #   COMPOSE_PROFILES=caddy
-  # 再填好 CLOUDFLARE_API_TOKEN / ACME_EMAIL / PORTAL_HOSTNAME / PORTAL_HTTPS_PORT.
+  # Then fill CLOUDFLARE_API_TOKEN / ACME_EMAIL / PORTAL_HOSTNAME / PORTAL_HTTPS_PORT.
   caddy:
     profiles: ["caddy"]
     build:
@@ -87,16 +84,14 @@ services:
     container_name: wifi-portal-caddy
     restart: unless-stopped
 
-    # HTTPS 端口. 不占 443 是为了跟 LAN 盒子上的其它服务共存; 想跑在 443 改这里 +
-    # PUBLIC_URL 去掉端口号 + Entra Redirect URI 列表里加不带端口那条.
-    # DNS-01 不需要 80 端口公网可达, 所以这里不开 80.
+    # HTTPS port. Avoid 443 to coexist with other services on LAN boxes. To use 443, change this,
+    # remove the port from PUBLIC_URL, and add the no-port Entra Redirect URI. DNS-01 needs no 80.
     ports:
       - "${PORTAL_HTTPS_PORT:-28081}:${PORTAL_HTTPS_PORT:-28081}"
 
     environment:
-      # 全部用 ${VAR:-} 默认空串, 即便 Mode A 的 .env 没有这几行也不会有
-      # "variable is not set" warning. Mode B 启用 profile 时必须把 CLOUDFLARE_API_TOKEN
-      # 和 ACME_EMAIL 填真实值, 否则 Caddy 申请证书会失败 (错误会直接报到日志里).
+      # Use ${VAR:-} so Mode A .env files without these lines do not warn. Mode B must provide real
+      # CLOUDFLARE_API_TOKEN and ACME_EMAIL or Caddy certificate issuance will fail and log the error.
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
       - PORTAL_HOSTNAME=${PORTAL_HOSTNAME:-wifi.login.example.com}
       - PORTAL_HTTPS_PORT=${PORTAL_HTTPS_PORT:-28081}
@@ -104,7 +99,7 @@ services:
 
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # 证书 + Caddy 自身状态持久化, 跨重启不重新申请
+      # Persist certificates and Caddy state across restarts.
       - caddy-data:/data
       - caddy-config:/config
 

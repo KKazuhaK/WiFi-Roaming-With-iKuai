@@ -187,7 +187,7 @@
     <h1>{{ T .Lang "login.title" .Brand.Name }}</h1>
     <p class="subtitle">{{ T .Lang "login.subtitle" .Brand.Name }}</p>
 
-    <!-- Step 1: 选择登录方式 -->
+    <!-- Step 1: choose login method -->
     <div id="step-choice" class="step active">
       <button id="btn-to-sso" type="button" class="btn btn-primary">
         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
@@ -209,7 +209,7 @@
       {{ end }}
     </div>
 
-    <!-- Step 2: 邮箱输入 -->
+    <!-- Step 2: email input -->
     <div id="step-email" class="step">
       <p class="hint">{{ T .Lang "login.email.hint" }}</p>
       <input id="email-input" type="email" autocomplete="email"
@@ -222,7 +222,7 @@
     </div>
 
     {{ if .GuestEnabled }}
-    <!-- Step 3: 访客码 -->
+    <!-- Step 3: guest code -->
     <div id="step-guest-code" class="step">
       <p class="hint">{{ T .Lang "login.guest.hint" }}</p>
       <input id="guest-code-input" type="text" autocomplete="off"
@@ -235,9 +235,8 @@
     </div>
     {{ end }}
 
-    <!-- 语言切换: href 在下面脚本里动态带上当前 URL 的 query string,
-         保留 iKuai 传来的 user_ip/mac 快照, 避免随机 MAC 设备跳 MAC 后仍
-         用上一次缓存. 禁 JS 时 href 降级为纯 ?lang=xxx (靠 cookie 兜底). -->
+    <!-- Language switch: the script below appends the current URL query string, preserving the
+         iKuai user_ip/mac snapshot and falling back to plain ?lang=xxx without JS. -->
     <div class="lang-switch">
       <a data-lang="zh-cn" href="?lang=zh-cn" class="{{ if eq .Lang "zh-cn" }}active{{ end }}">{{ T .Lang "lang.zhCn" }}</a>
       <a data-lang="zh-tw" href="?lang=zh-tw" class="{{ if eq .Lang "zh-tw" }}active{{ end }}">{{ T .Lang "lang.zhTw" }}</a>
@@ -264,8 +263,8 @@
         unitHours:           {{ T .Lang "units.hours" }}
       };
 
-      // 格式化重试等待时间: 几秒显示秒, 几分钟显示分钟, 几小时显示小时.
-      // 单位走 i18n, 不再混中英.
+      // Format retry wait time as seconds, minutes, or hours.
+      // Units come from i18n.
       function fmtRetryAfter(seconds) {
         if (!seconds || seconds <= 0) return '';
         if (seconds < 60) return seconds + ' ' + S.unitSeconds;
@@ -273,8 +272,8 @@
         return Math.ceil(seconds / 3600) + ' ' + S.unitHours;
       }
 
-      // 根据 429 响应的 body 生成对应的提示文字.
-      // body 可能带: permanent=true / retry_after_seconds=N
+      // Build the message for a 429 response body.
+      // Body may include permanent=true / retry_after_seconds=N.
       function buildRateLimitMsg(body) {
         if (body && body.permanent) return S.rateLimitedPermanent;
         if (body && body.retry_after_seconds) {
@@ -290,9 +289,8 @@
         $(id).classList.add('active');
       }
 
-      // 给语言切换链接补上当前 URL 的 query string (iKuai 传的 user_ip/mac).
-      // 这样切语言不会丢 iKuai 的最新快照; 即使随机 MAC 跳过, 下一次 iKuai 302
-      // 会带新 MAC 把 URL 覆盖掉.
+      // Add the current URL query string to language switch links, preserving iKuai user_ip/mac.
+      // The next iKuai 302 will overwrite the URL if a random MAC changes.
       (function() {
         var cur = new URL(window.location.href);
         var links = document.querySelectorAll('.lang-switch a[data-lang]');
@@ -304,7 +302,7 @@
         }
       })();
 
-      // Step 1 → 2: SSO 主按钮 = 进入邮箱输入
+      // Step 1 -> 2: primary SSO button opens email input.
       $('btn-to-sso').addEventListener('click', function() {
         show('step-email');
         setTimeout(function() { $('email-input').focus(); }, 60);
@@ -354,7 +352,7 @@
       }
 
       {{ if .GuestEnabled }}
-      // Step 1 → 3: 访客码
+      // Step 1 -> 3: guest code.
       $('btn-to-guest').addEventListener('click', function() {
         show('step-guest-code');
         setTimeout(function() { $('guest-code-input').focus(); }, 60);

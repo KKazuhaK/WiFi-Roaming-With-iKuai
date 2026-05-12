@@ -1,9 +1,9 @@
 # Dockerfile.caddy
-# 自定义 Caddy 镜像: 官方 caddy:2 + caddy-dns/cloudflare 模块.
-# 为什么要自己 build: 官方 caddy 镜像不自带 DNS 插件, 要用 CF DNS-01
-# 就必须带 github.com/caddy-dns/cloudflare 模块. 官方文档推荐的方式就是
-# 用 caddy:*-builder 镜像 + xcaddy 编译一个新二进制, 拷回运行镜像.
-# 参考: https://caddyserver.com/docs/build#docker
+# Custom Caddy image: official caddy:2 plus caddy-dns/cloudflare.
+# The official Caddy image does not include DNS plugins, so Cloudflare DNS-01 requires the
+# github.com/caddy-dns/cloudflare module. The recommended approach is to build a new binary with
+# caddy:*-builder + xcaddy and copy it into the runtime image.
+# Reference: https://caddyserver.com/docs/build#docker
 
 FROM caddy:2-builder AS builder
 RUN xcaddy build \
@@ -12,8 +12,7 @@ RUN xcaddy build \
 FROM caddy:2
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 
-# 把 Caddyfile 烤进镜像, 这样 "预构建镜像 + tarball 上传" 的部署路径
-# (Synology / iKuai UI) 不用额外挂 bind mount — 镜像自带配置.
-# 源码部署路径 (VPS / LAN 盒子) 也不受影响: compose 里的 bind mount 会把本地的
-# Caddyfile 盖在镜像里那份之上, 内容相同所以行为一致.
+# Bake Caddyfile into the image so prebuilt-image + tarball upload deployments (Synology / iKuai UI)
+# do not need an extra bind mount. Source deployments are unaffected because compose bind-mounts the
+# local Caddyfile over the baked copy, with the same content and behavior.
 COPY Caddyfile /etc/caddy/Caddyfile

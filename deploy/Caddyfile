@@ -1,34 +1,33 @@
 # Caddyfile
-# TLS 证书: 通过 Cloudflare DNS-01 challenge 申请, 不需要任何端口公网可达.
-# 这是内网方案的关键 — 盒子只在 LAN 有 IP, 但证书依然是真实 CA 签发的,
-# 浏览器不会报警告.
+# TLS certificates are issued through Cloudflare DNS-01 challenge; no public port reachability needed.
+# This is the key for LAN deployments: the box only has a LAN IP, but the certificate is still issued
+# by a real CA, so browsers do not warn.
 #
-# 只反代到同 compose 网络里的 portal service, portal 不暴露端口到宿主.
+# Reverse proxy only to the portal service on the same compose network; Portal is not exposed on host ports.
 
 {
-    # 邮箱用于 LE / ZeroSSL 的账号注册 + 证书到期提醒
+    # Email for LE / ZeroSSL account registration and certificate expiry reminders.
     email {$ACME_EMAIL}
 }
 
 {$PORTAL_HOSTNAME}:{$PORTAL_HTTPS_PORT} {
-    # DNS-01 via Cloudflare. CLOUDFLARE_API_TOKEN 只需要 Zone:DNS:Edit 权限
-    # + Zone:Zone:Read, 限定到 example.com 这一个 zone.
-    # DNS-01 不需要 80/443 公网可达, 所以我们能跑在任意高端口.
+    # DNS-01 via Cloudflare. CLOUDFLARE_API_TOKEN only needs Zone:DNS:Edit plus Zone:Zone:Read,
+    # scoped to the example.com zone. DNS-01 does not need public 80/443 reachability.
     tls {
         dns cloudflare {env.CLOUDFLARE_API_TOKEN}
     }
 
-    # 反代到 portal 容器. 容器名 portal = compose service 名,
-    # Caddy 自动做 DNS 解析, 不用写 IP.
+    # Reverse proxy to the portal container. Container name portal equals the compose service name,
+    # and Caddy resolves it via DNS, so no IP is needed.
     reverse_proxy portal:28080 {
-        # 传给 Portal 的 ratelimit.go clientIP() 解析用
+        # Used by Portal ratelimit.go clientIP().
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
         header_up Host {host}
     }
 
-    # Caddy 默认就带合理的 log 级别, 再显式开 access log 写 stdout
+    # Caddy's default log level is reasonable; explicitly write access logs to stdout.
     log {
         output stdout
         format console

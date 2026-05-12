@@ -1,16 +1,16 @@
-# docker-compose.yml (预构建镜像版本)
+# docker-compose.yml (prebuilt-image version)
 #
-# 跟 deploy/docker-compose.yml 的区别:
-#   - 没有 build: 指令, 只有 image: — 假设镜像已经 docker load 进来了
-#   - 没有 Caddyfile 的 bind mount — Caddyfile 已经烤进 Caddy 镜像
-#   - 没有 portal 源码的任何引用 — 适合 UI-only 的 Synology / iKuai 部署
+# Differences from deploy/docker-compose.yml:
+#   - No build: directive, only image:, assuming images were already docker loaded.
+#   - No Caddyfile bind mount, because Caddyfile is baked into the Caddy image.
+#   - No references to portal source code, suitable for UI-only Synology / iKuai deployments.
 #
-# 使用前提: 先按同目录 README 把 tarball 上传 + docker load 两个镜像:
+# Prerequisite: follow the README in this directory to upload the tarball and docker load both images:
 #   kazuha/wifi-portal:latest
 #   kazuha/caddy-cloudflare:latest
 #
-# 放在 /volume1/docker/wifi-portal/ (Synology) 或 /mnt/xxx/wifi-portal/ (iKuai),
-# 同一目录里放 .env 文件, 然后 Container Manager / iKuai UI 创建专案指向这里.
+# Place this in /volume1/docker/wifi-portal/ (Synology) or /mnt/xxx/wifi-portal/ (iKuai), put .env
+# in the same directory, then point Container Manager / iKuai UI project creation here.
 
 services:
   portal:
@@ -20,13 +20,11 @@ services:
     env_file:
       - .env
     environment:
-      # 强制监听 0.0.0.0, 让 Caddy 容器从 compose 网络能连到.
-      # Portal 默认是 127.0.0.1:28080 只让自己 loopback 访问 —
-      # healthcheck 是 wget 127.0.0.1 所以还能过, 但 Caddy 会 502.
-      # 这里写死覆盖 .env, 避免被漏填或手抖注释掉.
+      # Force listen on 0.0.0.0 so the Caddy container can reach Portal over the compose network.
+      # Portal defaults to 127.0.0.1:28080, which still passes healthcheck but makes Caddy return 502.
       - LISTEN_ADDR=0.0.0.0:28080
-    # 所有持久化文件 (访客码 / MAC 封禁 / iKuai 放行策略 / 事件日志) 默认写到容器
-    # 内 /data/. 这里 bind-mount 到项目目录的 ./data/, 跨重建不丢. 要换位置改这一行.
+    # Persistent files default to /data inside the container. Bind-mount it to project ./data so
+    # rebuilds keep data. Change this line to move storage.
     volumes:
       - ./data:/data
     logging:
@@ -46,8 +44,8 @@ services:
     container_name: wifi-portal-caddy
     restart: unless-stopped
     ports:
-      # 默认 28081, 想改走 443 就改这里 + .env 里 PORTAL_HTTPS_PORT + PUBLIC_URL.
-      # 注意 Synology DSM 自己占着 443, 别改.
+      # Default 28081. To use 443, change this plus PORTAL_HTTPS_PORT and PUBLIC_URL in .env.
+      # Synology DSM usually owns 443, so do not change it there.
       - "${PORTAL_HTTPS_PORT:-28081}:${PORTAL_HTTPS_PORT:-28081}"
     environment:
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
@@ -55,7 +53,7 @@ services:
       - PORTAL_HTTPS_PORT=${PORTAL_HTTPS_PORT:-28081}
       - ACME_EMAIL=${ACME_EMAIL:-}
     volumes:
-      # 证书 + Caddy 运行状态持久化, 跨重启不重新申请
+      # Persist certificates and Caddy runtime state across restarts.
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

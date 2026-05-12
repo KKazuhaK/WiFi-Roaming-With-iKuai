@@ -1,13 +1,13 @@
 package main
 
 // eventlog_test.go
-// 事件日志的核心语义:
-//   - Append → 内存 + 落盘
-//   - Query 倒序 + 各种过滤
-//   - Prune 按 retention 裁剪
-//   - JSONL 持久化 round-trip
-//   - maxEventsInMemory 容量上限 (H3 回归)
-//   - 不记录敏感数据 — 由调用方保证, 这里只测便捷函数转发正确
+// Core event-log semantics:
+//   - Append writes memory and disk.
+//   - Query returns newest first with filters.
+//   - Prune trims by retention.
+//   - JSONL persistence round-trip.
+//   - maxEventsInMemory cap (H3 regression).
+//   - Sensitive-data avoidance is caller-owned; these tests check wrapper forwarding only.
 
 import (
 	"bytes"
@@ -19,8 +19,7 @@ import (
 	"time"
 )
 
-// testCSVResponseWriter: 仅供 CSV 测试用的 minimal http.ResponseWriter,
-// 收集 body 到 bytes.Buffer.
+// testCSVResponseWriter is a minimal http.ResponseWriter for CSV tests and collects body into bytes.Buffer.
 type testCSVResponseWriter struct {
 	header http.Header
 	body   bytes.Buffer
@@ -45,7 +44,7 @@ func TestEventLog_AppendAndQuery(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("Query all = %d, want 2", len(got))
 	}
-	// 倒序 — 最新的在前
+	// Newest first.
 	if got[0].Subject != "b" {
 		t.Errorf("first event subject = %q, want b (newest)", got[0].Subject)
 	}
@@ -130,15 +129,15 @@ func TestEventLog_PruneByRetention(t *testing.T) {
 }
 
 func TestEventLog_PruneNoOpWithoutRetention(t *testing.T) {
-	e, _ := newEventLog("", 0) // retention=0 = 不裁剪
+	e, _ := newEventLog("", 0) // retention=0 means no pruning.
 	e.Append(Event{Time: time.Now().Add(-1000 * time.Hour), Kind: KindLogin})
 	if removed := e.Prune(); removed != 0 {
 		t.Errorf("Prune with retention=0 removed %d, want 0", removed)
 	}
 }
 
-// TestEventLog_PersistRoundTrip 保证 JSONL 写入 + 重启加载 的一致性,
-// 这是审计日志的基本契约 — 重启不能丢已记录事件.
+// TestEventLog_PersistRoundTrip ensures JSONL write and restart load are consistent.
+// Audit logs must not lose recorded events across restart.
 func TestEventLog_PersistRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.jsonl")
@@ -166,7 +165,7 @@ func TestEventLog_PersistRoundTrip(t *testing.T) {
 }
 
 func TestEventLog_PersistFileMode(t *testing.T) {
-	// events.jsonl 含 UPN / IP / MAC, 文件权限 0600
+	// events.jsonl contains UPN/IP/MAC, so file mode is 0600.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.jsonl")
 	e, err := newEventLog(path, time.Hour)
@@ -183,8 +182,8 @@ func TestEventLog_PersistFileMode(t *testing.T) {
 	}
 }
 
-// TestEventLog_MaxInMemoryCap: H3 回归. 内存事件不能无限增长.
-// 攻击下 + 7 天保留期可能堆百万事件 → OOM.
+// TestEventLog_MaxInMemoryCap is the H3 regression: memory events must not grow without bound.
+// Attack traffic plus a 7-day retention could otherwise accumulate millions of events and OOM.
 func TestEventLog_MaxInMemoryCap(t *testing.T) {
 	e, _ := newEventLog("", 0)
 	for i := 0; i < maxEventsInMemory+5000; i++ {
@@ -199,7 +198,7 @@ func TestEventLog_MaxInMemoryCap(t *testing.T) {
 func TestEventLog_LoadSkipsBrokenLines(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.jsonl")
-	// 写一份混杂 JSONL: 合法 + 空行 + 损坏行 + 合法
+	// Write mixed JSONL: valid + empty + broken + valid.
 	content := `{"time":"2026-05-08T00:00:00Z","kind":"login","subject":"a","result":"success"}
 this-is-not-json
 {"time":"2026-05-08T00:00:01Z","kind":"login","subject":"b","result":"success"}
@@ -218,7 +217,7 @@ this-is-not-json
 	}
 }
 
-// --- logLogin / logAdminAction 转发 ---
+// --- logLogin / logAdminAction forwarding ---
 
 func TestLogLogin_PreservesFields(t *testing.T) {
 	app := &App{
@@ -239,11 +238,10 @@ func TestLogLogin_PreservesFields(t *testing.T) {
 	}
 }
 
-// --- CSV formula injection 防护 (审计指出的 #3) ---
+// --- CSV formula injection defense (audit #3) ---
 
-// sanitizeCSVCell: 任何以 = + - @ Tab CR 起头的字段都会被 Excel/LibreOffice
-// 解析成公式 (=cmd|'/c calc'!A0 之类). 写 CSV 前必须在前面加一个单引号
-// 把它降级成纯文本.
+// sanitizeCSVCell: fields starting with = + - @ Tab CR are parsed as formulas by spreadsheet apps.
+// Prefix a single quote before writing CSV to force plain text.
 func TestSanitizeCSVCell_NeutralizesFormulaPrefixes(t *testing.T) {
 	dangerous := []string{
 		"=1+1",
@@ -268,7 +266,7 @@ func TestSanitizeCSVCell_NeutralizesFormulaPrefixes(t *testing.T) {
 func TestSanitizeCSVCell_PassesThroughSafeText(t *testing.T) {
 	safe := []string{
 		"",
-		"alice@example.com", // @ 在中间是合法 email, 不该改
+		"alice@example.com", // @ in the middle is a valid email and should not change.
 		"aa:bb:cc:dd:ee:ff",
 		"some note",
 		"123",
@@ -288,7 +286,7 @@ func TestWriteEventsCSV_SanitizesFormulaInjection(t *testing.T) {
 		{
 			Time:    time.Unix(1700000000, 0),
 			Kind:    KindLogin,
-			Subject: "=BAD()",         // 攻击者控制的 subject
+			Subject: "=BAD()",         // Attacker-controlled subject.
 			Result:  ResultSuccess,
 			Method:  MethodSSO,
 			MAC:     "aa:bb:cc:dd:ee:ff",
@@ -300,18 +298,18 @@ func TestWriteEventsCSV_SanitizesFormulaInjection(t *testing.T) {
 		t.Fatalf("WriteEventsCSV: %v", err)
 	}
 	body := rec.body.String()
-	// 攻击 cell 必须被前缀化, 不能保留 leading = / +
+	// Attack cells must be prefixed and cannot keep leading = / +.
 	if strings.Contains(body, ",=BAD()") || strings.Contains(body, ",+evil") {
 		t.Errorf("CSV body did not sanitize formula prefix: %s", body)
 	}
-	// 合法 Email 形 IP / MAC / 时间不受影响
+	// Legitimate email-shaped IP/MAC/time fields are unaffected.
 	if !strings.Contains(body, "aa:bb:cc:dd:ee:ff") {
 		t.Errorf("MAC missing from CSV: %s", body)
 	}
 }
 
-// TestLogLogin_NoFullCodeInDetail: H2 关键回归 — 调用方必须只传 code-suffix,
-// 不能传完整 code. 这里我们模拟正确的调用并断言 Detail 里没出现完整码.
+// TestLogLogin_NoFullCodeInDetail is the H2 regression: callers must pass only code suffixes, not
+// full codes. This simulates correct usage and asserts Detail does not contain the full code.
 func TestLogLogin_NoFullCodeInDetail(t *testing.T) {
 	app := &App{
 		eventLog: func() *EventLog {
@@ -321,7 +319,7 @@ func TestLogLogin_NoFullCodeInDetail(t *testing.T) {
 	}
 	fullCode := "1234567890abcdef"
 	suffix := tailN(fullCode, 4)
-	// main.go 修复后这就是真实调用方式
+	// This matches the real call pattern after the main.go fix.
 	app.logLogin("guest-1", ResultSuccess, MethodGuestCode, "aa:bb", "1.1.1.1", "code-suffix="+suffix)
 	got := app.eventLog.Query(EventQueryFilter{})
 	if len(got) != 1 {

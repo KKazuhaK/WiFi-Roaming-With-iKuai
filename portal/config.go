@@ -1,7 +1,7 @@
 package main
 
 // config.go
-// 读取环境变量并装进 Config struct.
+// Read environment variables into the Config struct.
 
 import (
 	"encoding/hex"
@@ -13,82 +13,81 @@ import (
 	"time"
 )
 
-// Config 是 Portal 运行需要的所有配置.
+// Config contains all settings required to run the portal.
 type Config struct {
 	// --- Entra (Azure AD) OIDC ---
 	TenantID     string
 	ClientID     string
-	ClientSecret string // 敏感
+	ClientSecret string // Sensitive.
 
-	// --- iKuai 自定义认证 ---
-	IKuaiAppKey         string // 敏感
+	// --- iKuai custom authentication ---
+	IKuaiAppKey         string // Sensitive.
 	IKuaiWebAuthURL     string
 	IKuaiReleaseType    string
 	IKuaiPolicyDefaults map[IKuaiAuthProfile]IKuaiPolicy
 
-	// --- Portal 自身 ---
-	SessionSecret []byte // 敏感
+	// --- Portal runtime ---
+	SessionSecret []byte // Sensitive.
 	PublicURL     string
 	ListenAddr    string
-	// TrustProxy: 是否信任 X-Real-IP / X-Forwarded-For. 默认 true (兼容现有反代部署).
-	// 当 Portal 直接暴露公网时务必置 false, 否则攻击者可伪造 IP 绕过限流.
-	// 启动时若 LISTEN_ADDR 不是 loopback 且 TRUST_PROXY 显式为 false, 仅按 remote addr 计.
+	// TrustProxy controls whether X-Real-IP / X-Forwarded-For are trusted. It defaults to true for
+	// existing reverse-proxy deployments. Set it to false when the portal is directly exposed,
+	// otherwise attackers can spoof IPs and bypass rate limits.
 	TrustProxy bool
-	// DataDir: 持久化文件根目录. 默认 /data 兼容容器场景 (docker-compose bind-mount
-	// /data → ./data). 裸二进制 + systemd 部署时通常设 /var/lib/wifi-portal.
+	// DataDir is the root for persistent files. /data works for containers where docker-compose
+	// bind-mounts /data to ./data. Bare binary + systemd deployments usually use /var/lib/wifi-portal.
 	DataDir string
 
-	// --- 品牌化 ---
+	// --- Branding ---
 	BrandName    string
 	BrandColor   string
 	BrandLogoURL string
 
-	// --- iKuai 字段名兼容 ---
+	// --- iKuai field-name compatibility ---
 	IKuaiIPKeys  []string
 	IKuaiMACKeys []string
 
-	// --- Duo 集成 (可选) ---
-	// 需要 Duo Admin Panel 里两种 application:
-	//   1. "Auth API"     → DUO_IKEY + DUO_SKEY     (仅用于 preauth 探测用户是否在 Duo)
-	//   2. "Web SDK"      → DUO_CLIENT_ID + DUO_CLIENT_SECRET (Universal Prompt 的 OIDC 流程)
-	// DUO_API_HOST 两种 application 共享 (同一个 Duo 租户).
-	// 任一组密钥缺失就视为 Duo 未启用.
+	// --- Duo integration (optional) ---
+	// Requires two application types in the Duo Admin Panel:
+	//   1. "Auth API" -> DUO_IKEY + DUO_SKEY, only for preauth user lookup.
+	//   2. "Web SDK"  -> DUO_CLIENT_ID + DUO_CLIENT_SECRET, for the Universal Prompt OIDC flow.
+	// DUO_API_HOST is shared by both applications in the same Duo tenant.
+	// Duo is disabled when either credential set is missing.
 	DuoIKey             string
-	DuoSKey             string // 敏感
+	DuoSKey             string // Sensitive.
 	DuoClientID         string
-	DuoClientSecret     string // 敏感
+	DuoClientSecret     string // Sensitive.
 	DuoAPIHost          string
-	AllowedEmailDomains []string // 做邮箱域名白名单, 防外人触发 Duo 推送
+	AllowedEmailDomains []string // Email-domain allowlist to stop external domains from triggering Duo prompts.
 
-	// --- 访客码管理 Admin (可选) ---
-	// /admin 准入两种方式, 任一成立即通过, 可单独用也可共用:
-	//   AdminEmails    UPN 白名单 (历史方式, 小团队直接列人)
-	//   AdminGroupIDs  Entra Security Group 的 Object ID (GUID) 列表,
-	//                  组员即有 admin 权限, 无需改 env
-	// 两个都为空 = admin 后台完全禁用.
+	// --- Guest-code admin (optional) ---
+	// /admin can be authorized in either or both ways:
+	//   AdminEmails    UPN allowlist, useful for small teams.
+	//   AdminGroupIDs  Entra Security Group Object IDs; members become admins without env changes.
+	// If both are empty, the admin console is fully disabled.
 	AdminEmails   []string
 	AdminGroupIDs []string
 
-	// --- 限流配置 ---
-	// 规则 1: /auth/start 按邮箱失败计数, 双窗口. 成功回调清零.
-	AuthEmailFailsShort  int           // 短窗口上限 (default 5)
-	AuthEmailWindowShort time.Duration // 短窗口长度 (default 3m)
-	AuthEmailFailsLong   int           // 长窗口上限 (default 20)
-	AuthEmailWindowLong  time.Duration // 长窗口长度 (default 1h)
-	// 规则 5: /auth/guest-code 按 MAC 失败计数, 成功清零.
-	GuestCodeMacFails  int           // 默认 6
-	GuestCodeMacWindow time.Duration // 默认 30m
-	// 规则 6: 单 IP 跨端点累计失败, 超限后短时冷却. 默认不升级永久,
-	// 因为内网 DHCP IP 不适合作为长期身份.
-	IPFailsLimit    int           // 默认 20
-	IPFailsWindow   time.Duration // 默认 5m
-	IPBanDuration   time.Duration // 冷却时长, 默认 2m
-	IPBanEscalateAt int           // 第 N 次触发永久封禁, 默认 999999 (近似关闭)
-	// 账号枚举防护: /auth/start 返回 opaque token, 浏览器访问 /auth/proceed 再内跳.
-	AuthProceedTTL time.Duration // token 存活 (default 5m)
+	// --- Rate-limit configuration ---
+	// Rule 1: /auth/start counts email failures with two windows. Successful callbacks reset them.
+	AuthEmailFailsShort  int           // Short-window limit (default 5).
+	AuthEmailWindowShort time.Duration // Short-window duration (default 3m).
+	AuthEmailFailsLong   int           // Long-window limit (default 20).
+	AuthEmailWindowLong  time.Duration // Long-window duration (default 1h).
+	// Rule 5: /auth/guest-code counts failures by MAC and resets on success.
+	GuestCodeMacFails  int           // Default 6.
+	GuestCodeMacWindow time.Duration // Default 30m.
+	// Rule 6: one IP accumulates failures across endpoints and gets a short cooldown when over limit.
+	// Permanent escalation is disabled by default because internal DHCP IPs are poor long-term identities.
+	IPFailsLimit    int           // Default 20.
+	IPFailsWindow   time.Duration // Default 5m.
+	IPBanDuration   time.Duration // Cooldown duration, default 2m.
+	IPBanEscalateAt int           // Trigger permanent deny at the Nth cooldown, default 999999 (effectively off).
+	// Account-enumeration defense: /auth/start returns an opaque token; /auth/proceed performs the redirect.
+	AuthProceedTTL time.Duration // Token lifetime (default 5m).
 
-	// --- 事件日志 (admin observability) ---
-	EventLogRetention time.Duration // 超过此时长的事件会被 gc 掉, 默认 7 天
+	// --- Event log (admin observability) ---
+	EventLogRetention time.Duration // Events older than this are garbage-collected, default 7 days.
 }
 
 func loadConfig() Config {
@@ -155,7 +154,7 @@ func loadConfig() Config {
 	}
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
 
-	// Duo: 5 个字段要么全填 要么全空, 给一半就报错
+	// Duo: all five fields must be either set or empty; partial configuration is fatal.
 	duoFields := map[string]string{
 		"DUO_IKEY":          cfg.DuoIKey,
 		"DUO_SKEY":          cfg.DuoSKey,
@@ -181,15 +180,15 @@ func loadConfig() Config {
 	return cfg
 }
 
-// IsDuoEnabled: 5 个 Duo 字段都填了才算启用.
+// IsDuoEnabled reports whether all five Duo fields are configured.
 func (c Config) IsDuoEnabled() bool {
 	return c.DuoIKey != "" && c.DuoSKey != "" &&
 		c.DuoClientID != "" && c.DuoClientSecret != "" &&
 		c.DuoAPIHost != ""
 }
 
-// IsAdminEnabled 是否开放 admin 后台 + 访客码流程.
-// UPN 白名单和组准入任一配置即视为启用.
+// IsAdminEnabled reports whether the admin console and guest-code flow are enabled.
+// Either UPN allowlist or group-based access enables it.
 func (c Config) IsAdminEnabled() bool {
 	return len(c.AdminEmails) > 0 || len(c.AdminGroupIDs) > 0
 }
@@ -212,7 +211,7 @@ func (c Config) RedirectURL() string {
 	return c.PublicURL + "/auth/callback"
 }
 
-// --- 小工具 ---
+// --- Helpers ---
 
 func mustEnv(key string) string {
 	v := os.Getenv(key)
@@ -249,9 +248,9 @@ func envOrNonNegativeInt(key string, fallback int) int {
 	return n
 }
 
-// envOrDuration: 解析 time.Duration (如 "5m", "1h30m"). 空值走 fallback.
-// envOrBool: 解析 "true/false/1/0/yes/no/on/off". 空值走 fallback.
-// 不接受其它字符串 — 错配是致命的限流问题, 直接 fatal 暴露问题.
+// envOrDuration parses time.Duration values such as "5m" or "1h30m". Empty uses fallback.
+// envOrBool parses "true/false/1/0/yes/no/on/off". Empty uses fallback.
+// Other strings are fatal because rate-limit misconfiguration should be surfaced immediately.
 func envOrBool(key string, fallback bool) bool {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
 	if v == "" {
@@ -279,12 +278,11 @@ func envOrDuration(key string, fallback time.Duration) time.Duration {
 	return d
 }
 
-// sanitizeBrandColor 校验 BRAND_COLOR env 是合法 CSS 颜色 (#rgb / #rrggbb / #rrggbbaa).
-// 非法值静默回退到 fallback — admin 错填不该让进程启动失败.
+// sanitizeBrandColor validates that BRAND_COLOR is a safe CSS color (#rgb / #rrggbb / #rrggbbaa).
+// Invalid values silently fall back so a bad admin value does not prevent startup.
 //
-// 原因: 颜色值在模板里直接拼进 <style>--brand: X;</style>. html/template 的 CSS
-// 上下文转义并不阻挡 CSS 语法逃逸 (如 "red; } body { display:none } /*"),
-// 必须在入口卡白名单.
+// Reason: the value is inserted into <style>--brand: X;</style>. html/template CSS-context escaping
+// does not prevent CSS syntax injection, so the entry point must enforce an allowlist.
 func sanitizeBrandColor(raw, fallback string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -296,8 +294,8 @@ func sanitizeBrandColor(raw, fallback string) string {
 	return s
 }
 
-// isHexColor 严格匹配 #RGB / #RRGGBB / #RRGGBBAA, 字符限 [0-9a-fA-F]. 不依赖 regexp,
-// 启动期热路径手写更小.
+// isHexColor strictly matches #RGB / #RRGGBB / #RRGGBBAA with [0-9a-fA-F] only.
+// Avoid regexp here to keep startup-path validation small.
 func isHexColor(s string) bool {
 	if len(s) < 4 || s[0] != '#' {
 		return false
