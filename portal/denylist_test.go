@@ -1,12 +1,12 @@
 package main
 
 // denylist_test.go
-// MAC 封禁列表的核心语义:
-//   - normalizeMAC: 各种格式 → aa:bb:cc:dd:ee:ff
-//   - AddMAC 拒非法 MAC + 不重复添加 + 写盘
+// Core MAC denylist semantics:
+//   - normalizeMAC converts many formats to aa:bb:cc:dd:ee:ff.
+//   - AddMAC rejects invalid MACs, avoids duplicates, and writes to disk.
 //   - DeleteMAC / DeleteAllMACs
-//   - JSON 持久化 round-trip
-//   - L1 回归: createdBy 不被外部覆盖 (在 main_handler_test.go 测 handler 路径)
+//   - JSON persistence round-trip.
+//   - L1 regression: createdBy is not overwritten by external input.
 
 import (
 	"os"
@@ -24,7 +24,7 @@ func TestNormalizeMAC(t *testing.T) {
 		{"AABBCCDDEEFF", "aa:bb:cc:dd:ee:ff"},
 		{"aa bb cc dd ee ff", "aa:bb:cc:dd:ee:ff"},
 		{"", ""},
-		{"not-a-mac", "not-a-mac"}, // 非 12 字符 hex 走原样 lowercase
+		{"not-a-mac", "not-a-mac"}, // Non-12-hex input is returned lowercased as-is.
 	}
 	for _, c := range cases {
 		if got := normalizeMAC(c.in); got != c.want {
@@ -40,9 +40,9 @@ func TestIsNormalizedMAC(t *testing.T) {
 	}{
 		{"aa:bb:cc:dd:ee:ff", true},
 		{"00:11:22:33:44:55", true},
-		{"AA:BB:CC:DD:EE:FF", false}, // 大写不算 normalized
-		{"aabbccddeeff", false},      // 没冒号不算 normalized
-		{"aa:bb:cc:dd:ee", false},    // 不够长
+		{"AA:BB:CC:DD:EE:FF", false}, // Uppercase is not normalized.
+		{"aabbccddeeff", false},      // Missing colons is not normalized.
+		{"aa:bb:cc:dd:ee", false},    // Too short.
 		{"", false},
 	}
 	for _, c := range cases {
@@ -74,7 +74,7 @@ func TestDenylistStore_AddNormalizes(t *testing.T) {
 	if item.MAC != "aa:bb:cc:dd:ee:ff" {
 		t.Errorf("stored MAC = %q, want normalized", item.MAC)
 	}
-	// 用不同格式查同一个 MAC 应能查到
+	// Different formats for the same MAC should match.
 	if _, denied := s.IsMACDenied("aabbccddeeff"); !denied {
 		t.Error("IsMACDenied must work across input formats")
 	}
@@ -90,7 +90,7 @@ func TestDenylistStore_AddDuplicateNoOp(t *testing.T) {
 	if created {
 		t.Error("duplicate Add must report created=false")
 	}
-	// 第二次添加不应覆盖第一次的 reason / createdBy (重要: 审计可追溯)
+	// Second add must not overwrite the original reason/createdBy, preserving audit traceability.
 	if item.Reason != "first" || item.CreatedBy != "alice" {
 		t.Errorf("duplicate Add overwrote original metadata: %+v", item)
 	}
@@ -143,7 +143,7 @@ func TestDenylistStore_PersistRoundTrip(t *testing.T) {
 		if len(items) != 2 {
 			t.Fatalf("reload count = %d, want 2", len(items))
 		}
-		// 顺序按 CreatedAt 倒序, 但内容应稳定. 验证 normalize 也生效了.
+		// Order is CreatedAt descending and content is stable. Also verifies normalization.
 		seen := map[string]string{}
 		for _, item := range items {
 			seen[item.MAC] = item.Reason
@@ -158,7 +158,7 @@ func TestDenylistStore_PersistRoundTrip(t *testing.T) {
 }
 
 func TestDenylistStore_PersistFileMode(t *testing.T) {
-	// 持久化文件不能被其它用户读 (内含运维封禁原因等敏感信息)
+	// Persistence files must not be readable by other users because they contain sensitive ops notes.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "denylist.json")
 	s, err := newDenylistStore(path)
@@ -167,7 +167,7 @@ func TestDenylistStore_PersistFileMode(t *testing.T) {
 	}
 	s.AddMAC("aa:bb:cc:dd:ee:ff", "r", "a")
 
-	// 文件应该是 0600
+	// File mode should be 0600.
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)

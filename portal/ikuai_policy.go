@@ -1,9 +1,9 @@
 package main
 
 // ikuai_policy.go
-// iKuai 放行策略: 按认证来源设置上传 / 下载限速、认证超时和 comment.
-// 访客码的认证超时由每个访客码自己的单次限时决定, 不走全局策略.
-// Env 提供启动默认值; Admin 修改后可选 JSON 持久化.
+// iKuai allow-list policy: upload/download limits, auth timeout, and comment by auth source.
+// Guest-code auth timeout comes from each code's per-use duration, not the global policy.
+// Env provides startup defaults; admin changes can be persisted as JSON.
 
 import (
 	"encoding/json"
@@ -24,9 +24,9 @@ const (
 )
 
 type IKuaiPolicy struct {
-	Upload   int    `json:"upload"`   // KB, 0 = 不限
-	Download int    `json:"download"` // KB, 0 = 不限
-	Timeout  int    `json:"timeout"`  // 分钟, 0 = 不过期
+	Upload   int    `json:"upload"`   // KB/s, 0 means unlimited.
+	Download int    `json:"download"` // KB/s, 0 means unlimited.
+	Timeout  int    `json:"timeout"`  // Minutes, 0 means never expires.
 	Comment  string `json:"comment,omitempty"`
 }
 

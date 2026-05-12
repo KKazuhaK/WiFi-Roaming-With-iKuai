@@ -1,25 +1,25 @@
 name: release
 
-# 触发: git tag v*.*.* push 上来.
+# Trigger: push a git tag matching v*.*.*.
 #
-# 流程:
-#   1. 交叉编译 Go 二进制 linux/amd64 + linux/arm64
-#   2. buildx 构建 multi-arch Docker image, 推到 ghcr.io
-#   3. 单独把 amd64 / arm64 image 各 save 成 tarball (模式 C 离线部署用)
-#   4. 算 SHA-256 checksums
-#   5. 创建 GitHub Release, 附二进制 + tarball + checksums
+# Flow:
+#   1. Cross-compile Go binaries for linux/amd64 and linux/arm64.
+#   2. Build and push a multi-arch Docker image to ghcr.io with buildx.
+#   3. Save amd64 and arm64 images as tarballs for Mode C offline deployment.
+#   4. Compute SHA-256 checksums.
+#   5. Create a GitHub Release with binaries, tarballs, and checksums.
 #
-# 使用:
+# Usage:
 #   git tag v0.1.0
 #   git push origin v0.1.0
-# 完事去 Releases 页面看产物.
+# Then check the Releases page for assets.
 
 on:
   push:
     tags:
       - "v*.*.*"
 
-# release workflow 需要写 contents (创建 release) + packages (推 ghcr.io)
+# Release workflow needs contents write for releases and packages write for ghcr.io push.
 permissions:
   contents: write
   packages: write
@@ -36,8 +36,8 @@ jobs:
           cache: true
           cache-dependency-path: portal/go.sum
 
-      # ghcr.io 强制 owner 小写, 而 github.repository_owner 保留原大小写
-      # (KKazuhaK → 必须用 kkazuhak). 提前算好放进 env.
+      # ghcr.io requires lowercase owner while github.repository_owner preserves original casing.
+      # Compute it once and place it in env.
       - name: compute lowercase image name
         run: |
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
@@ -46,7 +46,7 @@ jobs:
       - name: prepare dist dir
         run: mkdir -p dist
 
-      # --- Go 裸二进制 (无 Docker 依赖, 想直接跑的人用) ---
+      # --- Bare Go binaries without Docker dependency ---
 
       - name: build linux/amd64 binary
         working-directory: portal
@@ -62,7 +62,7 @@ jobs:
             -trimpath -ldflags="-s -w" \
             -o ../dist/wifi-portal-${{ github.ref_name }}-linux-arm64 .
 
-      # --- Docker image: multi-arch 推 ghcr.io + 单 arch tarball ---
+      # --- Docker image: multi-arch push to ghcr.io plus single-arch tarballs ---
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -87,7 +87,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 模式 C (Synology / iKuai UI) 要 tarball — buildx 单 arch 输出到本地
+      # Mode C (Synology / iKuai UI) needs tarballs; buildx outputs single-arch images locally.
       - name: save amd64 tarball
         run: |
           docker buildx build --platform linux/amd64 \
@@ -106,7 +106,7 @@ jobs:
             portal
           docker save wifi-portal:arm64 | gzip > dist/wifi-portal-${{ github.ref_name }}-arm64.tar.gz
 
-      # --- checksums + release ---
+      # --- Checksums + release ---
 
       - name: compute SHA-256 checksums
         working-directory: dist
@@ -117,7 +117,7 @@ jobs:
       - name: create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # 注意: tag 触发的 push event 已经隐式带 tag_name,softprops 默认拾取
+          # Tag-triggered push events already carry tag_name; softprops picks it up by default.
           files: |
             dist/wifi-portal-${{ github.ref_name }}-linux-amd64
             dist/wifi-portal-${{ github.ref_name }}-linux-arm64
@@ -125,23 +125,22 @@ jobs:
             dist/wifi-portal-${{ github.ref_name }}-arm64.tar.gz
             dist/checksums.txt
           generate_release_notes: true
-          # body 可以加固定段, 比如 "镜像地址" 提示, 但通常 release notes 自动从
-          # commit 拉就够清楚.
+          # body can include fixed guidance such as image addresses; generated notes cover commits.
           body: |
             ### Docker image (ghcr.io)
             ```bash
             docker pull ${{ env.IMAGE }}:${{ github.ref_name }}
-            # 或 latest
+            # Or latest.
             docker pull ${{ env.IMAGE }}:latest
             ```
 
-            ### 离线部署 (模式 C)
-            从下方 Assets 下载 `wifi-portal-<tag>-<arch>.tar.gz`:
+            ### Offline deployment (Mode C)
+            Download `wifi-portal-<tag>-<arch>.tar.gz` from Assets below:
             ```bash
             gunzip -c wifi-portal-${{ github.ref_name }}-amd64.tar.gz | docker load
             ```
 
-            ### 验证
+            ### Verify
             ```bash
             sha256sum -c checksums.txt
             ```

@@ -1,8 +1,8 @@
 package main
 
 // oidc.go
-// Entra ID (Azure AD) OIDC 授权码流程的封装.
-// AuthURL 支持 loginHint (=用户已输入的邮箱) 让 Entra 登录页预填邮箱, 省用户再敲一次.
+// Wrapper for the Entra ID (Azure AD) OIDC authorization-code flow.
+// AuthURL supports loginHint, using the email already typed by the user to prefill Entra login.
 
 import (
 	"context"
@@ -27,21 +27,21 @@ type UserInfo struct {
 	Name     string
 	Email    string
 	TenantID string
-	Groups   []string // Entra Security Group 的 Object ID 列表, 用于 admin 准入
+	Groups   []string // Entra Security Group Object IDs for admin access.
 }
 
 func (u UserInfo) IsGuest() bool {
-	// case-insensitive: Microsoft 当前用大写 "#EXT#", 但单一大小写匹配防御
-	// 太脆 — 不值得让 guest 检测失败的可能性绑在供应商不会改格式上.
+	// Case-insensitive: Microsoft currently uses uppercase "#EXT#", but security should not rely
+	// on a vendor never changing this casing.
 	return strings.Contains(strings.ToUpper(u.UPN), "#EXT#")
 }
 
-// IsAdmin 判定是否有 /admin 后台权限. 两种路径任一成立即通过:
-//   1. UPN 在 ADMIN_EMAILS 列表里
-//   2. 任意一个用户所属组 ID 出现在 ADMIN_GROUP_IDS 里
-// 只在登录回调时调用 — 之后 /admin 请求靠 cookie 信任.
-// 注意: Entra 对超过 ~200 个组的用户会改发 _claim_names overage 指示,
-// id_token 里不再直接列出 groups. 小团队不会碰到.
+// IsAdmin reports whether the user can access /admin. Either path is sufficient:
+//   1. UPN is in ADMIN_EMAILS.
+//   2. Any user group ID is in ADMIN_GROUP_IDS.
+// It only runs during login callback; later /admin requests trust the cookie.
+// Note: Entra uses _claim_names overage indicators for users in more than ~200 groups and stops
+// listing groups directly in id_token. Small teams usually do not hit this.
 func (u UserInfo) IsAdmin(cfg Config) bool {
 	if cfg.IsAdminEmail(u.UPN) {
 		return true
@@ -79,8 +79,8 @@ func newOIDCClient(ctx context.Context, cfg Config) (*OIDCClient, error) {
 	return &OIDCClient{provider: provider, oauth: oauth, verifier: verifier}, nil
 }
 
-// AuthURL: 构造去 Entra 的授权 URL.
-// loginHint 非空时作为 login_hint 传过去, Entra 登录页会预填这个邮箱.
+// AuthURL builds the authorization URL for Entra.
+// A non-empty loginHint is sent as login_hint so Entra can prefill the email field.
 func (c *OIDCClient) AuthURL(state, nonce, loginHint string) string {
 	opts := []oauth2.AuthCodeOption{
 		oidc.Nonce(nonce),
@@ -116,8 +116,8 @@ func (c *OIDCClient) Exchange(ctx context.Context, cfg Config, code, expectedNon
 		PreferredUsername string   `json:"preferred_username"`
 		TID               string   `json:"tid"`
 		Groups            []string `json:"groups"`
-		// 如果用户所属组太多超出 id_token 限制, Entra 只发 _claim_names + _claim_sources,
-		// 用户需要去 Graph API 拉. 我们不处理这种情况, 有需要再加 Graph 调用.
+		// If the user belongs to too many groups for id_token, Entra sends only _claim_names and
+		// _claim_sources; resolving that requires Graph API and is intentionally not handled here.
 		ClaimNames map[string]string `json:"_claim_names"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
@@ -127,10 +127,9 @@ func (c *OIDCClient) Exchange(ctx context.Context, cfg Config, code, expectedNon
 		return nil, fmt.Errorf("tenant mismatch: expected %s, got %s", cfg.TenantID, claims.TID)
 	}
 	if _, overage := claims.ClaimNames["groups"]; overage && len(claims.Groups) == 0 {
-		// 用户组太多触发 overage, Entra 只发 _claim_names 指向 Graph API,
-		// 没把真实的组 ID 放 id_token 里. 我们不调 Graph, 所以这种用户靠组
-		// 准入 admin 会失败; 靠 UPN 白名单的 admin 不受影响.
-		// 打一行日志, 排查 "明明在 admin 组里为什么拒我" 时有迹可循.
+		// Group overage: Entra sent _claim_names pointing to Graph API instead of real group IDs.
+		// Because this portal does not call Graph, group-based admin access will fail for this user;
+		// UPN allowlist access still works. Log this for troubleshooting.
 		log.Printf("OIDC: user %q has groups overage; admin-via-group unavailable, use ADMIN_EMAILS or wire Graph API", claims.UPN)
 	}
 	upn := claims.UPN

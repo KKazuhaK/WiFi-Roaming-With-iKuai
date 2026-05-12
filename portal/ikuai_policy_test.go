@@ -1,12 +1,12 @@
 package main
 
 // ikuai_policy_test.go
-// iKuai 放行策略的核心语义:
+// Core iKuai allow-list policy semantics:
 //   - Set/Get round-trip
-//   - validate 拒负数 / 长 comment
-//   - guest profile timeout 强制为 0 (不走全局超时)
-//   - 持久化 round-trip
-//   - List 顺序稳定 (UI 渲染)
+//   - validate rejects negative values and long comments
+//   - guest profile timeout is forced to 0 and does not use the global timeout
+//   - persistence round-trip
+//   - stable List order for UI rendering
 
 import (
 	"path/filepath"
@@ -47,10 +47,10 @@ func TestIKuaiPolicyStore_GuestTimeoutForcedZero(t *testing.T) {
 	}
 	got := s.Get(IKuaiProfileGuest)
 	if got.Timeout != 0 {
-		t.Errorf("guest profile Timeout = %d, want forced 0 (访客码用每码 DurationMin 不走全局)",
+		t.Errorf("guest profile Timeout = %d, want forced 0 (guest codes use per-code DurationMin)",
 			got.Timeout)
 	}
-	// 显式 Set 也应被强制
+	// Explicit Set should also be forced.
 	if err := s.Set(IKuaiProfileGuest, IKuaiPolicy{Timeout: 30}); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestIKuaiPolicyStore_PersistRoundTrip(t *testing.T) {
 		if got.Upload != 500 || got.Comment != "edited" {
 			t.Errorf("reload lost data: %+v", got)
 		}
-		// 没改的 profile 应保留 defaults
+		// Unchanged profiles should keep defaults.
 		if d := s2.Get(IKuaiProfileDuo); d.Upload != 0 || d.Comment != "" {
 			t.Errorf("Duo profile got polluted on reload: %+v", d)
 		}
@@ -114,7 +114,7 @@ func TestIKuaiPolicyStore_PersistRoundTrip(t *testing.T) {
 }
 
 func TestIKuaiPolicyStore_ListStableOrder(t *testing.T) {
-	// admin UI 依赖 List 顺序稳定 (sso, duo, guest), 不能因 map 遍历乱序闪烁.
+	// Admin UI depends on stable List order (sso, duo, guest) and must not flicker from map iteration.
 	s, _ := newIKuaiPolicyStore(map[IKuaiAuthProfile]IKuaiPolicy{
 		IKuaiProfileSSO:   {},
 		IKuaiProfileDuo:   {},
@@ -138,7 +138,7 @@ func TestParseIKuaiProfile(t *testing.T) {
 		ok   bool
 	}{
 		{"sso", IKuaiProfileSSO, true},
-		{"SSO", IKuaiProfileSSO, true}, // 大小写无关
+		{"SSO", IKuaiProfileSSO, true}, // Case-insensitive.
 		{"  duo  ", IKuaiProfileDuo, true},
 		{"guest", IKuaiProfileGuest, true},
 		{"unknown", "", false},

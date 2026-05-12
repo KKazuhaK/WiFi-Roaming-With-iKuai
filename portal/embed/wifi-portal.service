@@ -5,25 +5,25 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# 安装时 useradd -r -s /usr/sbin/nologin -d __DATA_DIR__ wifi-portal
+# At install time: useradd -r -s /usr/sbin/nologin -d __DATA_DIR__ wifi-portal
 User=wifi-portal
 Group=wifi-portal
 
-# 配置 + 二进制位置. wifi-portal init 时根据 --conf-dir / --bin-path / --data-dir
-# flag 替换这三个占位符. 默认值在 .env header 注释里有说明.
+# Config and binary locations. wifi-portal init replaces these placeholders from --conf-dir,
+# --bin-path, and --data-dir. Defaults are explained in the generated .env header comments.
 EnvironmentFile=__CONF_DIR__/wifi-portal.env
 ExecStart=__BIN_PATH__
 
 Restart=on-failure
 RestartSec=5s
 
-# Portal 已经处理 SIGTERM (graceful shutdown: 停 server + flush banHistory + close EventLog)
+# Portal handles SIGTERM with graceful shutdown: stop server, flush banHistory, close EventLog.
 KillSignal=SIGTERM
 TimeoutStopSec=15s
 
-# DATA_DIR (跟 .env 里的 DATA_DIR 必须一致, 否则 ProtectSystem=strict 下 Portal 写不了盘)
+# DATA_DIR must match DATA_DIR in .env, otherwise ProtectSystem=strict prevents Portal writes.
 
-# === 沙盒 / hardening ===
+# === Sandbox / hardening ===
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -37,7 +37,7 @@ RestrictNamespaces=true
 LockPersonality=true
 RestrictRealtime=true
 SystemCallArchitectures=native
-# Portal 不需要 raw socket / device access — 只听一个 TCP 端口
+# Portal does not need raw sockets or device access; it only listens on one TCP port.
 CapabilityBoundingSet=
 AmbientCapabilities=
 

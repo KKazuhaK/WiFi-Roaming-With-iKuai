@@ -1,15 +1,15 @@
 package main
 
 // eventlog.go
-// 结构化事件日志 (登录 + admin 操作). 所有事件同时保留在内存 (供快速查询) 和
-// 可选 JSONL 文件 (跨重启保留 + 支持 tail -f 排错).
+// Structured event log for logins and admin actions. Events are kept in memory for fast queries
+// and optionally written to JSONL for restart persistence and tail -f debugging.
 //
-// 存储策略:
-//   - Append(): 加锁追加到内存 slice + 一次 O_APPEND 写一条 JSON 行到文件.
-//     写文件失败只 log, 不阻塞业务路径.
-//   - Query(): 按过滤条件倒序返回, 带 limit.
-//   - Prune(): 根据保留期删旧条目, 重写全文件 (cold path, 每小时一次).
-//   - persistPath == "" → 纯内存模式.
+// Storage policy:
+//   - Append(): lock, append to the memory slice, and write one JSON line with O_APPEND.
+//     File-write failures are logged and do not block the business path.
+//   - Query(): return matching events in reverse chronological order with a limit.
+//   - Prune(): delete entries older than retention and rewrite the file on the hourly cold path.
+//   - persistPath == "" means memory-only mode.
 
 import (
 	"bufio"
@@ -26,10 +26,10 @@ import (
 	"time"
 )
 
-// Event 一条结构化事件.
+// Event is one structured event.
 type Event struct {
 	Time    time.Time `json:"time"`
-	Kind    string    `json:"kind"`    // 见 Kind 常量
+	Kind    string    `json:"kind"`    // See Kind constants.
 	Subject string    `json:"subject"` // user UPN / Guest-xxxxx / admin UPN / "(guest)" / "(unknown)"
 	Result  string    `json:"result"`  // started / success / denied / rate_limited / error
 	Method  string    `json:"method"`  // sso / duo / guest_code / admin
@@ -54,37 +54,37 @@ const (
 	MethodAdmin     = "admin"
 )
 
-// EventQueryFilter 查询过滤器. 空字符串视为不过滤该维度.
+// EventQueryFilter is a query filter. Empty strings mean no filtering for that dimension.
 type EventQueryFilter struct {
 	Kind    string
 	Method  string
 	Result  string
 	Subject string
-	Since   time.Time // 包含
-	Until   time.Time // 包含
-	Limit   int       // 0 或负数视为不限
+	Since   time.Time // Inclusive.
+	Until   time.Time // Inclusive.
+	Limit   int       // 0 or negative means unlimited.
 }
 
-// EventLog 内存事件存储 + 可选 JSONL 持久化.
+// EventLog stores events in memory with optional JSONL persistence.
 //
-// 单锁 (mu): 同时保护内存 events + 文件写入. C2 修复关键: Append 释放 mu 之后
-// 才写盘的旧实现会让 Prune (在 Append 之后入 mu, copy 内存, 释放 mu, rewrite 全量)
-// 和 Append 的 disk write 互相穿插, 造成事件在文件里被重复落盘. 现在 Append/Prune
-// 在持 mu 期间一并完成 disk write, 二者必然顺序串行.
+// A single lock protects both in-memory events and file writes. This is the key C2 fix: the old
+// implementation wrote to disk after releasing mu, allowing Prune and Append disk writes to
+// interleave and duplicate events in the file. Append and Prune now complete disk writes while
+// holding mu, so they are strictly serialized.
 //
-// 性能上: 每条 Append 多花 ~0.5ms 写盘 (磁盘缓存命中) — captive portal 负载不到
-// 1k QPS, 完全够用. open/close 开销 (H4) 通过 long-lived file handle 消除:
-// 启动时一次 OpenFile, Prune rewrite 时关旧 handle / 开新 handle.
+// Performance: each Append spends about 0.5ms writing through the OS cache, which is sufficient
+// for sub-1k-QPS captive-portal traffic. H4 open/close overhead is removed with a long-lived file
+// handle opened at startup and replaced after Prune rewrites.
 type EventLog struct {
 	mu          sync.Mutex
 	events      []Event
 	persistPath string
 	retention   time.Duration
-	logFile     *os.File // long-lived O_APPEND handle, 复用以避免每条 Append 都 open/close
+	logFile     *os.File // Long-lived O_APPEND handle, reused to avoid open/close per Append.
 }
 
-// newEventLog 构造一个 EventLog. persistPath == "" → 纯内存.
-// 启动时会尝试从 JSONL 加载 + 打开长期 file handle (H4).
+// newEventLog constructs an EventLog. persistPath == "" means memory-only.
+// Startup loads JSONL and opens the long-lived file handle (H4).
 func newEventLog(persistPath string, retention time.Duration) (*EventLog, error) {
 	e := &EventLog{
 		persistPath: persistPath,
@@ -102,7 +102,7 @@ func newEventLog(persistPath string, retention time.Duration) (*EventLog, error)
 	return e, nil
 }
 
-// openLogFile 打开 long-lived O_APPEND handle. 持 mu 时调.
+// openLogFile opens the long-lived O_APPEND handle. Call with mu held.
 func (e *EventLog) openLogFile() error {
 	if e.persistPath == "" {
 		return nil
@@ -119,7 +119,7 @@ func (e *EventLog) openLogFile() error {
 	return nil
 }
 
-// Close 关闭 file handle. shutdown 时调用.
+// Close closes the file handle during shutdown.
 func (e *EventLog) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -178,12 +178,12 @@ func (e *EventLog) retentionCutoff() time.Time {
 	return time.Now().Add(-e.retention)
 }
 
-// maxEventsInMemory 内存里事件最大条数. 防攻击下事件爆炸 + 7 天保留期间内 OOM.
-// 超过则丢最老的. 落盘文件不受这个限制 (Prune 按时间裁剪).
+// maxEventsInMemory caps in-memory events to avoid OOM during attacks with a 7-day retention.
+// Oldest entries are dropped when exceeded. The on-disk file is only pruned by time.
 const maxEventsInMemory = 100000
 
-// Append 追加一条事件. 内存 + 写盘在同一把 mu 内完成, 跟 Prune 互斥, 防 C2 dup.
-// 写盘失败只 log, 不阻塞 — 事件日志不是关键业务路径.
+// Append adds one event. Memory update and disk write happen under the same mu and exclude Prune,
+// preventing C2 duplicates. Disk failures are logged and do not block the business path.
 func (e *EventLog) Append(ev Event) {
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
@@ -192,7 +192,7 @@ func (e *EventLog) Append(ev Event) {
 	defer e.mu.Unlock()
 	e.events = append(e.events, ev)
 	if len(e.events) > maxEventsInMemory {
-		// 砍最老的 10%, 一次性切 — 比每次 Append 都 shift O(n) 划算
+		// Drop the oldest 10% in one slice operation instead of shifting O(n) on every Append.
 		drop := len(e.events) - maxEventsInMemory*9/10
 		e.events = append([]Event(nil), e.events[drop:]...)
 	}
@@ -204,7 +204,7 @@ func (e *EventLog) Append(ev Event) {
 	}
 }
 
-// appendToDiskLocked: 必须持 mu 调用. 用 long-lived logFile 句柄, 不再每条 open/close.
+// appendToDiskLocked must be called with mu held. It uses the long-lived logFile handle.
 func (e *EventLog) appendToDiskLocked(ev Event) error {
 	data, err := json.Marshal(ev)
 	if err != nil {
@@ -217,12 +217,11 @@ func (e *EventLog) appendToDiskLocked(ev Event) error {
 	return nil
 }
 
-// Query 按过滤条件倒序 (最新在前) 返回事件.
+// Query returns events matching the filter, newest first.
 //
-// M6: 不再依赖 e.events 的时间单调递增 — NTP 跳回时, Append 后切片可能乱序.
-// 旧实现倒序扫 + early break, 在乱序场景会 limit 提前截断漏算最新事件.
-// 现改为完整扫 → 收集 match → 按 Time 倒序排序 → 取前 Limit 条.
-// 100k events 时多花 ~10ms, admin 操作可接受.
+// M6: do not rely on e.events being monotonic. NTP moving backward can make appended events
+// out of order. The old reverse scan with early break could apply Limit too soon and miss newer
+// events. Now it scans all events, collects matches, sorts by Time descending, and applies Limit.
 func (e *EventLog) Query(f EventQueryFilter) []Event {
 	subjectLower := strings.ToLower(f.Subject)
 	e.mu.Lock()
@@ -242,9 +241,8 @@ func (e *EventLog) Query(f EventQueryFilter) []Event {
 	return matched
 }
 
-// matchEvent 是 Query / Count 共用的过滤判定. subjectLower 是 f.Subject 提前 lower
-// 一次的结果 — 避免在循环里每次都 ToLower(f.Subject). 100k 事件 × 1 次的差异是
-// real benchmark 可观察的 (M5 修复).
+// matchEvent is the shared predicate for Query and Count. subjectLower is f.Subject lowered once
+// before the loop to avoid repeated ToLower calls; the 100k-event benchmark difference is visible.
 func matchEvent(ev Event, f EventQueryFilter, subjectLower string) bool {
 	if f.Kind != "" && ev.Kind != f.Kind {
 		return false
@@ -269,7 +267,7 @@ func matchEvent(ev Event, f EventQueryFilter, subjectLower string) bool {
 	return true
 }
 
-// Count 返回匹配过滤条件的事件总数 (不受 Limit 限制).
+// Count returns the total number of matching events, ignoring Limit.
 func (e *EventLog) Count(f EventQueryFilter) int {
 	subjectLower := strings.ToLower(f.Subject)
 	e.mu.Lock()
@@ -283,11 +281,11 @@ func (e *EventLog) Count(f EventQueryFilter) int {
 	return n
 }
 
-// MultiCount 一次扫表对多个过滤条件分别计数. 用于 buildDashboard 这种要拿
-// {LoginsToday, LoginsWeek, FailedDenied7d, ...} 多组数字的场景 — 取代 N 次
-// Count 的 N 次全表扫. 100k 事件 × N=5 → N=1, 实测 admin /admin 加载快几十 ms.
+// MultiCount scans the table once and counts several filters. It is used by buildDashboard for
+// groups such as {LoginsToday, LoginsWeek, FailedDenied7d, ...}, replacing N full Count scans.
+// For 100k events and N=5 this makes /admin load tens of milliseconds faster.
 //
-// H6 修复. 返回 slice 长度跟入参一致, 顺序对应.
+// H6 fix. The returned slice has the same length and order as the input filters.
 func (e *EventLog) MultiCount(filters []EventQueryFilter) []int {
 	subjectLowers := make([]string, len(filters))
 	for i, f := range filters {
@@ -306,8 +304,8 @@ func (e *EventLog) MultiCount(filters []EventQueryFilter) []int {
 	return counts
 }
 
-// Prune 删除早于 cutoff 的条目, 重写整个文件. 返回删了多少条.
-// 全程持 mu — 避免 Append 在锁外把刚被 rewrite 包含的事件再 O_APPEND 一遍 (C2).
+// Prune removes entries older than cutoff, rewrites the file, and returns the removed count.
+// It holds mu throughout so Append cannot O_APPEND an event already included in the rewrite (C2).
 func (e *EventLog) Prune() int {
 	cutoff := e.retentionCutoff()
 	if cutoff.IsZero() {
@@ -333,10 +331,10 @@ func (e *EventLog) Prune() int {
 	return removed
 }
 
-// rewriteFileLocked: 必须持 mu. 关旧 handle, tmp+rename, 重开新 handle.
+// rewriteFileLocked must be called with mu held. It closes the old handle, tmp+renames, then reopens.
 func (e *EventLog) rewriteFileLocked(events []Event) error {
-	// 关旧 handle 后才能安全 rename — Linux 上其实可以 rename 已打开文件,
-	// macOS 也行, 但保险起见先关. 重开后 inode 可能换, 但 OS 路径解析一致.
+	// Close the old handle before rename for conservative cross-platform behavior. Reopen may get a
+	// new inode, but OS path resolution stays consistent.
 	if e.logFile != nil {
 		_ = e.logFile.Close()
 		e.logFile = nil
@@ -348,7 +346,7 @@ func (e *EventLog) rewriteFileLocked(events []Event) error {
 	tmp := e.persistPath + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
-		// 重开 logFile 失败不致命 — 下次 Append 仍会 nil-check
+		// Failing to reopen logFile is non-fatal; the next Append still nil-checks it.
 		_ = e.openLogFile()
 		return fmt.Errorf("open %s: %w", tmp, err)
 	}
@@ -389,11 +387,11 @@ func (e *EventLog) rewriteFileLocked(events []Event) error {
 		_ = e.openLogFile()
 		return fmt.Errorf("rename: %w", err)
 	}
-	// rename 成功, 重开 long-lived handle 指向新文件
+	// Rename succeeded; reopen the long-lived handle against the new file.
 	return e.openLogFile()
 }
 
-// gcLoop 每小时跑一次 Prune.
+// gcLoop runs Prune hourly.
 func (e *EventLog) gcLoop() {
 	if e.retention <= 0 {
 		return
@@ -405,14 +403,13 @@ func (e *EventLog) gcLoop() {
 	}
 }
 
-// --- CSV 导出 ---
+// --- CSV export ---
 
-// sanitizeCSVCell: CSV 注入防护. Excel/LibreOffice/Numbers 会把以
-//   = + - @ Tab CR
-// 起头的 cell 当公式求值, 攻击者可构造 =WEBSERVICE(...) / =cmd|'/c calc'!A0
-// 之类做 RCE 或外联. 我们在前面塞一个单引号把 cell 强制成纯文本.
+// sanitizeCSVCell protects against CSV formula injection. Excel/LibreOffice/Numbers evaluate cells
+// starting with = + - @ Tab CR as formulas; attackers can use values such as =WEBSERVICE(...) or
+// =cmd|'/c calc'!A0 for exfiltration or RCE. Prefixing a single quote forces plain text.
 //
-// 注意: 只看首字符. 中段的 @ (如 alice@example.com) 不算.
+// Only the first character matters. An @ in the middle, such as alice@example.com, is safe.
 func sanitizeCSVCell(s string) string {
 	if s == "" {
 		return s
@@ -424,8 +421,8 @@ func sanitizeCSVCell(s string) string {
 	return s
 }
 
-// writeCSVRowSafe 把每个 cell 过一遍 sanitizeCSVCell 再写, 避免每个 caller
-// 都得手动包一遍. 列头不过滤 — 列头是我们硬编码的常量, 不可能命中.
+// writeCSVRowSafe sanitizes every cell before writing so callers do not repeat that logic.
+// Headers are not filtered because they are hard-coded constants.
 func writeCSVRowSafe(cw *csv.Writer, cells []string) error {
 	safe := make([]string, len(cells))
 	for i, c := range cells {
@@ -434,13 +431,13 @@ func writeCSVRowSafe(cw *csv.Writer, cells []string) error {
 	return cw.Write(safe)
 }
 
-// WriteCSV 把 events 以 UTF-8 BOM + 中文列头的 CSV 格式写到 w.
-// BOM 是为了 Excel 不乱码 (Excel 判断 UTF-8 唯一的稳定信号).
+// WriteEventsCSV writes events as CSV with a UTF-8 BOM.
+// The BOM keeps Excel from misdetecting UTF-8.
 //
-// L9 修复: 不能 `defer cw.Flush()` 后 `return cw.Error()` — defer 在 return 之后跑,
-// Flush 内部的 IO 错误丢失. 显式 Flush + 检查 Error 才能可靠拿到所有写错误.
+// L9 fix: do not `defer cw.Flush()` and then `return cw.Error()`, because defer runs after return
+// and loses IO errors from Flush. Explicit Flush + Error checks reliably capture all write errors.
 //
-// 每行数据 cell 走 sanitizeCSVCell 中和公式注入.
+// Every data cell passes through sanitizeCSVCell to neutralize formula injection.
 func WriteEventsCSV(w http.ResponseWriter, events []Event) error {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="events.csv"`)
@@ -514,7 +511,7 @@ func eventResultLabel(r string) string {
 	}
 }
 
-// logLogin 登录事件便捷 Append.
+// logLogin is a convenience wrapper for appending login events.
 func (a *App) logLogin(subject, result, method, mac, ip, detail string) {
 	if a.eventLog == nil {
 		return
@@ -530,9 +527,9 @@ func (a *App) logLogin(subject, result, method, mac, ip, detail string) {
 	})
 }
 
-// logAdminAction admin 操作事件便捷 Append.
-// ip 是 admin 当下操作所在的 client IP — 留下"管理员从哪里改的"审计痕迹.
-// 调用点都能拿到 *http.Request, 直接 clientIP(r) 传进来.
+// logAdminAction is a convenience wrapper for appending admin-action events.
+// ip is the admin's current client IP, preserving an audit trail of where changes came from.
+// Call sites already have *http.Request and pass clientIP(r) directly.
 func (a *App) logAdminAction(adminUPN, ip, result, detail string) {
 	if a.eventLog == nil {
 		return

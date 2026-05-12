@@ -1,11 +1,11 @@
 name: build
 
-# push / PR 时跑, 验证:
-#   (1) Go 代码 build / vet / test (含 race detector)
-#   (2) govulncheck 扫依赖 CVE
-#   (3) Docker 镜像能构建出来
+# Runs on push / PR and verifies:
+#   (1) Go build / vet / test, including race detector.
+#   (2) govulncheck dependency and stdlib CVE scan.
+#   (3) Docker image build.
 #
-# 本地没装 Go 时, 这就是你的编译器 + 测试机.
+# When Go is not installed locally, this workflow is the compiler and test machine.
 
 on:
   push:
@@ -25,8 +25,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          # 锁到 1.25.10+: 1.25.9 的 stdlib 有 4 个 CVE (html/template/net/http2),
-          # govulncheck 会 fail. setup-go 的 ">=" 会找满足约束的最新版本.
+          # Pin to 1.25.10+ because 1.25.9 stdlib has 4 CVEs (html/template/net/http2) that
+          # make govulncheck fail. setup-go resolves ">=" to the latest satisfying version.
           go-version: ">=1.25.10"
           cache: true
           cache-dependency-path: portal/go.sum
@@ -53,8 +53,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          # 锁到 1.25.10+: 1.25.9 的 stdlib 有 4 个 CVE (html/template/net/http2),
-          # govulncheck 会 fail. setup-go 的 ">=" 会找满足约束的最新版本.
+          # Pin to 1.25.10+ because 1.25.9 stdlib has 4 CVEs (html/template/net/http2) that
+          # make govulncheck fail. setup-go resolves ">=" to the latest satisfying version.
           go-version: ">=1.25.10"
           cache: true
           cache-dependency-path: portal/go.sum
@@ -74,7 +74,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build image (不推送, 只验证 Dockerfile)
+      - name: Build image without push, only verify Dockerfile
         uses: docker/build-push-action@v5
         with:
           context: portal

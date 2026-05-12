@@ -1,37 +1,36 @@
 package main
 
 // ikuai.go
-// iKuai 自定义认证协议的两端:
-//   (a) 入: extractDeviceInfo - 从 iKuai 路由器 302 过来的 query 里扒出设备 IP 和 MAC
-//   (b) 出: buildWebAuthURL   - 生成放行 URL (含 MD5 token)，302 浏览器到 iKuai 云
+// Two sides of the iKuai custom-auth protocol:
+//   (a) Inbound: extractDeviceInfo reads device IP and MAC from the query redirected by iKuai.
+//   (b) Outbound: buildWebAuthURL creates the allow-list URL with an MD5 token and redirects there.
 //
-// 依据: iKuai 官方自定义认证对接文档
+// Based on the official iKuai custom-auth integration document.
 // https://www.ikuai8.com/index.php?option=com_content&view=article&id=774
 //
-// 文档里 token 公式 (MD5):
+// Token formula from the document (MD5):
 //   md5("user_ip={ip}&timestamp={ts}&mac={mac}&upload=0&download=0&key={appkey}")
-// 放行 URL (按官方文档):
+// Allow-list URL per the official document:
 //   https://portal.ikuai8-wifi.com/Action/webauth-up
 //     ?type=20&user_id={id}&custom_name={name}&user_ip={ip}&timestamp={ts}
 //     &mac={mac}&upload=0&download=0&token={hex}&release_type=1
 //
-// user_id / custom_name / release_type / timeout / comment 是透传参数 (不进 MD5 token 计算):
-//   user_id     — iKuai 审计日志 "账号" 列. 格式由认证类型控制:
+// user_id / custom_name / release_type / timeout / comment are pass-through parameters and are not
+// part of the MD5 token calculation:
+//   user_id     — iKuai audit-log account column. Format is controlled by auth type:
 //                  SSO → SSO-{UPN}, Duo → Duo-{UPN}, Guest → Guest-{id}
-//   custom_name — 设为与 user_id 相同, 兼容部分 iKuai 固件在在线用户页优先显示 custom_name
-//   release_type = IKUAI_RELEASE_TYPE env, 默认 "1"
-//   timeout      — iKuai 认证超时时间, 单位分钟, 0 = 不过期
-//   comment      — iKuai 侧备注, 可用来标识 auth 来源, 不要放敏感信息
+//   custom_name — same as user_id, for firmware that prefers custom_name in online-user pages.
+//   release_type = IKUAI_RELEASE_TYPE env, default "1".
+//   timeout      — iKuai auth timeout in minutes; 0 means never expires.
+//   comment      — iKuai-side note for auth source; do not put sensitive data here.
 //
-// 注意:
-//   - 官方文档明确用 https. 从 VPS 外部 curl HTTPS 遇到 TLS handshake fail,
-//     是因为 CF 边缘对外不开老 TLS cipher, 但真实场景设备在 iKuai WiFi 网里,
-//     iKuai 路由器会在 LAN 层拦截这个请求, 不会真出公网. 所以默认保持 https 跟文档一致.
-//   - 如果 Phase 4 发现某种固件只吃 http, 改 IKUAI_WEBAUTH_URL env 即可, 不用重 build.
-//   - iKuai 不同固件版本 query 字段名不完全一样 (user_ip vs ip, user_mac vs mac 等)
-//     所以 IN 这一侧用 firstNonEmpty 兼容多种
-//   - 这里用 MD5 不是做安全哈希, 是 iKuai 指定的协议本身要求
-//     我们这条链路的安全是靠 appkey 的机密性保证的
+// Notes:
+//   - The official document uses HTTPS. External curl from a VPS may hit TLS handshake failures
+//     because Cloudflare edge does not expose old TLS ciphers, but real client devices are inside
+//     iKuai WiFi and the router intercepts the request on LAN before it reaches the public internet.
+//   - If a firmware variant only accepts HTTP, change IKUAI_WEBAUTH_URL without rebuilding.
+//   - Query field names differ by firmware version, so the inbound side uses firstNonEmpty.
+//   - MD5 is used because iKuai requires it; security relies on appkey secrecy, not hash strength.
 
 import (
 	"crypto/md5"
@@ -43,21 +42,21 @@ import (
 	"time"
 )
 
-// DeviceInfo 是我们从 iKuai 那边拿到的上网设备信息。
+// DeviceInfo is the client-device information received from iKuai.
 type DeviceInfo struct {
 	IP  string
 	MAC string
 }
 
-// extractDeviceInfo 从 iKuai 302 过来的 /portal 请求里解析设备信息。
-// 支持多种字段名以兼容不同固件版本。
-// 返回 ok=false 表示没法确定设备身份, 上层应拒绝进入登录流程。
+// extractDeviceInfo parses device information from the /portal request redirected by iKuai.
+// It supports several field names for firmware compatibility.
+// ok=false means the device identity cannot be determined and login should be rejected.
 func extractDeviceInfo(r *http.Request, cfg Config) (DeviceInfo, bool) {
 	q := r.URL.Query()
 	ip := firstNonEmpty(q, cfg.IKuaiIPKeys)
 	mac := firstNonEmpty(q, cfg.IKuaiMACKeys)
 
-	// MAC 常见被 URL 编码成 %3A, net/url 会自动解码。再做一次规范化。
+	// MACs are often URL-encoded as %3A; net/url decodes them, then normalize once more.
 	mac = normalizeMAC(mac)
 
 	if ip == "" || mac == "" {
@@ -66,15 +65,15 @@ func extractDeviceInfo(r *http.Request, cfg Config) (DeviceInfo, bool) {
 	return DeviceInfo{IP: ip, MAC: mac}, true
 }
 
-// buildWebAuthURL 生成给浏览器 302 过去的 iKuai 放行 URL。
-// userUPN 是用户身份; profile 决定爱快侧显示的认证来源前缀.
+// buildWebAuthURL creates the iKuai allow-list URL used as the browser 302 target.
+// userUPN is the user identity; profile controls the auth-source prefix shown in iKuai.
 func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string, profile IKuaiAuthProfile, policy IKuaiPolicy) string {
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
 	upload := fmt.Sprintf("%d", policy.Upload)
 	download := fmt.Sprintf("%d", policy.Download)
 
-	// token 源串必须完全按 iKuai 规定的顺序和格式拼接
-	// 注意: user_id / custom_name / release_type 不进 token 计算, 只是透传
+	// The token source string must match iKuai's required order and format exactly.
+	// user_id / custom_name / release_type are pass-through only and are not part of token calculation.
 	raw := fmt.Sprintf(
 		"user_ip=%s&timestamp=%s&mac=%s&upload=%s&download=%s&key=%s",
 		dev.IP, timestamp, dev.MAC, upload, download, cfg.IKuaiAppKey,
@@ -84,19 +83,19 @@ func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string, profile IKuaiAu
 
 	userID := ikuaiUserID(profile, userUPN)
 
-	// 构造最终 URL
+	// Build the final URL.
 	params := url.Values{}
-	params.Set("type", "20") // 20 = web 认证
+	params.Set("type", "20") // 20 = web authentication.
 	params.Set("user_id", userID)
-	// 部分 iKuai 固件在在线用户页显示 custom_name 而非 user_id,
-	// 这里保持二者一致, 避免页面只显示固定 portal 名称.
+	// Some iKuai firmware displays custom_name instead of user_id on online-user pages.
+	// Keep them identical so the page does not show only a fixed portal name.
 	params.Set("custom_name", userID)
 	params.Set("user_ip", dev.IP)
 	params.Set("timestamp", timestamp)
 	params.Set("mac", dev.MAC)
-	params.Set("upload", upload)     // 上行限速, 0 = 不限
-	params.Set("download", download) // 下行限速, 0 = 不限
-	params.Set("timeout", fmt.Sprintf("%d", policy.Timeout)) // 分钟, 0 = 不过期
+	params.Set("upload", upload)     // Upload speed limit; 0 means unlimited.
+	params.Set("download", download) // Download speed limit; 0 means unlimited.
+	params.Set("timeout", fmt.Sprintf("%d", policy.Timeout)) // Minutes; 0 means never expires.
 	if policy.Comment != "" {
 		params.Set("comment", policy.Comment)
 	}
@@ -123,7 +122,7 @@ func ikuaiUserID(profile IKuaiAuthProfile, identity string) string {
 
 // --- helpers ---
 
-// firstNonEmpty 从 query 里按备选字段名找出第一个非空值。
+// firstNonEmpty returns the first non-empty query value among candidate field names.
 func firstNonEmpty(q url.Values, keys []string) string {
 	for _, k := range keys {
 		if v := strings.TrimSpace(q.Get(k)); v != "" {
@@ -133,13 +132,13 @@ func firstNonEmpty(q url.Values, keys []string) string {
 	return ""
 }
 
-// normalizeMAC 把 MAC 统一成小写冒号分隔格式 (aa:bb:cc:dd:ee:ff)。
-// iKuai 有时发过来是 AA-BB-CC-DD-EE-FF, 有时是 aabbccddeeff, 统一一下安全。
+// normalizeMAC converts a MAC to lowercase colon-separated form (aa:bb:cc:dd:ee:ff).
+// iKuai may send AA-BB-CC-DD-EE-FF or aabbccddeeff, so normalize before use.
 func normalizeMAC(mac string) string {
 	if mac == "" {
 		return ""
 	}
-	// 去除常见分隔符
+	// Remove common separators.
 	clean := strings.Map(func(r rune) rune {
 		switch r {
 		case '-', ':', ' ':
@@ -148,11 +147,11 @@ func normalizeMAC(mac string) string {
 		return r
 	}, mac)
 	clean = strings.ToLower(clean)
-	// 如果长度不是 12 (6 字节 hex), 原样返回, 让 iKuai 自己报错
+	// If length is not 12 hex chars, return as-is and let iKuai reject it.
 	if len(clean) != 12 {
 		return strings.ToLower(mac)
 	}
-	// 按 2 字符插冒号
+	// Insert colons every two characters.
 	var b strings.Builder
 	for i := 0; i < 12; i += 2 {
 		if i > 0 {

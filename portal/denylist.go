@@ -1,10 +1,10 @@
 package main
 
 // denylist.go
-// 管理员维护的设备封禁列表. 目前只封 MAC, 不封 UPN:
-//   - SSO 负责用户身份安全
-//   - MAC denylist 负责设备级运营封禁
-//   - IP 只做短时冷却, 不作为长期身份
+// Admin-maintained device denylist. It currently blocks MACs, not UPNs:
+//   - SSO handles user identity security.
+//   - The MAC denylist handles device-level operational blocks.
+//   - IPs are only used for short cooldowns, not long-term identity.
 
 import (
 	"encoding/json"
@@ -105,16 +105,16 @@ func (s *DenylistStore) AddMAC(mac, reason, createdBy string) (DeniedMAC, bool, 
 	return item, true, nil
 }
 
-// MACInput 给 AddMACMany 用的批量输入条目.
+// MACInput is a batch input item for AddMACMany.
 type MACInput struct {
 	MAC       string
 	Reason    string
 	CreatedBy string
 }
 
-// AddMACMany 批量加, 一把锁内一次写盘. 返回 (新增数量, 跳过非法/重复数量).
-// 用于 handleDenylistImportCSV 的 CSV 批量导入, 避免每行 saveLocked.
-// 非法 MAC 跳过不报错 — handler 自己根据 skipped 数量提示用户.
+// AddMACMany inserts a batch under one lock and writes once. It returns added and skipped counts.
+// It is used by handleDenylistImportCSV to avoid one saveLocked call per CSV row.
+// Invalid MACs are skipped without error; the handler reports skipped counts to the user.
 func (s *DenylistStore) AddMACMany(items []MACInput) (added, skipped int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -155,8 +155,8 @@ func (s *DenylistStore) DeleteMAC(mac string) bool {
 	return true
 }
 
-// DeleteAllMACs 清空整个 MAC 封禁列表, 返回清掉了几条.
-// 给 admin "一键解除全部" 用. 只动 MAC 封禁, 不碰限流状态 — 那是另一码事.
+// DeleteAllMACs clears the entire MAC denylist and returns the number removed.
+// It is used by the admin "clear all" action and does not touch rate-limit state.
 func (s *DenylistStore) DeleteAllMACs() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

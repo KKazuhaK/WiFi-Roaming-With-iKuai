@@ -1,11 +1,11 @@
 package main
 
 // admin.go
-// 访客码管理后台: 数据模型 + 内存存储 + 可选 JSON 持久化 + 随机生成.
+// Guest code admin backend: data model, in-memory storage, optional JSON persistence, and random generation.
 //
-// 持久化: newGuestCodeStore(path) 的 path 非空时, 启动加载 + 每次变更原子写盘
-// (tmp + rename). path 空 = 纯内存, 重启数据丢.
-// 配合 docker-compose volume 把 path 所在目录挂出来, 容器重启不丢码.
+// Persistence: when newGuestCodeStore(path) receives a non-empty path, startup loads from disk and
+// every mutation writes atomically (tmp + rename). An empty path means memory only, so data is lost on restart.
+// Mount the directory containing path with a docker-compose volume to keep codes across container restarts.
 
 import (
 	"crypto/rand"
@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-// GuestCodeType 批量生成时可选的字符集类型.
+// GuestCodeType is the selectable character set for batch generation.
 type GuestCodeType string
 
 const (
@@ -30,12 +30,12 @@ const (
 	CodeAlphaNumeric GuestCodeType = "alphanumeric"
 )
 
-// GuestCode 是一条访客码记录.
-// 设计备注:
-//   - ExpiresAt 是绝对过期时间. 零值表示永不过期.
-//   - DurationMin 是每次成功使用后在 iKuai 侧放行多久. 0 = 不限时.
-//   - MaxUses 限制同一个码最多可成功使用多少次. 0 = 不限.
-//   - Note 是 admin 的备注, 只用于后台显示.
+// GuestCode is a single guest-code record.
+// Design notes:
+//   - ExpiresAt is an absolute expiration time. Zero means never expires.
+//   - DurationMin is the iKuai allow-list duration after each successful use. 0 means unlimited.
+//   - MaxUses limits how many successful uses the same code allows. 0 means unlimited.
+//   - Note is an admin note and is only shown in the admin UI.
 type GuestCode struct {
 	Code        string    `json:"code"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -50,7 +50,7 @@ type CodeUse struct {
 	At       time.Time `json:"at"`
 	MAC      string    `json:"mac"`
 	IP       string    `json:"ip"`
-	GuestUPN string    `json:"guest_upn"` // 例 Guest-abc12345
+	GuestUPN string    `json:"guest_upn"` // e.g. Guest-abc12345
 }
 
 func (c *GuestCode) IsExpired() bool {
@@ -60,7 +60,7 @@ func (c *GuestCode) IsExpired() bool {
 	return time.Now().After(c.ExpiresAt)
 }
 
-// IsExhausted: 达到 MaxUses 上限 (MaxUses=0 视为无限).
+// IsExhausted reports whether MaxUses has been reached (MaxUses=0 means unlimited).
 func (c *GuestCode) IsExhausted() bool {
 	return c.MaxUses > 0 && len(c.Uses) >= c.MaxUses
 }
@@ -69,9 +69,8 @@ func (c *GuestCode) UseCount() int {
 	return len(c.Uses)
 }
 
-// Status: 给 UI 分类 Tabs 用. 用过一次就归 "used", 不细分用尽 vs 半用 — 那是
-// IsActive 的活儿. 这样 admin.html 现有三 tab (全部 / 已使用 / 未使用 + 已过期)
-// 不变.
+// Status is used by the UI tabs. Any code used at least once is "used"; exhausted vs partially
+// used is handled by IsActive. This keeps the existing admin.html tabs unchanged.
 func (c *GuestCode) Status() string {
 	switch {
 	case c.IsExpired():
@@ -83,24 +82,23 @@ func (c *GuestCode) Status() string {
 	}
 }
 
-// IsActive: 这个码现在还能用吗? = 没过期 + 没用完.
-// 跟 Status 区分开 — Status 用于 UI tab 分类 (用过/没用过), IsActive 用于
-// "DeleteInactive 该不该删" 等业务判定. C3 修复关键: 半使用的多次性码 IsActive=true
-// 不该被清理.
+// IsActive reports whether the code can still be used now: not expired and not exhausted.
+// This is distinct from Status: Status is for UI grouping, while IsActive drives business
+// decisions such as DeleteInactive. C3 depends on partially used multi-use codes staying active.
 func (c *GuestCode) IsActive() bool {
 	return !c.IsExpired() && !c.IsExhausted()
 }
 
-// GuestCodeStore: 内存存储, 并发安全, 可选磁盘持久化.
-// persistPath 空则不落盘.
+// GuestCodeStore is a concurrency-safe in-memory store with optional disk persistence.
+// An empty persistPath disables disk writes.
 type GuestCodeStore struct {
 	mu          sync.RWMutex
 	codes       map[string]*GuestCode // key = strings.ToLower(Code)
 	persistPath string
 }
 
-// newGuestCodeStore: persistPath 空 = 纯内存; 非空则尝试从文件加载, 失败直接返回 err
-// (启动阶段暴露, 不静默覆盖).
+// newGuestCodeStore uses memory only when persistPath is empty; otherwise it loads from disk
+// and returns any startup error instead of silently overwriting data.
 func newGuestCodeStore(persistPath string) (*GuestCodeStore, error) {
 	s := &GuestCodeStore{
 		codes:       make(map[string]*GuestCode),
@@ -115,12 +113,12 @@ func newGuestCodeStore(persistPath string) (*GuestCodeStore, error) {
 	return s, nil
 }
 
-// loadFromDisk: 只在启动时调一次, 不持锁.
+// loadFromDisk is called once at startup and does not take the store lock.
 func (s *GuestCodeStore) loadFromDisk() error {
 	data, err := os.ReadFile(s.persistPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // 首次启动, 文件还没建
+			return nil // First startup; the file does not exist yet.
 		}
 		return fmt.Errorf("read %s: %w", s.persistPath, err)
 	}
@@ -156,13 +154,14 @@ func (s *GuestCodeStore) loadFromDisk() error {
 	return nil
 }
 
-// saveLocked: 必须在已持写锁时调用. 原子写 (tmp → rename). 失败只记日志,
-// 不回滚内存状态 — 下一次变更会再写一次, 重启才会丢这次变更.
+// saveLocked must be called with the write lock held. It writes atomically (tmp -> rename).
+// Failures are logged without rolling back memory state; the next mutation will retry the write,
+// and this change is only lost if the process restarts first.
 //
-// 注: M12 评估后**不修**. 异步写引入 goroutine 调度顺序不一致风险 (后写可能先
-// 落盘导致数据丢失); 拆两把锁手术工程量大. 实际典型规模 (< 1000 码, ~150KB JSON)
-// 同步持锁 ~5ms 不构成瓶颈, 跟 handleGuestCode 调 iKuai webauth 的 100ms+ 相比
-// 微不足道. 高负载场景 (10k+ 码) 再回来重做.
+// Note: M12 was evaluated and intentionally left unchanged. Async writes risk goroutine
+// scheduling reordering (a later write can hit disk first and lose data), while splitting locks
+// is a larger change. Typical size (<1000 codes, ~150KB JSON) holds the lock for ~5ms, which is
+// negligible next to the 100ms+ iKuai webauth call in handleGuestCode. Revisit for 10k+ code sets.
 func (s *GuestCodeStore) saveLocked() {
 	if s.persistPath == "" {
 		return
@@ -191,12 +190,12 @@ func (s *GuestCodeStore) saveLocked() {
 	}
 }
 
-// List 返回按 CreatedAt 倒序排列的**深拷贝**, 调用者拿到后随便读 / 改不影响 store.
-// 时间相同时按 Code 字典序兜底, 保证多次刷新顺序稳定 (map 遍历本身无序).
+// List returns a deep copy sorted by CreatedAt descending; callers can read or modify it without
+// affecting the store. Equal timestamps fall back to Code order for stable refreshes.
 //
-// 关键: Validate 持锁内会 append c.Uses; 如果 List 返回内部指针, renderAdmin /
-// buildDashboard 在锁外读 c.Uses 就跟 Validate 撞 race. 所以这里整张表 deep copy.
-// 一次 List 通常用于 admin 页面渲染, 不在热路径, 多复制一份 GuestCode 不构成性能问题.
+// Important: Validate appends to c.Uses while holding the lock. If List returned internal pointers,
+// renderAdmin/buildDashboard would read c.Uses outside the lock and race with Validate. Deep copying
+// the table is acceptable because List is normally used for admin rendering, not the hot path.
 func (s *GuestCodeStore) List() []*GuestCode {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -213,8 +212,7 @@ func (s *GuestCodeStore) List() []*GuestCode {
 	return out
 }
 
-// copyGuestCode 深拷贝一个 GuestCode, 包括内部 Uses slice. Uses 元素是值,
-// 直接 copy 即可.
+// copyGuestCode deep-copies a GuestCode, including the Uses slice. Uses elements are values, so copy is enough.
 func copyGuestCode(c *GuestCode) *GuestCode {
 	dup := *c
 	if len(c.Uses) > 0 {
@@ -224,7 +222,7 @@ func copyGuestCode(c *GuestCode) *GuestCode {
 	return &dup
 }
 
-// Add: 码重复则返回 false, 不覆盖.
+// Add returns false for duplicate codes and never overwrites.
 func (s *GuestCodeStore) Add(c *GuestCode) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -240,12 +238,12 @@ func (s *GuestCodeStore) Add(c *GuestCode) bool {
 	return true
 }
 
-// AddMany 批量插入, 一把锁内一次写盘. 返回成功插入的码列表 (顺序与输入一致,
-// 但跳过空码 / 重复码). 用于 handleCodeBatch 的 N 码批量生成, 避免每码触发一次
-// saveLocked → O(N²) 文件写.
+// AddMany inserts a batch under one lock and writes once. It returns inserted codes in input order,
+// skipping empty and duplicate codes. This supports handleCodeBatch and avoids one saveLocked call
+// per generated code, which would cause O(N^2) file writes.
 //
-// 调用方往往希望知道"实际有哪些进了 store" — 返回 []string 而不是数量, 因为
-// AddMany 跳过的可能在中间不是末尾, 不能简单 `inputs[:n]`.
+// Callers often need to know which codes actually entered the store. Return []string instead of a
+// count because skipped inputs may appear in the middle, not just at the end.
 func (s *GuestCodeStore) AddMany(codes []*GuestCode) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -279,8 +277,8 @@ func (s *GuestCodeStore) Delete(code string) bool {
 	return true
 }
 
-// DeleteMany 批量删, 一把锁内一次写盘. 返回真实删掉的数量
-// (空字符串 / 不存在的码会被跳过, 不计入). 同 AddMany 防 O(N²) 写.
+// DeleteMany deletes a batch under one lock and writes once. It returns the actual number removed;
+// empty or missing codes are skipped. Like AddMany, this avoids O(N^2) writes.
 func (s *GuestCodeStore) DeleteMany(codes []string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -302,10 +300,9 @@ func (s *GuestCodeStore) DeleteMany(codes []string) int {
 	return deleted
 }
 
-// Edit 修改一个码的可变元数据 (过期时间 / 限时 / MaxUses / 备注). 不允许改 Code
-// 本身 (那等于删了重建). 不存在 → 返回 false. 已经使用过的码也允许编辑 —
-// 改 DurationMin 只影响后续放行, 已经在线的设备的 timeout 不受影响
-// (那是 iKuai 侧的 token, portal 改不了).
+// Edit updates mutable code metadata: expiration, duration, MaxUses, and note. Code itself cannot
+// change because that is equivalent to delete-and-recreate. Missing codes return false. Used codes
+// can still be edited; DurationMin only affects future allow-list entries, not already-online devices.
 func (s *GuestCodeStore) Edit(code string, expiresAt time.Time, durationMin, maxUses int, note string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -322,8 +319,8 @@ func (s *GuestCodeStore) Edit(code string, expiresAt time.Time, durationMin, max
 	return true
 }
 
-// DeleteInactive 删 "已经不能再用" 的码: 过期 OR 用尽.
-// 半使用的多次性码 (MaxUses>1 且还有剩余次数) 不删 — 那是 admin 的资产.
+// DeleteInactive removes codes that can no longer be used: expired or exhausted.
+// Partially used multi-use codes are retained because they are still useful admin assets.
 func (s *GuestCodeStore) DeleteInactive() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -346,9 +343,9 @@ func (s *GuestCodeStore) DeleteExpired() int {
 	return s.DeleteInactive()
 }
 
-// Validate: 找到、未过期、未达 MaxUses 就记一次使用, 返回 code 对象的**副本**.
-// guestUPN 是我们上报给 iKuai 的 user_id (每次连接都不同).
-// 返回副本而非内部指针 — 防调用方在锁外读到正在被写的 Uses slice 引发 race.
+// Validate records one use when a code exists, is not expired, and has not reached MaxUses.
+// guestUPN is the user_id reported to iKuai and differs per connection. It returns a copy instead
+// of an internal pointer so callers cannot race on Uses outside the lock.
 func (s *GuestCodeStore) Validate(code, mac, ip, guestUPN string) *GuestCode {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -367,16 +364,16 @@ func (s *GuestCodeStore) Validate(code, mac, ip, guestUPN string) *GuestCode {
 	return copyGuestCode(c)
 }
 
-// Stats 给 UI / Dashboard 算计数:
+// Stats computes UI and dashboard counters:
 //
-//	total   — 全部
-//	used    — 已用尽 (IsExhausted) 且未过期
-//	unused  — 还能用 (IsActive: 没过期 + 没用尽), 包括完全没用过和半使用的多次性码
-//	expired — 已过期 (无论是否用过)
+//	total   — all codes
+//	used    — exhausted (IsExhausted) and not expired
+//	unused  — still usable (IsActive), including never-used and partially used multi-use codes
+//	expired — expired, regardless of use count
 //
-// M1 修复: 旧实现按 Status() ("用过没用过") 划分, 把半使用的多次性码归 used,
-// 跟 buildDashboard.ActiveGuestCodes (按 IsActive 算) 对不上 — admin 看顶部
-// 数字和 Tab 数字不一致. 现在 Stats.unused 严格等于 Dashboard active count.
+// M1 fix: the old implementation grouped by Status() and counted partially used multi-use codes
+// as used, which disagreed with buildDashboard.ActiveGuestCodes. Stats.unused now matches the
+// dashboard active count exactly.
 func (s *GuestCodeStore) Stats() (total, used, unused, expired int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -394,7 +391,7 @@ func (s *GuestCodeStore) Stats() (total, used, unused, expired int) {
 	return
 }
 
-// --- 随机码生成 ---
+// --- Random code generation ---
 
 func generateCode(codeType GuestCodeType, length int) (string, error) {
 	if length < 4 {

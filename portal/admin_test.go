@@ -1,12 +1,12 @@
 package main
 
 // admin_test.go
-// GuestCodeStore 的关键语义:
-//   - Validate 持锁内 atomic 完成查找 + 检查 + append → 防 TOCTOU
-//   - Add/Edit/Delete 串行语义 + 不允许覆盖
-//   - JSON 持久化 round-trip (load 后保持原样)
-//   - 过期 / 用尽语义
-//   - Stats 计数正确
+// Key GuestCodeStore semantics:
+//   - Validate atomically finds, checks, and appends under the lock to prevent TOCTOU.
+//   - Add/Edit/Delete are serialized and do not overwrite.
+//   - JSON persistence round-trips unchanged after load.
+//   - Expired and exhausted semantics.
+//   - Stats counts are correct.
 
 import (
 	"path/filepath"
@@ -52,11 +52,11 @@ func TestGuestCodeStore_AddRejectsDuplicate(t *testing.T) {
 	if !s.Add(&GuestCode{Code: "abc", CreatedAt: time.Now()}) {
 		t.Fatal("first Add must succeed")
 	}
-	// 同 code 不同 case 也应被视作重复 (key 是 lowercase)
+	// Same code with different case should also be duplicate because the key is lowercase.
 	if s.Add(&GuestCode{Code: "ABC", CreatedAt: time.Now()}) {
 		t.Error("Add must reject duplicate (case-insensitive)")
 	}
-	// 真重复
+	// Exact duplicate.
 	if s.Add(&GuestCode{Code: "abc", CreatedAt: time.Now()}) {
 		t.Error("Add must reject literal duplicate")
 	}
@@ -65,15 +65,15 @@ func TestGuestCodeStore_AddRejectsDuplicate(t *testing.T) {
 func TestGuestCodeStore_AddTrimsAndCaseInsensitive(t *testing.T) {
 	s, _ := newGuestCodeStore("")
 	s.Add(&GuestCode{Code: "  ABC  ", CreatedAt: time.Now()})
-	// Validate 也应该 case-insensitive + trim
+	// Validate should also be case-insensitive and trim whitespace.
 	got := s.Validate("abc", "mac", "ip", "guest-1")
 	if got == nil {
 		t.Fatal("Validate must hit despite case + space differences")
 	}
 }
 
-// TestGuestCodeStore_ValidateAtomic 是 TOCTOU 关键回归: 多 goroutine 并发
-// Validate 同一个 MaxUses=1 的码, 必须只成功一次.
+// TestGuestCodeStore_ValidateAtomic is the TOCTOU regression: multiple goroutines validating the
+// same MaxUses=1 code must produce exactly one success.
 func TestGuestCodeStore_ValidateAtomic(t *testing.T) {
 	s, _ := newGuestCodeStore("")
 	s.Add(&GuestCode{
@@ -127,8 +127,8 @@ func TestGuestCodeStore_ValidateRejectsExpiredAndExhausted(t *testing.T) {
 }
 
 func TestGuestCodeStore_DeleteInactiveKeepsActive(t *testing.T) {
-	// C3 语义: DeleteInactive 删 "已经不能再用" 的码 (过期 OR 用尽). 半使用的多次性
-	// 码 (MaxUses=5, Uses=1, 还能用 4 次) 必须保留 — 那是 admin 的资产.
+	// C3 semantics: DeleteInactive removes codes that can no longer be used (expired or exhausted).
+	// Partially used multi-use codes must be retained because they are still admin assets.
 	s, _ := newGuestCodeStore("")
 	s.Add(&GuestCode{Code: "fresh", CreatedAt: time.Now()})
 	s.Add(&GuestCode{Code: "expired", ExpiresAt: time.Now().Add(-time.Hour), CreatedAt: time.Now()})
@@ -139,7 +139,7 @@ func TestGuestCodeStore_DeleteInactiveKeepsActive(t *testing.T) {
 	if n != 2 {
 		t.Errorf("DeleteInactive removed %d, want 2 (expired+exhausted, NOT partial)", n)
 	}
-	// fresh + partial 都应留下
+	// fresh and partial should both remain.
 	if s.Validate("fresh", "m", "i", "g") == nil {
 		t.Error("fresh unused code must remain")
 	}
@@ -165,14 +165,14 @@ func TestGuestCodeStore_Edit(t *testing.T) {
 }
 
 func TestGuestCodeStore_Stats(t *testing.T) {
-	// M1 语义: unused = IsActive (还能用), used = IsExhausted (用尽), expired = 过期.
-	// MaxUses=0 不限, Uses=1 仍算 unused; MaxUses=1 Uses=1 才算 used.
+	// M1 semantics: unused = IsActive, used = IsExhausted, expired = expired.
+	// MaxUses=0 is unlimited, so Uses=1 is still unused; MaxUses=1 Uses=1 is used.
 	s, _ := newGuestCodeStore("")
 	s.Add(&GuestCode{Code: "u1", CreatedAt: time.Now()})                                         // unused
 	s.Add(&GuestCode{Code: "u2", CreatedAt: time.Now()})                                         // unused
 	s.Add(&GuestCode{Code: "x1", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(-time.Hour)})  // expired
-	s.Add(&GuestCode{Code: "exhausted", CreatedAt: time.Now(), MaxUses: 1, Uses: []CodeUse{{}}}) // used (用尽)
-	s.Add(&GuestCode{Code: "unlimited-used", CreatedAt: time.Now(), Uses: []CodeUse{{}}})        // unused (MaxUses=0 不限)
+	s.Add(&GuestCode{Code: "exhausted", CreatedAt: time.Now(), MaxUses: 1, Uses: []CodeUse{{}}}) // used (exhausted)
+	s.Add(&GuestCode{Code: "unlimited-used", CreatedAt: time.Now(), Uses: []CodeUse{{}}})        // unused (MaxUses=0 unlimited)
 
 	total, used, unused, expired := s.Stats()
 	if total != 5 || used != 1 || unused != 3 || expired != 1 {
@@ -181,13 +181,13 @@ func TestGuestCodeStore_Stats(t *testing.T) {
 	}
 }
 
-// TestGuestCodeStore_PersistRoundTrip: load 之后存储应该跟原样一致. 启动时
-// loadFromDisk 失败会 fatal — 这是关键路径, 落盘格式跟读取必须自洽.
+// TestGuestCodeStore_PersistRoundTrip: storage should match after load. loadFromDisk failure is
+// fatal at startup, so the on-disk format and reader must agree.
 func TestGuestCodeStore_PersistRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "guest-codes.json")
 
-	// 写一份
+	// Write one copy.
 	{
 		s, err := newGuestCodeStore(path)
 		if err != nil {
@@ -202,7 +202,7 @@ func TestGuestCodeStore_PersistRoundTrip(t *testing.T) {
 			Uses:        []CodeUse{{At: time.Date(2026, 1, 1, 13, 0, 0, 0, time.UTC), MAC: "aa", IP: "1.1.1.1", GuestUPN: "g"}},
 		})
 	}
-	// 读回来
+	// Read it back.
 	{
 		s2, err := newGuestCodeStore(path)
 		if err != nil {
@@ -258,7 +258,7 @@ func TestGenerateCode_LengthClamp(t *testing.T) {
 }
 
 func TestGenerateCode_SufficientEntropy(t *testing.T) {
-	// 同 type+length 跑 50 次, 应不会撞码 (10^10 空间)
+	// Generating the same type+length 50 times should not collide in a 10^10 space.
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
 		c, err := generateCode(CodeNumeric, 10)

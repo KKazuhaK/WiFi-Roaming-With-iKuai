@@ -1,5 +1,7 @@
 # Kazuha Hub Roaming
 
+Languages: [中文](./README.md) | [English](./README.en.md)
+
 统一的 WiFi 接入方案. 用户在 Captive Portal 输入**账号**:
 
 - **Duo 用户** (已在 Duo 注册 Mobile) → 直接跳 Duo Universal Prompt 页, 选设备 / 批准推送 → 放行

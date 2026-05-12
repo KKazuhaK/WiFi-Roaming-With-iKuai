@@ -1,16 +1,16 @@
 package main
 
 // auth_proceed.go
-// /auth/start 不再直接返回真实的 Duo URL 或 Entra URL — 攻击者借此差异做账号枚举.
-// 改成返回一个 opaque token, 浏览器 GET /auth/proceed?token=X 才做真实 302.
+// /auth/start no longer returns the real Duo or Entra URL, because that difference enables account
+// enumeration. It now returns an opaque token; the browser GETs /auth/proceed?token=X to get the real 302.
 //
-// 对外可观察:
-//   POST /auth/start → 200 {"redirect":"/auth/proceed?token=abc..."} (所有 email 一致)
-//   GET  /auth/proceed?token=abc → 302 到 Duo Universal Prompt / Entra /login / 错误页
+// Externally observable behavior:
+//   POST /auth/start -> 200 {"redirect":"/auth/proceed?token=abc..."} for every email.
+//   GET  /auth/proceed?token=abc -> 302 to Duo Universal Prompt, Entra /login, or an error page.
 //
-// 攻击者想枚举就得为每个 email 多发一次 GET + 跟 302, 成本翻倍且会触发规则 1 / 6.
+// Enumerators must spend an extra GET and follow a 302 per email, increasing cost and triggering rules 1/6.
 //
-// token 绑定到发起请求的 session.State (CSRF), 一次性用 (取一次就删).
+// The token is bound to the initiating session.State for CSRF protection and is single-use.
 
 import (
 	"crypto/subtle"
@@ -21,21 +21,21 @@ import (
 	"time"
 )
 
-// proceedKind 仅在 main.go 里用作"刚才分流到 Duo 还是 Entra"的局部判断 (决定
-// 事件日志记 method=duo 还是 sso). 这里不再存进 proceedEntry — Kind 字段历史上
-// 注释说"用于日志/调试", 但实际从未被读取过 (L8 死代码清理).
+// proceedKind is only a local main.go decision for "Duo vs Entra" routing, which selects the event
+// log method. It is no longer stored in proceedEntry; the old Kind field was documented for logging
+// and debugging but was never read (L8 dead-code cleanup).
 type proceedKind int
 
 const (
-	proceedDuo   proceedKind = iota // 302 到 Duo Universal Prompt URL
-	proceedEntra                    // 302 到 Entra /login?hint=...
-	proceedDeny                     // 账号被拒, 走 Entra /login 让 Entra 自己拒, 避免暴露 "deny" 信号
+	proceedDuo   proceedKind = iota // 302 to the Duo Universal Prompt URL.
+	proceedEntra                    // 302 to Entra /login?hint=...
+	proceedDeny                     // Denied account; let Entra reject it to avoid exposing a "deny" signal.
 )
 
 type proceedEntry struct {
 	URL          string
-	SessionState string // 必须和 cookie 里的 session.State 一致
-	Email        string // 用于日志 / 调试
+	SessionState string // Must match session.State in the cookie.
+	Email        string // For logging/debugging.
 	Expires      time.Time
 }
 
@@ -52,11 +52,11 @@ func newProceedTokenStore(ttl time.Duration) *proceedTokenStore {
 	}
 }
 
-// maxProceedEntries 防内存增长 DOS: 攻击者反复 /auth/start 但不消费 token.
-// 触顶时同步清过期项 + 必要时丢最早 Expires 的.
+// maxProceedEntries prevents memory-growth DOS from repeated /auth/start calls without consuming tokens.
+// When full, expired entries are pruned synchronously and the earliest Expires value is dropped if needed.
 const maxProceedEntries = 50000
 
-// put 随机生成 token 并记一条. 返回 token 字符串.
+// put randomly generates a token, stores one entry, and returns the token string.
 func (s *proceedTokenStore) put(url, sessionState, email string) (string, error) {
 	tok, err := randomHex(16)
 	if err != nil {
@@ -96,7 +96,7 @@ func (s *proceedTokenStore) put(url, sessionState, email string) (string, error)
 	return tok, nil
 }
 
-// take 一次性拿走 token. 返回 ok=false 表示 token 不存在或过期.
+// take consumes a token once. ok=false means the token is missing or expired.
 func (s *proceedTokenStore) take(token string) (proceedEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -111,7 +111,7 @@ func (s *proceedTokenStore) take(token string) (proceedEntry, bool) {
 	return e, true
 }
 
-// gcLoop 定期清过期 token, 防内存堆积.
+// gcLoop periodically removes expired tokens to prevent memory buildup.
 func (s *proceedTokenStore) gcLoop() {
 	t := time.NewTicker(2 * time.Minute)
 	defer t.Stop()
@@ -128,7 +128,7 @@ func (s *proceedTokenStore) gcLoop() {
 }
 
 // handleAuthProceed: GET /auth/proceed?token=X
-// 校验 token 存在 + 未过期 + session.State 匹配, 然后 302 到真正目的地.
+// Validate that the token exists, is not expired, and matches session.State, then 302 to the real destination.
 func (a *App) handleAuthProceed(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
 	sess, err := readSessionCookie(r, a.cfg.SessionSecret)

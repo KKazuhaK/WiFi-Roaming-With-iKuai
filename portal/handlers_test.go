@@ -1,15 +1,15 @@
 package main
 
 // handlers_test.go
-// HTTP handler 端到端测试. 测的是真实路径上的安全契约:
-//   - handleCodeCreate: 用户自填 code 长度上限 (M7 回归)
-//   - handleCodeCreate: 审计 detail 里只有 code-suffix, 没有完整码 (H2 回归)
-//   - handleCodeDelete / handleCodeEdit: 同样脱敏审计
-//   - handleAuthStart: 账号枚举防护 — 所有 email 响应一致
-//   - handleAuthStart: 邮箱失败计数双窗口
-//   - handlePortal: MAC 在 denylist 里直接拒
+// End-to-end HTTP handler tests for security contracts on real paths:
+//   - handleCodeCreate: user-provided code length cap (M7 regression)
+//   - handleCodeCreate: audit detail has only code suffix, not the full code (H2 regression)
+//   - handleCodeDelete / handleCodeEdit: same audit redaction
+//   - handleAuthStart: account-enumeration defense with identical email responses
+//   - handleAuthStart: dual-window email failure counts
+//   - handlePortal: denylisted MAC is rejected directly
 //
-// 这里不打 OIDC, 不调 Duo — 把这些 client 设为 nil 走 fallback 分支.
+// These tests do not hit OIDC or Duo; clients are nil to use fallback branches.
 
 import (
 	"io"
@@ -58,7 +58,7 @@ func mkAdminTestApp(t *testing.T) *App {
 	return app
 }
 
-// adminPOST 拼装一个带合法 admin cookie + 同源 Origin 的 POST 请求.
+// adminPOST builds a POST request with a valid admin cookie and same-origin Origin.
 func adminPOST(t *testing.T, app *App, path string, form url.Values) *http.Request {
 	t.Helper()
 	r, _ := http.NewRequest("POST", path, strings.NewReader(form.Encode()))
@@ -71,7 +71,7 @@ func adminPOST(t *testing.T, app *App, path string, form url.Values) *http.Reque
 // --- handleCodeCreate ---
 
 func TestHandleCodeCreate_RejectsLongCode(t *testing.T) {
-	// M7 回归: 用户自填 code 不能超过 64 字符.
+	// M7 regression: user-provided code must not exceed 64 chars.
 	app := mkAdminTestApp(t)
 	form := url.Values{
 		"code": {strings.Repeat("a", 65)},
@@ -83,10 +83,9 @@ func TestHandleCodeCreate_RejectsLongCode(t *testing.T) {
 	}
 }
 
-// TestHandleCodeCreate_RejectsShortCode: 审计 #9.
-// admin 自填的 code 太短 (< 6 字符) 时, tailN(code, 4) 几乎等于完整码,
-// 等于把"短码"完整持久化进事件日志. 服务端拒掉, 强制 admin 用至少 6 位
-// (跟批量生成的 length 下限对齐).
+// TestHandleCodeCreate_RejectsShortCode: audit #9.
+// When an admin-provided code is too short (<6 chars), tailN(code, 4) is almost the full code,
+// effectively persisting the short code in event logs. Reject it and require at least 6 chars.
 func TestHandleCodeCreate_RejectsShortCode(t *testing.T) {
 	app := mkAdminTestApp(t)
 	for _, short := range []string{"1", "12", "123", "1234", "12345"} {
@@ -97,7 +96,7 @@ func TestHandleCodeCreate_RejectsShortCode(t *testing.T) {
 			t.Errorf("short code %q: status = %d, want 400", short, w.Code)
 		}
 	}
-	// 6 字符及以上接受
+	// Six chars and above are accepted.
 	form := url.Values{"code": {"abcdef"}}
 	w := httptest.NewRecorder()
 	app.handleCodeCreate(w, adminPOST(t, app, "/admin/codes/create", form))
@@ -106,8 +105,8 @@ func TestHandleCodeCreate_RejectsShortCode(t *testing.T) {
 	}
 }
 
-// TestHandleCodeCreate_AuditDoesNotLeakFullCode: H2 关键回归.
-// admin 创建访客码时, 审计 detail 不能写完整码 — 备份 / SIEM 泄露后等于身份信息.
+// TestHandleCodeCreate_AuditDoesNotLeakFullCode is the H2 regression.
+// Creating a guest code must not write the full code into audit detail.
 func TestHandleCodeCreate_AuditDoesNotLeakFullCode(t *testing.T) {
 	app := mkAdminTestApp(t)
 	const myCode = "VERY-SECRET-CODE-1234"
@@ -128,18 +127,18 @@ func TestHandleCodeCreate_AuditDoesNotLeakFullCode(t *testing.T) {
 	if strings.Contains(detail, myCode) {
 		t.Errorf("audit detail leaked full code: %q", detail)
 	}
-	// 应该有 code-suffix 字样
+	// Should include code-suffix wording.
 	if !strings.Contains(detail, "code-suffix=") {
 		t.Errorf("detail missing 'code-suffix=': %q", detail)
 	}
-	// 末 4 位 (1234) 应该出现
+	// Last four chars (1234) should appear.
 	if !strings.Contains(detail, "1234") {
 		t.Errorf("detail missing last 4 chars: %q", detail)
 	}
 }
 
 func TestHandleCodeDelete_AuditUsesSuffix(t *testing.T) {
-	// H2 回归: 删除审计也只留末 4 位.
+	// H2 regression: delete audit also keeps only the last four chars.
 	app := mkAdminTestApp(t)
 	app.guestCodes.Add(&GuestCode{
 		Code:      "AAAA-BBBB-CCCC-DDDD",
@@ -163,15 +162,14 @@ func TestHandleCodeDelete_AuditUsesSuffix(t *testing.T) {
 	}
 }
 
-// --- handleAuthStart 账号枚举防护 ---
+// --- handleAuthStart account-enumeration defense ---
 
 func TestHandleAuthStart_OpaqueResponseRegardlessOfDuoStatus(t *testing.T) {
-	// 关键设计: /auth/start 对所有合法邮箱响应一致 (返回 opaque token), 攻击者
-	// 没法靠响应差异判断哪个 email 在 Duo 注册. 这里 duo=nil 走 SSO fallback,
-	// 仅验返回结构稳定.
+	// Key design: /auth/start returns the same shape for all valid emails (opaque token), so attackers
+	// cannot use response differences to detect Duo enrollment. duo=nil uses SSO fallback here.
 	app := mkTestApp(t)
 
-	// 走 /auth/start 需要先有合法 wifi session cookie
+	// /auth/start requires a valid wifi session cookie first.
 	rec := httptest.NewRecorder()
 	sess := Session{
 		MAC:    "aa:bb:cc:dd:ee:ff",
@@ -203,7 +201,7 @@ func TestHandleAuthStart_OpaqueResponseRegardlessOfDuoStatus(t *testing.T) {
 			t.Errorf("email=%q got status %d, body=%s", email, code, body)
 			continue
 		}
-		// 响应里只有 redirect 字段,不能含邮箱信息或 deny 信号
+		// Response must contain only redirect, not email information or deny signals.
 		if !strings.Contains(body, "/auth/proceed?token=") {
 			t.Errorf("email=%q response missing opaque token: %s", email, body)
 		}
@@ -260,7 +258,7 @@ func TestHandlePortal_BlocksDeniedMAC(t *testing.T) {
 	app := mkTestApp(t)
 	app.denylist.AddMAC("aa:bb:cc:dd:ee:ff", "abuse", "admin")
 
-	// 模拟 iKuai 跳过来 + cookie 已带这个 MAC
+	// Simulate iKuai redirect and an existing cookie carrying this MAC.
 	rec := httptest.NewRecorder()
 	_ = writeSessionCookie(rec, app.cfg.SessionSecret, Session{
 		MAC:    "aa:bb:cc:dd:ee:ff",
@@ -280,9 +278,9 @@ func TestHandlePortal_BlocksDeniedMAC(t *testing.T) {
 	}
 }
 
-// --- handleAdminLoginStart M6 回归 ---
+// --- handleAdminLoginStart M6 regression ---
 
-// --- 纯函数 / helper 单测 (M1, M7, L3 修复路径) ---
+// --- Pure function / helper tests (M1, M7, L3 fix paths) ---
 
 func TestCapLen(t *testing.T) {
 	cases := []struct {
@@ -360,7 +358,7 @@ func TestIsSameOriginRequest(t *testing.T) {
 func TestParseDurationMinClamp(t *testing.T) {
 	r, _ := http.NewRequest("POST", "/", nil)
 	r.PostForm = map[string][]string{
-		"duration_h": {"99999999999"}, // 远超合理值
+		"duration_h": {"99999999999"}, // Far beyond reasonable input.
 		"duration_m": {"0"},
 	}
 	got := parseDurationMin(r)
@@ -369,7 +367,7 @@ func TestParseDurationMinClamp(t *testing.T) {
 	}
 }
 
-// --- DATA_DIR / init 子命令 (模式 D 裸二进制部署) ---
+// --- DATA_DIR / init subcommand (mode D bare-binary deployment) ---
 
 func TestMakeDataPaths_DefaultData(t *testing.T) {
 	p := makeDataPaths("/data")
@@ -444,7 +442,7 @@ func TestRunInit_WritesFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// .env 应存在,权限 0600 (因含 secret)
+	// .env should exist with 0600 mode because it contains secrets.
 	envPath := dir + "/wifi-portal.env"
 	info, err := os.Stat(envPath)
 	if err != nil {
@@ -453,7 +451,7 @@ func TestRunInit_WritesFiles(t *testing.T) {
 	if info.Mode().Perm()&0o077 != 0 {
 		t.Errorf(".env mode = %o, want no group/other access", info.Mode().Perm())
 	}
-	// 内容应包含 .env.example 内容 + init header
+	// Content should include .env.example plus init header.
 	data, _ := os.ReadFile(envPath)
 	if !strings.Contains(string(data), "wifi-portal init") {
 		t.Error(".env missing init header")
@@ -462,7 +460,7 @@ func TestRunInit_WritesFiles(t *testing.T) {
 		t.Error(".env missing embedded template (TENANT_ID)")
 	}
 
-	// systemd unit 应存在,权限 0644 (system 可读)
+	// systemd unit should exist with 0644 mode because systemd reads it.
 	servicePath := dir + "/wifi-portal.service"
 	info, err = os.Stat(servicePath)
 	if err != nil {
@@ -480,7 +478,7 @@ func TestRunInit_WritesFiles(t *testing.T) {
 func TestLooksUninitialized(t *testing.T) {
 	keys := []string{"TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "IKUAI_APPKEY", "PUBLIC_URL", "SESSION_SECRET"}
 
-	// 备份 + 清空所有关键 env
+	// Backup and clear all key env vars.
 	saved := map[string]string{}
 	for _, k := range keys {
 		saved[k] = os.Getenv(k)
@@ -496,19 +494,19 @@ func TestLooksUninitialized(t *testing.T) {
 		}
 	}()
 
-	// 全空 → uninitialized
+	// All empty -> uninitialized.
 	if !looksUninitialized() {
 		t.Error("all empty env should report uninitialized")
 	}
 
-	// 只设一个 → 已视为 initialized (mustEnv 会报具体缺哪个)
+	// Any one set -> initialized; mustEnv will report the specific missing key.
 	os.Setenv("TENANT_ID", "xxx")
 	if looksUninitialized() {
 		t.Error("partial env should NOT trigger first-run (mustEnv reports specific missing key)")
 	}
 	os.Unsetenv("TENANT_ID")
 
-	// 空格不算设
+	// Whitespace does not count as set.
 	os.Setenv("PUBLIC_URL", "   ")
 	if !looksUninitialized() {
 		t.Error("whitespace-only env should still be considered empty")
@@ -524,19 +522,19 @@ func TestRunInit_DoesNotOverwriteExisting(t *testing.T) {
 	if err := runInit([]string{"--out-dir", dir}); err != nil {
 		t.Fatal(err)
 	}
-	// .env 应该保持原内容
+	// .env should keep original content.
 	data, _ := os.ReadFile(envPath)
 	if string(data) != "MY-EXISTING-CONFIG=xxx\n" {
 		t.Errorf("existing .env was overwritten: %q", string(data))
 	}
-	// systemd unit 没存在过, 应被写入
+	// systemd unit did not exist and should be written.
 	if _, err := os.Stat(dir + "/wifi-portal.service"); err != nil {
 		t.Error(".service should be written when missing")
 	}
 }
 
 func TestHandleAdminLoginStart_RejectsGET(t *testing.T) {
-	// M6 回归: GET 不能写 cookie. 限定 POST 后, GET 应直接 405.
+	// M6 regression: GET must not write cookies. After POST-only enforcement, GET returns 405.
 	app := mkAdminTestApp(t)
 	r, _ := http.NewRequest("GET", "/admin/login/start", nil)
 	w := httptest.NewRecorder()
@@ -544,7 +542,7 @@ func TestHandleAdminLoginStart_RejectsGET(t *testing.T) {
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET to /admin/login/start should be 405, got %d", w.Code)
 	}
-	// 不应该有 cookie 被写
+	// No cookie should be written.
 	if len(w.Result().Cookies()) > 0 {
 		t.Error("GET must not set any cookie")
 	}

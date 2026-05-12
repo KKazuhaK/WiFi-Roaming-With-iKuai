@@ -1,15 +1,15 @@
 package main
 
 // duo_universal.go
-// Duo Universal Prompt (OIDC) 客户端 — 手写实现, 不引第三方 dep.
+// Duo Universal Prompt (OIDC) client, implemented directly without third-party dependencies.
 //
-// 流程 (官方 Web SDK v4 协议):
-//   1. 我们生成一个签名的 request JWT (HS512 用 client_secret 签),
-//      把浏览器 302 到 https://{api_host}/oauth/v1/authorize?client_id=&request=
-//   2. 用户在 Duo 页面做 2FA (push / 电话 / 硬件 token 随便选)
-//   3. Duo 302 到 redirect_uri?state=X&duo_code=Y
-//   4. 服务端 POST /oauth/v1/token 用 client_assertion JWT 交换 duo_code
-//   5. 拿到 id_token (JWT), 用同一把 secret 验签, 读 preferred_username 作为用户身份
+// Flow (official Web SDK v4 protocol):
+//   1. Generate a signed request JWT (HS512 signed with client_secret) and redirect the browser to
+//      https://{api_host}/oauth/v1/authorize?client_id=&request=
+//   2. The user completes 2FA on the Duo page with any available factor.
+//   3. Duo redirects to redirect_uri?state=X&duo_code=Y.
+//   4. The server POSTs to /oauth/v1/token and exchanges duo_code with a client_assertion JWT.
+//   5. The server receives id_token, verifies it with the same secret, and uses preferred_username.
 
 import (
 	"crypto/hmac"
@@ -28,7 +28,7 @@ import (
 type DuoUniversalClient struct {
 	clientID     string
 	clientSecret string
-	apiHost      string // 小写, 不带 scheme
+	apiHost      string // Lowercase, without scheme.
 	redirectURI  string
 	http         *http.Client
 }
@@ -43,9 +43,9 @@ func newDuoUniversalClient(cfg Config) *DuoUniversalClient {
 	}
 }
 
-// AuthURL 生成 Duo Universal Prompt 跳转 URL.
-// username 会作为 duo_uname 传给 Duo, Duo 页面会显示这个用户做 2FA.
-// state 必须非空, 用于 CSRF 校验 (我们存 session 里比对).
+// AuthURL builds the Duo Universal Prompt redirect URL.
+// username is sent as duo_uname so Duo shows that user during 2FA.
+// state must be non-empty for CSRF validation against the session.
 func (d *DuoUniversalClient) AuthURL(username, state string) (string, error) {
 	if username == "" || state == "" {
 		return "", errors.New("username/state must not be empty")
@@ -57,7 +57,7 @@ func (d *DuoUniversalClient) AuthURL(username, state string) (string, error) {
 		"client_id":     d.clientID,
 		"iss":           d.clientID,
 		"aud":           "https://" + d.apiHost,
-		"exp":           now + 300, // 5 分钟
+		"exp":           now + 300, // 5 minutes.
 		"iat":           now,
 		"state":         state,
 		"response_type": "code",
@@ -74,8 +74,8 @@ func (d *DuoUniversalClient) AuthURL(username, state string) (string, error) {
 	return "https://" + d.apiHost + "/oauth/v1/authorize?" + q.Encode(), nil
 }
 
-// Exchange: 用 duo_code 换 id_token, 验签, 返回 Duo 认定的 username.
-// 我们还传入 expectedUsername 做 defense-in-depth 校验 — 防止 id_token 被换成别人的.
+// Exchange swaps duo_code for id_token, verifies the signature, and returns Duo's username.
+// expectedUsername adds defense-in-depth against id_token substitution.
 func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string, error) {
 	now := time.Now().Unix()
 	jti, err := randomHex(16)
@@ -137,9 +137,9 @@ func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string,
 	if err != nil {
 		return "", fmt.Errorf("duo id_token: %w", err)
 	}
-	// iss = 完整的 token endpoint URL (对照 Duo 官方 duo_universal_golang SDK).
-	// 早先这里按 "https://{apiHost}" 校验, 被 Duo 实际返回的
-	// "https://{apiHost}/oauth/v1/token" 给挂了.
+	// iss is the full token endpoint URL, matching Duo's official duo_universal_golang SDK.
+	// An earlier check used "https://{apiHost}" and failed against Duo's actual
+	// "https://{apiHost}/oauth/v1/token" value.
 	if iss, _ := claims["iss"].(string); iss != tokenEndpoint {
 		return "", fmt.Errorf("duo id_token iss mismatch: %s", iss)
 	}
@@ -147,7 +147,7 @@ func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string,
 	if aud, _ := claims["aud"].(string); aud != d.clientID {
 		return "", fmt.Errorf("duo id_token aud mismatch: %s", aud)
 	}
-	// 提取用户身份: Duo 用 preferred_username 传 duo_uname
+	// Extract user identity: Duo returns duo_uname in preferred_username.
 	var username string
 	if pref, _ := claims["preferred_username"].(string); pref != "" {
 		username = pref
@@ -157,20 +157,20 @@ func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string,
 	if username == "" {
 		return "", errors.New("duo id_token missing username")
 	}
-	// defense in depth: 要求和我们提交时的 username 对得上
+	// Defense in depth: require the username to match what we submitted.
 	if expectedUsername != "" && !strings.EqualFold(username, expectedUsername) {
 		return "", fmt.Errorf("duo username mismatch: expected %s, got %s", expectedUsername, username)
 	}
 	return username, nil
 }
 
-// duoMaxResponseBytes Duo HTTP 响应体上限. 真实 preauth / token 响应都在几 KB 量级,
-// 1 MB 留十足余量. 加这个限制是审计指出的 #13: 受信但被劫持 / DNS 污染 → 巨大响应
-// 会 OOM 进程. 超限就 error, 而不是默默截断后让 JSON parse 报莫名错误.
+// duoMaxResponseBytes is the Duo HTTP response-body limit. Real preauth/token responses are only
+// a few KB, so 1 MB is ample. Audit #13 flagged that a trusted but hijacked endpoint or DNS issue
+// could return a huge body and OOM the process; exceeding the limit returns a clear error.
 const duoMaxResponseBytes int64 = 1 << 20
 
-// readBoundedBody 读取至多 limit 字节. 超过 limit 返回错误.
-// 实现技巧: 读 limit+1 字节, 真读到的字节数 > limit 就知道超额.
+// readBoundedBody reads at most limit bytes and errors when the limit is exceeded.
+// It reads limit+1 bytes so any actual read beyond limit is detectable.
 func readBoundedBody(r io.Reader, limit int64) ([]byte, error) {
 	lr := io.LimitReader(r, limit+1)
 	body, err := io.ReadAll(lr)
@@ -202,8 +202,8 @@ func signJWTHS512(claims map[string]any, secret string) (string, error) {
 	return signingInput + "." + enc.EncodeToString(mac.Sum(nil)), nil
 }
 
-// verifyJWTHS512: 验签 + 基础 (exp / iat) 检查. 返回 claims.
-// iss/aud 等语义校验由调用方做.
+// verifyJWTHS512 verifies the signature and basic exp/iat checks, then returns claims.
+// Callers perform semantic checks such as iss/aud.
 func verifyJWTHS512(token, secret string) (map[string]any, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -220,7 +220,7 @@ func verifyJWTHS512(token, secret string) (map[string]any, error) {
 	if !hmac.Equal(mac.Sum(nil), gotSig) {
 		return nil, errors.New("jwt signature mismatch")
 	}
-	// 解 header 验 alg (防降级攻击)
+	// Decode the header and verify alg to prevent downgrade attacks.
 	headerBytes, err := enc.DecodeString(parts[0])
 	if err != nil {
 		return nil, errors.New("jwt header decode failed")
@@ -232,7 +232,7 @@ func verifyJWTHS512(token, secret string) (map[string]any, error) {
 	if header.Alg != "HS512" {
 		return nil, fmt.Errorf("jwt alg is not HS512: %s", header.Alg)
 	}
-	// 解 payload
+	// Decode the payload.
 	payload, err := enc.DecodeString(parts[1])
 	if err != nil {
 		return nil, errors.New("jwt payload decode failed")
@@ -241,8 +241,8 @@ func verifyJWTHS512(token, secret string) (map[string]any, error) {
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, err
 	}
-	// exp 必须存在且是数字. 缺失 / 非数字一律拒 —
-	// 旧实现 type assertion 失败时悄悄跳过过期判断, 等于该 token 永久有效.
+	// exp must exist and be numeric. Missing or non-numeric exp is rejected.
+	// The old implementation silently skipped expiry checks on failed type assertions.
 	rawExp, present := claims["exp"]
 	if !present {
 		return nil, errors.New("jwt missing exp")
@@ -251,7 +251,7 @@ func verifyJWTHS512(token, secret string) (map[string]any, error) {
 	if !ok {
 		return nil, errors.New("jwt exp must be a number")
 	}
-	if time.Now().Unix() > int64(exp)+30 { // 30 秒容错
+	if time.Now().Unix() > int64(exp)+30 { // 30-second leeway.
 		return nil, errors.New("jwt expired")
 	}
 	return claims, nil
