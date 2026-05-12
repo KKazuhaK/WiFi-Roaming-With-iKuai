@@ -106,7 +106,7 @@ func loadConfig() Config {
 
 		ListenAddr:   envOr("LISTEN_ADDR", "127.0.0.1:28080"),
 		BrandName:    envOr("BRAND_NAME", "Kazuha Hub"),
-		BrandColor:   envOr("BRAND_COLOR", "#2563eb"),
+		BrandColor:   sanitizeBrandColor(envOr("BRAND_COLOR", ""), "#2563eb"),
 		BrandLogoURL: envOr("BRAND_LOGO_URL", ""),
 
 		IKuaiIPKeys:  splitCSV(envOr("IKUAI_IP_KEYS", "user_ip,ip,ipaddr")),
@@ -277,6 +277,43 @@ func envOrDuration(key string, fallback time.Duration) time.Duration {
 		log.Fatalf("env %s must be a duration (e.g. 5m, 1h), got: %q", key, v)
 	}
 	return d
+}
+
+// sanitizeBrandColor 校验 BRAND_COLOR env 是合法 CSS 颜色 (#rgb / #rrggbb / #rrggbbaa).
+// 非法值静默回退到 fallback — admin 错填不该让进程启动失败.
+//
+// 原因: 颜色值在模板里直接拼进 <style>--brand: X;</style>. html/template 的 CSS
+// 上下文转义并不阻挡 CSS 语法逃逸 (如 "red; } body { display:none } /*"),
+// 必须在入口卡白名单.
+func sanitizeBrandColor(raw, fallback string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return fallback
+	}
+	if !isHexColor(s) {
+		return fallback
+	}
+	return s
+}
+
+// isHexColor 严格匹配 #RGB / #RRGGBB / #RRGGBBAA, 字符限 [0-9a-fA-F]. 不依赖 regexp,
+// 启动期热路径手写更小.
+func isHexColor(s string) bool {
+	if len(s) < 4 || s[0] != '#' {
+		return false
+	}
+	rest := s[1:]
+	switch len(rest) {
+	case 3, 6, 8:
+	default:
+		return false
+	}
+	for _, c := range rest {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func splitCSV(s string) []string {

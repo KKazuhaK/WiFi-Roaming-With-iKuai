@@ -115,7 +115,7 @@ func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string,
 		return "", fmt.Errorf("duo token: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := readBoundedBody(resp.Body, duoMaxResponseBytes)
 	if err != nil {
 		return "", fmt.Errorf("duo token read body: %w", err)
 	}
@@ -162,6 +162,25 @@ func (d *DuoUniversalClient) Exchange(duoCode, expectedUsername string) (string,
 		return "", fmt.Errorf("duo username mismatch: expected %s, got %s", expectedUsername, username)
 	}
 	return username, nil
+}
+
+// duoMaxResponseBytes Duo HTTP 响应体上限. 真实 preauth / token 响应都在几 KB 量级,
+// 1 MB 留十足余量. 加这个限制是审计指出的 #13: 受信但被劫持 / DNS 污染 → 巨大响应
+// 会 OOM 进程. 超限就 error, 而不是默默截断后让 JSON parse 报莫名错误.
+const duoMaxResponseBytes int64 = 1 << 20
+
+// readBoundedBody 读取至多 limit 字节. 超过 limit 返回错误.
+// 实现技巧: 读 limit+1 字节, 真读到的字节数 > limit 就知道超额.
+func readBoundedBody(r io.Reader, limit int64) ([]byte, error) {
+	lr := io.LimitReader(r, limit+1)
+	body, err := io.ReadAll(lr)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("response body exceeds limit %d bytes", limit)
+	}
+	return body, nil
 }
 
 // --- JWT HS512 helpers ---
@@ -222,11 +241,18 @@ func verifyJWTHS512(token, secret string) (map[string]any, error) {
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, err
 	}
-	// exp 检查
-	if exp, ok := claims["exp"].(float64); ok {
-		if time.Now().Unix() > int64(exp)+30 { // 30 秒容错
-			return nil, errors.New("jwt expired")
-		}
+	// exp 必须存在且是数字. 缺失 / 非数字一律拒 —
+	// 旧实现 type assertion 失败时悄悄跳过过期判断, 等于该 token 永久有效.
+	rawExp, present := claims["exp"]
+	if !present {
+		return nil, errors.New("jwt missing exp")
+	}
+	exp, ok := rawExp.(float64)
+	if !ok {
+		return nil, errors.New("jwt exp must be a number")
+	}
+	if time.Now().Unix() > int64(exp)+30 { // 30 秒容错
+		return nil, errors.New("jwt expired")
 	}
 	return claims, nil
 }

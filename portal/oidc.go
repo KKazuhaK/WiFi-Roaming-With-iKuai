@@ -31,7 +31,9 @@ type UserInfo struct {
 }
 
 func (u UserInfo) IsGuest() bool {
-	return strings.Contains(u.UPN, "#EXT#")
+	// case-insensitive: Microsoft 当前用大写 "#EXT#", 但单一大小写匹配防御
+	// 太脆 — 不值得让 guest 检测失败的可能性绑在供应商不会改格式上.
+	return strings.Contains(strings.ToUpper(u.UPN), "#EXT#")
 }
 
 // IsAdmin 判定是否有 /admin 后台权限. 两种路径任一成立即通过:

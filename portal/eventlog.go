@@ -407,11 +407,40 @@ func (e *EventLog) gcLoop() {
 
 // --- CSV 导出 ---
 
+// sanitizeCSVCell: CSV 注入防护. Excel/LibreOffice/Numbers 会把以
+//   = + - @ Tab CR
+// 起头的 cell 当公式求值, 攻击者可构造 =WEBSERVICE(...) / =cmd|'/c calc'!A0
+// 之类做 RCE 或外联. 我们在前面塞一个单引号把 cell 强制成纯文本.
+//
+// 注意: 只看首字符. 中段的 @ (如 alice@example.com) 不算.
+func sanitizeCSVCell(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
+// writeCSVRowSafe 把每个 cell 过一遍 sanitizeCSVCell 再写, 避免每个 caller
+// 都得手动包一遍. 列头不过滤 — 列头是我们硬编码的常量, 不可能命中.
+func writeCSVRowSafe(cw *csv.Writer, cells []string) error {
+	safe := make([]string, len(cells))
+	for i, c := range cells {
+		safe[i] = sanitizeCSVCell(c)
+	}
+	return cw.Write(safe)
+}
+
 // WriteCSV 把 events 以 UTF-8 BOM + 中文列头的 CSV 格式写到 w.
 // BOM 是为了 Excel 不乱码 (Excel 判断 UTF-8 唯一的稳定信号).
 //
 // L9 修复: 不能 `defer cw.Flush()` 后 `return cw.Error()` — defer 在 return 之后跑,
 // Flush 内部的 IO 错误丢失. 显式 Flush + 检查 Error 才能可靠拿到所有写错误.
+//
+// 每行数据 cell 走 sanitizeCSVCell 中和公式注入.
 func WriteEventsCSV(w http.ResponseWriter, events []Event) error {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="events.csv"`)
@@ -425,7 +454,7 @@ func WriteEventsCSV(w http.ResponseWriter, events []Event) error {
 		return err
 	}
 	for _, ev := range events {
-		if err := cw.Write([]string{
+		if err := writeCSVRowSafe(cw, []string{
 			ev.Time.Local().Format("2006-01-02 15:04:05"),
 			eventKindLabel(ev.Kind),
 			ev.Subject,
