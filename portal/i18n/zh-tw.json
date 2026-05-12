@@ -30,7 +30,7 @@
   "errors.adminDisabled": "Admin 後台未設定 (ADMIN_EMAILS 或 ADMIN_GROUP_IDS)。",
   "errors.notAdminMember": "你的帳號不在 admin 清單, 請聯絡管理員。",
 
-  "common.footer": "© %s · WiFi",
+  "common.footer": "© %s · Wi-Fi",
   "common.back": "返回",
   "common.cancel": "取消",
   "common.retry": "重試",
