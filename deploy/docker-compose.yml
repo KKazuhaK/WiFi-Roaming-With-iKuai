@@ -32,7 +32,7 @@ services:
     build:
       context: ./portal
       dockerfile: Dockerfile
-    image: kazuha/wifi-portal:latest
+    image: ghcr.io/kkazuhak/wifi-portal:latest
     container_name: wifi-portal
     restart: unless-stopped
 
@@ -80,7 +80,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.caddy
-    image: kazuha/caddy-cloudflare:latest
+    image: wifi-portal-caddy:latest
     container_name: wifi-portal-caddy
     restart: unless-stopped
 

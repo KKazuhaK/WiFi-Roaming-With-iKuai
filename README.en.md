@@ -2,6 +2,11 @@
 
 Languages: [中文](./README.md) | [English](./README.en.md)
 
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](./LICENSE)
+[![Go](https://img.shields.io/github/go-mod/go-version/KKazuhaK/WiFi-Roaming-With-iKuai?filename=portal%2Fgo.mod)](portal/go.mod)
+[![Build](https://github.com/KKazuhaK/WiFi-Roaming-With-iKuai/actions/workflows/build.yml/badge.svg)](https://github.com/KKazuhaK/WiFi-Roaming-With-iKuai/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/KKazuhaK/WiFi-Roaming-With-iKuai)](https://github.com/KKazuhaK/WiFi-Roaming-With-iKuai/releases)
+
 A unified WiFi access portal for the SSID **`Kazuha Hub Roaming`**.
 
 Users land on a captive portal and choose one of these paths:
@@ -12,6 +17,41 @@ Users land on a captive portal and choose one of these paths:
 - **Visitors without organization accounts** use one-time guest codes issued by admins.
 
 Every successful path ultimately calls iKuai custom authentication (`type=20`) and allow-lists the device MAC / IP.
+
+## Quick Start
+
+Fastest path to a running instance using **Mode A** (Portal only, TLS handled by an external reverse proxy). See [Docker Deployment](#docker-deployment) and [Required Configuration](#required-configuration) for the full guide.
+
+```bash
+# 1. Clone.
+git clone https://github.com/KKazuhaK/WiFi-Roaming-With-iKuai.git
+cd WiFi-Roaming-With-iKuai
+
+# 2. Arrange a working dir with portal/, the compose file, and .env together.
+#    The build context expects ./portal next to docker-compose.yml.
+sudo mkdir -p /opt/wifi-portal
+sudo chown $USER:$USER /opt/wifi-portal
+cp -r portal /opt/wifi-portal/
+cp deploy/docker-compose.yml /opt/wifi-portal/
+cd /opt/wifi-portal
+
+# 3. Create and lock down .env.
+cp portal/.env.example .env
+chmod 600 .env
+
+# 4. Fill the required variables in .env (leave COMPOSE_PROFILES empty for Mode A):
+#      TENANT_ID, CLIENT_ID, CLIENT_SECRET   - Entra App Registration
+#      IKUAI_APPKEY                          - iKuai custom authentication appkey
+#      PUBLIC_URL                            - externally reachable Portal URL, e.g. https://portal.example.com
+#      SESSION_SECRET                        - openssl rand -hex 32
+vim .env
+
+# 5. Build and start.
+docker compose up -d --build
+docker compose logs -f portal
+```
+
+Portal listens on host `127.0.0.1:28080` for your external Nginx / aaPanel proxy to forward to. For built-in Caddy TLS (Mode B), prebuilt images (Mode C), or bare binary + systemd (Mode D), see [Deployment Modes](#deployment-modes).
 
 ## Deployment Modes
 
@@ -424,3 +464,11 @@ Pushing a tag matching `v*.*.*` triggers `.github/workflows/release.yml`, which:
 git tag v0.4.1
 git push origin v0.4.1
 ```
+
+## License
+
+Licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. Full text: [`LICENSE`](./LICENSE).
+
+You are free to use, modify, and redistribute this software. Because it is AGPL-3.0, if you run a version of it as a network service, you must offer its users the corresponding complete source code of that version.
+
+Bundled dependencies are licensed under Apache-2.0 (`github.com/coreos/go-oidc/v3`, `github.com/go-jose/go-jose/v4`) and BSD-3-Clause (`golang.org/x/oauth2`), both compatible with AGPL-3.0.

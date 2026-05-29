@@ -6,15 +6,15 @@
 #   - No references to portal source code, suitable for UI-only Synology / iKuai deployments.
 #
 # Prerequisite: follow the README in this directory to upload the tarball and docker load both images:
-#   kazuha/wifi-portal:latest
-#   kazuha/caddy-cloudflare:latest
+#   ghcr.io/kkazuhak/wifi-portal:latest
+#   wifi-portal-caddy:latest
 #
 # Place this in /volume1/docker/wifi-portal/ (Synology) or /mnt/xxx/wifi-portal/ (iKuai), put .env
 # in the same directory, then point Container Manager / iKuai UI project creation here.
 
 services:
   portal:
-    image: kazuha/wifi-portal:latest
+    image: ghcr.io/kkazuhak/wifi-portal:latest
     container_name: wifi-portal
     restart: unless-stopped
     env_file:
@@ -40,7 +40,7 @@ services:
       start_period: 10s
 
   caddy:
-    image: kazuha/caddy-cloudflare:latest
+    image: wifi-portal-caddy:latest
     container_name: wifi-portal-caddy
     restart: unless-stopped
     ports:
