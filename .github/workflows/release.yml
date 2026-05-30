@@ -129,9 +129,9 @@ jobs:
           body: |
             ### Docker image (ghcr.io)
             ```bash
-            docker pull ${{ env.IMAGE }}:${{ github.ref_name }}
-            # Or latest.
             docker pull ${{ env.IMAGE }}:latest
+            # Or specific version.
+            docker pull ${{ env.IMAGE }}:${{ github.ref_name }}
             ```
 
             ### Offline deployment (Mode C)
