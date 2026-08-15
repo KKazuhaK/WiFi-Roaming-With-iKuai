@@ -1,9 +1,12 @@
 name: build
 
 # Runs on push / PR and verifies:
-#   (1) Go build / vet / test, including race detector.
-#   (2) govulncheck dependency and stdlib CVE scan.
-#   (3) Docker image build.
+#   (1) The Go code still compiles with only the dist placeholder — the property
+#       that lets a contributor without Node build the project.
+#   (2) The React bundle typechecks, builds, and passes the dist smoke check.
+#   (3) Go build / vet / test against the real bundle, including race detector.
+#   (4) govulncheck dependency and stdlib CVE scan.
+#   (5) Docker image build.
 #
 # When Go is not installed locally, this workflow is the compiler and test machine.
 
@@ -14,9 +17,83 @@ on:
     branches: [main]
 
 jobs:
-  go-test:
-    name: Go build + vet + race test
+  # portal/internal/web/dist ships with nothing but .gitkeep, which is what lets
+  # `//go:embed all:dist` compile on a fresh clone. That guarantee is easy to
+  # break — an embed directive change, a stray file pattern — and the break would
+  # only show up for someone cloning without Node installed. This job is that
+  # someone.
+  go-build-clean:
+    name: Go build without the frontend
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.25.10"
+          cache: true
+          cache-dependency-path: portal/go.sum
+
+      - name: confirm dist holds only the placeholder
+        run: |
+          set -euo pipefail
+          found=$(find internal/web/dist -type f | sort)
+          if [ "$found" != "internal/web/dist/.gitkeep" ]; then
+            echo "unexpected tracked files under internal/web/dist:"
+            echo "$found"
+            echo "the build output must stay git-ignored; see .gitignore"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build -v ./...
+
+  web:
+    name: Frontend typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal/web-react
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: portal/web-react/package-lock.json
+
+      - name: install dependencies
+        run: npm ci
+
+      - name: build
+        # `npm run build` runs `tsc -b` first, so this covers the typecheck.
+        run: npm run build
+
+      # Checks the entry markers the Go handler rewrites, the content hashes the
+      # immutable caching depends on, the .br/.gz siblings, and the brotli budget
+      # on the captive-portal entry.
+      - name: dist smoke check
+        run: npm run smoke:dist
+
+      - name: upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: portal/internal/web/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  go-test:
+    name: Go test against the real bundle
+    runs-on: ubuntu-latest
+    needs: web
     defaults:
       run:
         working-directory: portal
@@ -31,11 +108,14 @@ jobs:
           cache: true
           cache-dependency-path: portal/go.sum
 
-      - name: go vet
-        run: go vet ./...
-
-      - name: go build
-        run: go build -v ./...
+      # spa_bundle_test.go skips itself when only the placeholder is present, so
+      # without this the tests that check the Vite output against the Go handler
+      # would quietly never run — exactly the seam they exist to cover.
+      - name: download bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: portal/internal/web/dist
 
       - name: go test (race detector)
         run: go test -race -count=1 ./...
@@ -65,15 +145,37 @@ jobs:
       - name: run govulncheck
         run: govulncheck ./...
 
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal/web-react
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: portal/web-react/package-lock.json
+      - run: npm ci
+      # The frontend dependency tree is new attack surface for a project that
+      # previously had two Go dependencies; govulncheck has no visibility into
+      # it. High and critical advisories fail the build.
+      - name: audit
+        run: npm audit --audit-level=high
+
   docker-build:
     name: Docker image build
     runs-on: ubuntu-latest
-    needs: go-test
+    needs: [go-build-clean, web]
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
+      # Exercises the full build-from-source path, node stage included — the one
+      # `docker compose up -d --build` uses.
       - name: Build image without push, only verify Dockerfile
         uses: docker/build-push-action@v5
         with:

@@ -1,0 +1,22 @@
+# Root build context, used only by portal/Dockerfile.release in the release
+# workflow. That image COPYs two things — a pre-built binary from bin/ and
+# portal/docker-entrypoint.sh — so everything else is dead weight in the context
+# upload, and .git alone is tens of megabytes.
+#
+# portal/.dockerignore governs the build-from-source image, whose context is
+# portal/.
+.git
+.github
+deploy
+docs
+*.md
+LICENSE
+
+.env
+*.env
+!*.env.example
+secrets/
+
+node_modules
+portal/web-react
+portal/internal/web/dist

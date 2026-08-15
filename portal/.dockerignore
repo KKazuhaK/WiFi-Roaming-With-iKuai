@@ -6,4 +6,16 @@
 README.md
 *.md
 Dockerfile
+Dockerfile.release
 .dockerignore
+
+# Frontend. node_modules is rebuilt from package-lock.json inside the web-builder
+# stage; copying a host install would both bloat the build context and risk
+# shipping native modules compiled for the wrong platform.
+web-react/node_modules
+web-react/*.tsbuildinfo
+
+# A host build of the bundle must not leak into the image. The web-builder stage
+# produces it from source, and copying a stale local dist would silently ship
+# whatever the developer last built.
+internal/web/dist

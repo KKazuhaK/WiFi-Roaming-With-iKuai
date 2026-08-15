@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.6
+
+# Runtime-only image consumed by the release workflow.
+#
+# The binary — with the React bundle already embedded via //go:embed — is
+# compiled once per architecture natively on the runner and downloaded as an
+# artifact before buildx runs. The COPY below picks the right one through
+# buildx's automatic TARGETARCH.
+#
+# The point is that no Go or Node toolchain runs inside this image. Building the
+# frontend under QEMU for arm64 costs tens of minutes; here the only emulated
+# step is `apk add` of three packages, so a multi-arch release finishes in a
+# couple of minutes.
+#
+# NOTE: keep in sync with the runtime stage of Dockerfile, which builds the same
+# image from source for `docker compose up --build`.
+FROM alpine:3.19
+ARG TARGETARCH
+
+RUN apk add --no-cache ca-certificates tzdata su-exec && \
+    addgroup -S portal && adduser -S portal -G portal
+
+WORKDIR /app
+COPY bin/linux-${TARGETARCH}/portal /app/portal
+COPY portal/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN mkdir -p /data && chown portal:portal /data && \
+    chmod +x /app/portal /app/docker-entrypoint.sh
+
+VOLUME ["/data"]
+EXPOSE 28080
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/portal"]

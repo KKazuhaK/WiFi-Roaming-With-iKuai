@@ -7,18 +7,45 @@ Contributions of all kinds are welcome: bug fixes, new auth paths, hardening, tr
 ## Prerequisites
 
 - **Go 1.25+** (the module targets `go 1.25.0`; see `portal/go.mod`). CI pins to `>=1.25.10`, so use a recent 1.25 toolchain to match it.
+- **Node 22+** — needed only if you touch the frontend (`portal/web-react/`) or want to produce a binary that actually serves pages. See below.
 - **Docker** (optional) — only needed if you want to build or run the container image, or reproduce the Docker steps from the README.
 
-All Go work happens inside the `portal/` directory, which is where `go.mod` lives.
+Go work happens inside the `portal/` directory, which is where `go.mod` lives. The frontend lives in `portal/web-react/`.
 
 ## Building
 
-From `./portal`:
+The frontend is a Vite bundle that `//go:embed` packs into the binary, so a full build is two steps:
 
 ```bash
-cd portal
-go build ./...
+cd portal/web-react && npm ci && npm run build   # writes portal/internal/web/dist/
+cd .. && go build ./...
 ```
+
+**You can skip the first step when you are only changing Go code.** `portal/internal/web/dist/` ships with a tracked `.gitkeep` and nothing else, which is what lets `//go:embed all:dist` compile on a fresh clone — so `go build ./...`, `go vet ./...` and `go test ./...` all work without Node installed. The binary you get that way starts normally but answers every page with `frontend bundle not built`, and logs the same hint at startup. That is expected; only a binary you intend to ship or to click through needs the bundle.
+
+The build output is git-ignored. If `git status` ever shows files under `internal/web/dist/`, something is wrong with `.gitignore` — CI fails the build in that case (see the `go-build-clean` job).
+
+### Frontend development
+
+`npm run dev` starts Vite on port 5174 and proxies `/auth`, `/admin` and `/static` to a portal running on `localhost:28080`, so you get hot reload against a real backend:
+
+```bash
+cd portal/web-react && npm run dev
+```
+
+Useful scripts:
+
+| Command | What it does |
+| --- | --- |
+| `npm run build` | Typechecks (`tsc -b`), builds, pre-compresses to `.br`/`.gz`, restores the dist `.gitkeep` |
+| `npm run typecheck` | Typecheck only |
+| `npm run smoke:dist` | Verifies the built output: entry markers the Go handler rewrites, content hashes, compression siblings, and the brotli budget on the captive-portal entry |
+
+The captive-portal page (`/login`) has a **160KB brotli budget** enforced by `smoke:dist`. It loads inside a mini browser before the device has internet access, so an admin-only import leaking into that entry's chunk is a real regression — that is what the budget catches.
+
+Translations live in `portal/i18n/*.json` and are read by **both** sides: Go through `T()` in `i18n.go`, and the frontend through the `@i18n` alias in `web-react/src/lib/i18n.ts`. Add a key to all three language files or the Go startup validation will refuse to boot.
+
+### Release build flags
 
 CI also produces stripped, reproducible cross-compiled binaries (`.github/workflows/release.yml`) with the same flags; locally you can do the equivalent:
 
@@ -93,7 +120,7 @@ go fmt ./...      # rewrites in place
 
 The repository has extensive `*_test.go` coverage (config, oidc, duo, ikuai, ratelimit, admin, denylist, eventlog, session, handlers, and a dedicated `regressions_test.go`). Tests are **table-driven**: a slice of input/expected-output cases iterated in a loop, with `t.Errorf`/`t.Fatalf` reporting the offending case. New behavior must come with tests in the same style, and bug fixes should add a regression test (write it to fail first, then make it pass). Security-sensitive logic, in particular, is expected to include attack-payload cases (see `config_test.go`'s `TestSanitizeBrandColor`).
 
-`go vet ./...` and `go test ./...` must pass; CI also runs `govulncheck ./...` and a Docker image build, so avoid introducing vulnerable dependencies.
+`go vet ./...` and `go test ./...` must pass. CI also runs `govulncheck ./...`, `npm audit --audit-level=high` over the frontend tree, a Docker image build, and `go test` a second time against a freshly built bundle — `spa_bundle_test.go` skips itself when only the dist placeholder is present, so those checks only actually run in the job that builds the frontend first.
 
 ## Internationalization
 
@@ -116,6 +143,7 @@ There is no pluralization layer; formatting uses `fmt.Sprintf` with `%s`/`%d`. T
 - Use **Conventional Commits** prefixes: `feat:`, `fix:`, `docs:`, `i18n:` (these match the existing history). Use the prefix that fits the change.
 - Keep PRs **small and focused** — one logical change per PR is much easier to review.
 - `go test ./...` and `go vet ./...` must pass before you open or update a PR; code must be gofmt-clean.
+- Frontend changes must also pass `npm run build` (which typechecks) and `npm run smoke:dist` from `portal/web-react/`.
 - Write **code comments in English**.
 - Update tests and, where relevant, the READMEs and `portal/i18n/*` in the same PR as the behavior change.
 

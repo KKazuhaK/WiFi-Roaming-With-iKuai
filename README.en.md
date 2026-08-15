@@ -266,12 +266,25 @@ Download a release binary:
 - `wifi-portal-vX.Y.Z-linux-amd64`
 - `wifi-portal-vX.Y.Z-linux-arm64`
 
-Or build from source with Go 1.25+:
+Or build from source with Go 1.25+ and Node 22+:
 
 ```bash
 cd portal
+
+# 1. Build the frontend. The output lands in internal/web/dist/, which the next
+#    step packs into the binary via //go:embed.
+cd web-react && npm ci && npm run build && cd ..
+
+# 2. Build the Go binary.
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/wifi-portal .
 ```
+
+> **Skipping step 1**: `go build` still succeeds — a `.gitkeep` placeholder in
+> `internal/web/dist/` exists precisely so contributors touching only Go code do
+> not need Node, and so the `go vet` / `go test` CI jobs do not have to build the
+> frontend first. The resulting binary starts, but answers every page with
+> `frontend bundle not built` and logs the same hint. A binary you intend to ship
+> must have the frontend built first.
 
 Run once without env to generate config templates:
 

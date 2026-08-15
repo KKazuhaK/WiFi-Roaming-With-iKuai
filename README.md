@@ -86,8 +86,9 @@ docker compose logs -f portal
 ```
 WiFi-Roaming-With-iKuai/
 ├── README.md                  # 本文
-├── portal/                    # Go 源码 + Dockerfile + 前端模板
+├── portal/                    # Go 源码 + React 前端 + Dockerfile
 │   ├── main.go                # HTTP 路由
+│   ├── spa.go                 # 内嵌 React 产物的静态服务 (缓存 / 预压缩协商 / 配置注入)
 │   ├── config.go              # 环境变量读取
 │   ├── session.go             # HMAC 签名 cookie (wifi + admin)
 │   ├── oidc.go                # Entra OIDC 流程
@@ -98,10 +99,18 @@ WiFi-Roaming-With-iKuai/
 │   ├── ratelimit.go           # 失败计数 + IP 短时冷却 + clientIP 解析
 │   ├── ikuai.go               # iKuai 放行 token 生成
 │   ├── eventlog.go            # 结构化事件日志 (登录 + admin 审计) + JSONL 持久化 + CSV 导出
-│   ├── i18n.go                # 三语字符串 (zh-cn/zh-tw/en)
-│   ├── templates/             # login.html / error.html / admin.html
+│   ├── i18n.go                # 三语字符串 (zh-cn/zh-tw/en); Go 和前端共用同一批 JSON
+│   ├── i18n/                  # zh-cn.json / zh-tw.json / en.json
+│   ├── web-react/             # 前端源码 (Vite + React 19 + TypeScript + antd 6)
+│   │   ├── portal.html        # entry: /login, /admin/login, 错误页
+│   │   ├── admin.html         # entry: /admin 管理后台
+│   │   ├── src/lib/           # 配置注入解析 / i18n / fetch 封装 / 主题
+│   │   ├── src/pages/         # 页面与 admin 各区块
+│   │   └── scripts/           # 产物冒烟检查 + .gitkeep 保活
+│   ├── internal/web/dist/     # 构建产物, 被 //go:embed 打进二进制 (不进版本库)
 │   ├── static/                # logo + 头像
-│   ├── Dockerfile
+│   ├── Dockerfile             # 从源码构建 (含 node 阶段)
+│   ├── Dockerfile.release     # 只 COPY 预编译二进制, 发布流水线用
 │   ├── .dockerignore
 │   ├── .env.example           # 环境变量模板, 不含真值
 │   └── go.mod
@@ -408,13 +417,24 @@ curl -I "https://wifi.login.example.com/portal?user_ip=192.168.1.100&mac=aa:bb:c
 - `wifi-portal-vX.Y.Z-linux-amd64`
 - `wifi-portal-vX.Y.Z-linux-arm64`
 
-或者从 source 自己编 (需要 Go 1.25+):
+或者从 source 自己编 (需要 Go 1.25+ 和 Node 22+):
 
 ```bash
 git clone https://github.com/KKazuhaK/WiFi-Roaming-With-iKuai.git
 cd WiFi-Roaming-With-iKuai/portal
+
+# 1. 先构建前端。产物直接写进 internal/web/dist/, 下一步由 //go:embed 打进二进制。
+cd web-react && npm ci && npm run build && cd ..
+
+# 2. 再编 Go。
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/wifi-portal .
 ```
+
+> **跳过第 1 步会怎样**: `go build` 照样成功 —— `internal/web/dist/` 里有个
+> `.gitkeep` 占位符专门保证这一点, 这样只改 Go 代码的贡献者不必装 Node,
+> CI 的 `go vet` / `go test` 也不用先跑前端构建。但那样编出来的二进制启动后
+> 每个页面都会返回 `frontend bundle not built`, 日志里也会打同样的提示。
+> 要发布的二进制必须先构建前端。
 
 ### 步骤 2: 直接跑一次, 自动生成配置模板
 
@@ -835,7 +855,7 @@ POST /auth/start -> 200 (32.1ms) client_ip=192.168.1.23 user_ip=192.168.1.23 mac
 
 ### 爬虫
 
-`/robots.txt` 返 `Disallow: /`, 模板里也打了 `<meta name="robots" content="noindex, nofollow">`。
+`/robots.txt` 返 `Disallow: /`, 两个前端入口文档 (`portal.html` / `admin.html`) 里也打了 `<meta name="robots" content="noindex, nofollow">`。
 正经爬虫 (Google / Bing 之类) 会跳过。恶意爬虫不理这个, 交给上面三条限流。
 
 ### 强烈建议: 按路由器 WAN IP 白名单 (Nginx 层)
@@ -886,7 +906,7 @@ Captive portal 只服务 "已连上 Kazuha Hub Roaming SSID 的设备"。那些�
 - [x] 三层失败计数 + IP 短时冷却 (规则 1 邮箱 / 规则 5 MAC / 规则 6 IP, 详见"安全 / 防滥用")
 - [x] MAC 永久封禁列表 (持久化到 `/data/denylist.json`, 管理员在 `/admin` 维护, 支持 CSV 导入导出)
 - [x] 账号枚举防护 (`/auth/start` → opaque token → `/auth/proceed` 中转)
-- [x] `robots.txt` 拒爬 + 模板 `<meta robots noindex nofollow>`
+- [x] `robots.txt` 拒爬 + 前端入口文档 `<meta robots noindex nofollow>`
 - [x] 结构化事件日志 + admin 审计 (`/data/events.jsonl`, JSONL, 默认保留 7 天)
 - [ ] Client Secret 日历提醒 2028-04-08 前轮换
 - [ ] (未来) Prometheus 监控 + 到期自动告警

@@ -2,17 +2,26 @@ name: release
 
 # Trigger: push a git tag matching v*.*.*.
 #
-# Flow:
-#   1. Cross-compile Go binaries for linux/amd64 and linux/arm64.
-#   2. Build and push a multi-arch Docker image to ghcr.io with buildx.
-#   3. Save amd64 and arm64 images as tarballs for Mode C offline deployment.
-#   4. Compute SHA-256 checksums.
-#   5. Create a GitHub Release with binaries, tarballs, and checksums.
+#   web      → builds the React bundle once
+#   build    → cross-compiles linux/amd64 + linux/arm64 natively, in parallel,
+#              with the bundle embedded
+#   docker   → reuses those binaries for the multi-arch ghcr.io push and the
+#              Mode C offline tarballs
+#   release  → packages the binaries, computes checksums, publishes the Release
+#
+# The split exists because the frontend build made the old single-job flow
+# untenable: it compiled the image three times (multi-arch push plus one --load
+# per architecture), so adding a node stage would have meant running `npm ci`
+# under arm64 QEMU emulation — tens of minutes for a bundle that takes three
+# seconds natively. Here the bundle is built once and the images only COPY a
+# finished binary, so the only emulated work left is `apk add` of three packages.
+#
+# It also means the binary you sha256-verify from the Release is byte-identical
+# to the one inside the container image: both come from the same artifact.
 #
 # Usage:
 #   git tag v0.1.0
 #   git push origin v0.1.0
-# Then check the Releases page for assets.
 
 on:
   push:
@@ -25,8 +34,61 @@ permissions:
   packages: write
 
 jobs:
-  release:
+  setup:
+    name: Resolve tag and image name
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      # ghcr.io requires a lowercase owner while github.repository_owner preserves
+      # the original casing.
+      - name: compute lowercase image name
+        id: meta
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/${OWNER_LC}/wifi-portal" >> "$GITHUB_OUTPUT"
+
+  web:
+    name: Build web bundle
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal/web-react
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: portal/web-react/package-lock.json
+
+      - name: install dependencies
+        run: npm ci
+
+      - name: build
+        # vite.config.ts writes to ../internal/web/dist for //go:embed.
+        run: npm run build
+
+      - name: dist smoke check
+        run: npm run smoke:dist
+
+      - name: upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: portal/internal/web/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build linux/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
 
@@ -36,34 +98,57 @@ jobs:
           cache: true
           cache-dependency-path: portal/go.sum
 
-      # ghcr.io requires lowercase owner while github.repository_owner preserves original casing.
-      # Compute it once and place it in env.
-      - name: compute lowercase image name
-        run: |
-          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "IMAGE=ghcr.io/${OWNER_LC}/wifi-portal" >> $GITHUB_ENV
+      - name: download bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: portal/internal/web/dist
 
-      - name: prepare dist dir
-        run: mkdir -p dist
-
-      # --- Bare Go binaries without Docker dependency ---
-
-      - name: build linux/amd64 binary
+      - name: build binary
         working-directory: portal
+        env:
+          GOARCH: ${{ matrix.goarch }}
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-            -trimpath -ldflags="-s -w" \
-            -o ../dist/wifi-portal-${{ github.ref_name }}-linux-amd64 .
+          set -euo pipefail
+          mkdir -p out
+          CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o out/portal .
+          # A binary without the bundle would start and then answer every page
+          # with the "frontend bundle not built" error. Cheap to catch here,
+          # expensive to discover from a release asset.
+          if ! grep -q "PORTAL_HEAD" out/portal; then
+            echo "built binary does not contain the embedded bundle marker"
+            exit 1
+          fi
 
-      - name: build linux/arm64 binary
-        working-directory: portal
-        run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
-            -trimpath -ldflags="-s -w" \
-            -o ../dist/wifi-portal-${{ github.ref_name }}-linux-arm64 .
+      - name: upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: portal-linux-${{ matrix.goarch }}
+          path: portal/out/portal
+          if-no-files-found: error
+          retention-days: 1
 
-      # --- Docker image: multi-arch push to ghcr.io plus single-arch tarballs ---
+  docker:
+    name: Publish container image
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    steps:
+      - uses: actions/checkout@v4
 
+      - name: download linux/amd64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: portal-linux-amd64
+          path: bin/linux-amd64
+
+      - name: download linux/arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: portal-linux-arm64
+          path: bin/linux-arm64
+
+      # Still needed: Dockerfile.release has no build toolchain, but its
+      # `apk add` runs in the target architecture.
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -77,40 +162,65 @@ jobs:
       - name: build & push multi-arch image
         uses: docker/build-push-action@v5
         with:
-          context: portal
-          file: portal/Dockerfile
+          context: .
+          file: portal/Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.IMAGE }}:${{ github.ref_name }}
-            ${{ env.IMAGE }}:latest
+            ${{ needs.setup.outputs.image }}:${{ github.ref_name }}
+            ${{ needs.setup.outputs.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Mode C (Synology / iKuai UI) needs tarballs; buildx outputs single-arch images locally.
-      - name: save amd64 tarball
+      # Mode C (Synology / iKuai UI) loads an image from a tarball, and buildx
+      # can only --load one platform at a time.
+      - name: save per-arch tarballs
         run: |
-          docker buildx build --platform linux/amd64 \
-            --load \
-            -t wifi-portal:amd64 \
-            -f portal/Dockerfile \
-            portal
-          docker save wifi-portal:amd64 | gzip > dist/wifi-portal-${{ github.ref_name }}-amd64.tar.gz
+          set -euo pipefail
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            docker buildx build --platform "linux/${arch}" --load \
+              -t "wifi-portal:${arch}" \
+              -f portal/Dockerfile.release .
+            docker save "wifi-portal:${arch}" \
+              | gzip > "dist/wifi-portal-${{ github.ref_name }}-${arch}.tar.gz"
+          done
 
-      - name: save arm64 tarball
+      - name: upload tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-tarballs
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [setup, build, docker]
+    steps:
+      - name: download binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: portal-linux-*
+
+      - name: download tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: image-tarballs
+          path: dist
+
+      - name: assemble release assets
         run: |
-          docker buildx build --platform linux/arm64 \
-            --load \
-            -t wifi-portal:arm64 \
-            -f portal/Dockerfile \
-            portal
-          docker save wifi-portal:arm64 | gzip > dist/wifi-portal-${{ github.ref_name }}-arm64.tar.gz
-
-      # --- Checksums + release ---
-
-      - name: compute SHA-256 checksums
-        working-directory: dist
-        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            src="artifacts/portal-linux-${arch}/portal"
+            dst="dist/wifi-portal-${{ github.ref_name }}-linux-${arch}"
+            cp "$src" "$dst"
+            chmod +x "$dst"
+          done
+          cd dist
           sha256sum * > checksums.txt
           cat checksums.txt
 
@@ -118,20 +228,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           # Tag-triggered push events already carry tag_name; softprops picks it up by default.
-          files: |
-            dist/wifi-portal-${{ github.ref_name }}-linux-amd64
-            dist/wifi-portal-${{ github.ref_name }}-linux-arm64
-            dist/wifi-portal-${{ github.ref_name }}-amd64.tar.gz
-            dist/wifi-portal-${{ github.ref_name }}-arm64.tar.gz
-            dist/checksums.txt
+          files: dist/*
           generate_release_notes: true
           # body can include fixed guidance such as image addresses; generated notes cover commits.
           body: |
             ### Docker image (ghcr.io)
             ```bash
-            docker pull ${{ env.IMAGE }}:latest
+            docker pull ${{ needs.setup.outputs.image }}:latest
             # Or specific version.
-            docker pull ${{ env.IMAGE }}:${{ github.ref_name }}
+            docker pull ${{ needs.setup.outputs.image }}:${{ github.ref_name }}
             ```
 
             ### Offline deployment (Mode C)
