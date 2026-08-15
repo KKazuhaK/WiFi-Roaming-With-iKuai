@@ -6,7 +6,7 @@ Contributions of all kinds are welcome: bug fixes, new auth paths, hardening, tr
 
 ## Prerequisites
 
-- **Go 1.25+** (the module targets `go 1.25.0`; see `portal/go.mod`). CI pins to `>=1.25.10`, so use a recent 1.25 toolchain to match it.
+- **Go 1.25+**. `portal/go.mod` carries a `toolchain` directive, so with the default `GOTOOLCHAIN=auto` the right patch release is downloaded for you on first build. CI pins setup-go to the same exact version; if govulncheck starts reporting a stdlib CVE, bump the `toolchain` directive and the CI pins together.
 - **Node 22+** — needed only if you touch the frontend (`portal/web-react/`) or want to produce a binary that actually serves pages. See below.
 - **Docker** (optional) — only needed if you want to build or run the container image, or reproduce the Docker steps from the README.
 - **MySQL / PostgreSQL** (optional) — the test suite runs against the embedded SQLite by default. See "Testing against MySQL and PostgreSQL" below if you touch the storage layer.
