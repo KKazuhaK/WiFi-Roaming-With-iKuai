@@ -109,6 +109,26 @@ export async function postForm<T = Record<string, unknown>>(
 }
 
 /**
+ * POST a JSON body.
+ *
+ * The older admin endpoints take url-encoded forms and stay that way; the
+ * settings endpoints take JSON because a settings form submits a variable set of
+ * keys and a flat form body cannot distinguish an omitted key from an empty one
+ * — which is exactly the distinction the blank-means-unchanged rule for secrets
+ * depends on.
+ */
+export async function postJSON<T = Record<string, unknown>>(
+  path: string,
+  body: unknown,
+): Promise<T> {
+  return (await request(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })) as T
+}
+
+/**
  * POST a multipart body. Only the denylist CSV import needs this; the Content-Type
  * header is deliberately not set so the browser appends the multipart boundary.
  */

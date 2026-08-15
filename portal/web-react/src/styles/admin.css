@@ -8,20 +8,70 @@
   hand-off is invisible.
 */
 
-.admin-root {
+.admin-shell {
   min-height: 100vh;
+}
+
+/* antd's Sider paints its own background from the theme; the border is what
+   separates it from the content column in both light and dark. */
+.admin-sider {
+  border-inline-end: 1px solid var(--border);
+}
+
+.admin-brand {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 16px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-brand-logo {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+/* Fallback mark when no logo URL is configured: the brand's first character on
+   its brand colour, so a fresh install still looks deliberate. */
+.admin-brand-initial {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.admin-brand-name {
+  font-size: 15px;
+  min-width: 0;
 }
 
 .admin-header {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
-  padding: 12px 24px;
+  height: auto;
+  min-height: 56px;
+  padding: 8px 20px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  line-height: normal;
+}
+
+.admin-content {
+  padding: 20px;
+  max-width: 1500px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .admin-title {
@@ -42,19 +92,10 @@
   margin-top: 0;
 }
 
-.admin-main {
-  flex: 1;
-  width: 100%;
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 24px;
-}
-
 .admin-dashboard {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
-  margin-bottom: 24px;
 }
 
 /*
@@ -87,7 +128,7 @@
 
 @media (max-width: 640px) {
   .admin-header,
-  .admin-main {
+  .admin-content {
     padding-left: 12px;
     padding-right: 12px;
   }

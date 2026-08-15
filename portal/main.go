@@ -482,6 +482,10 @@ func main() {
 	mux.HandleFunc("/auth/guest-code", app.handleGuestCode)
 	mux.HandleFunc("/admin", app.handleAdmin)
 	mux.HandleFunc("/admin/api/state", app.handleAdminState)
+	// Trailing slash: ServeMux treats this as a subtree, which is how the
+	// section name reaches the handler as a path segment.
+	mux.HandleFunc("/admin/api/settings/", app.handleAdminSettings)
+	mux.HandleFunc("/admin/api/settings", app.handleAdminSettings)
 	mux.HandleFunc("/admin/login", app.handleAdminLogin)
 	// Break-glass password login. 404s unless an operator turned it on from the
 	// CLI, so a deployment that does not use it does not advertise it.
