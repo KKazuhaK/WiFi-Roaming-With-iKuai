@@ -1,4 +1,5 @@
 import { setLang, t, type Lang } from '@/lib/i18n'
+import './LangSwitch.css'
 import { SUPPORTED_LANGS } from '@/lib/config'
 
 const LABEL_KEY: Record<Lang, string> = {

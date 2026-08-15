@@ -1,0 +1,32 @@
+/*
+  Styles travel with the component rather than living in a page stylesheet.
+  LangSwitch is used by both the card pages and the admin header, and when these
+  rules sat in card.css — imported only by the portal entry — the admin header
+  rendered three native <button> elements with browser chrome.
+*/
+
+.lang-switch {
+  text-align: center;
+  margin-top: 16px;
+  font-size: 12px;
+}
+
+.lang-switch button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0 8px;
+  font-size: inherit;
+  font-family: inherit;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.lang-switch button.active {
+  color: var(--brand-color);
+  font-weight: 600;
+}
+
+.lang-switch button:disabled {
+  cursor: default;
+}

@@ -91,32 +91,6 @@
   color: var(--brand-color);
 }
 
-.lang-switch {
-  text-align: center;
-  margin-top: 16px;
-  font-size: 12px;
-}
-
-.lang-switch button {
-  background: none;
-  border: none;
-  padding: 0;
-  margin: 0 8px;
-  font-size: inherit;
-  font-family: inherit;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.lang-switch button.active {
-  color: var(--brand-color);
-  font-weight: 600;
-}
-
-.lang-switch button:disabled {
-  cursor: default;
-}
-
 /* Inline validation text under an input. Kept as static layout rather than an
    antd Alert: on a 4-inch screen inside a captive-portal mini browser an Alert's
    padding pushes the primary button below the fold. */

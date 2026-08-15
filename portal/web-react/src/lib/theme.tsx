@@ -65,6 +65,12 @@ export function ThemeProvider({
   return (
     <ConfigProvider
       locale={locale}
+      // antd pads a two-character CJK button label into "继 续" for visual
+      // balance. The portal's Chinese UI has always rendered those labels
+      // unspaced, and a port is the wrong moment to restyle text an operator
+      // reads every day — so the behaviour is switched off rather than
+      // inherited by accident.
+      button={{ autoInsertSpace: false }}
       theme={{
         algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm,
         token: {
