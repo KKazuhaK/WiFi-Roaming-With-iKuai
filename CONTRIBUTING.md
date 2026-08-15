@@ -9,6 +9,7 @@ Contributions of all kinds are welcome: bug fixes, new auth paths, hardening, tr
 - **Go 1.25+** (the module targets `go 1.25.0`; see `portal/go.mod`). CI pins to `>=1.25.10`, so use a recent 1.25 toolchain to match it.
 - **Node 22+** — needed only if you touch the frontend (`portal/web-react/`) or want to produce a binary that actually serves pages. See below.
 - **Docker** (optional) — only needed if you want to build or run the container image, or reproduce the Docker steps from the README.
+- **MySQL / PostgreSQL** (optional) — the test suite runs against the embedded SQLite by default. See "Testing against MySQL and PostgreSQL" below if you touch the storage layer.
 
 Go work happens inside the `portal/` directory, which is where `go.mod` lives. The frontend lives in `portal/web-react/`.
 
@@ -92,7 +93,15 @@ chmod 600 .env
 # SESSION_SECRET (openssl rand -hex 32), etc.
 ```
 
-A minimal local run needs at least `SESSION_SECRET` and the Entra/iKuai values to exercise the real auth paths. For full deployment instructions (Modes A–D, reverse proxy/TLS, iKuai integration, Duo setup, admin console, and the exact compose directory layout), see [`README.en.md`](./README.en.md) (or [`README.md`](./README.md) for 简体中文). Never commit a real `.env`; use placeholder values such as `00000000-0000-0000-0000-000000000000`, `you@example.com`, and `portal.example.com`.
+A minimal local run needs `SESSION_SECRET` and `ENCRYPTION_KEY`, plus the Entra/iKuai values if you want to exercise the real auth paths. Those last ones are only seeds: they are imported into the database on first start, and after that configuration is edited in `/admin` → Settings or with `wifi-portal config set`. If a local instance is ignoring your `.env` edits, that is why.
+
+To reach `/admin` without a working Entra tenant, use the break-glass account — which is also the fastest way to click through admin changes locally:
+
+```bash
+cd portal
+go run . admin add ops        # prompts for a password
+go run . admin enable         # exposes /admin/login/local
+``` For full deployment instructions (Modes A–D, reverse proxy/TLS, iKuai integration, Duo setup, admin console, and the exact compose directory layout), see [`README.en.md`](./README.en.md) (or [`README.md`](./README.md) for 简体中文). Never commit a real `.env`; use placeholder values such as `00000000-0000-0000-0000-000000000000`, `you@example.com`, and `portal.example.com`.
 
 ## Testing
 
@@ -111,6 +120,28 @@ go test -race -count=1 ./...
 go test -count=1 -cover ./...
 ```
 
+### Testing against MySQL and PostgreSQL
+
+Every test runs against an embedded SQLite file by default, which is what you get with no setup. That is not enough when you touch `store_*.go`, `internal/dbstore/` or `internal/settings/`: the three engines disagree about upsert syntax, about whether `SELECT ... FOR UPDATE` exists, about whether `LIKE` is case-sensitive, and about timestamp precision — and all four of those differences are load-bearing here.
+
+Point the suite at a real server with `TEST_DB_DSN`:
+
+```bash
+# PostgreSQL
+docker run --rm -d -p 5432:5432 -e POSTGRES_USER=portal -e POSTGRES_PASSWORD=portal \
+  -e POSTGRES_DB=wifi_portal_test --name pg-test postgres:16-alpine
+TEST_DB_DSN='postgres://portal:portal@127.0.0.1:5432/wifi_portal_test?sslmode=disable' \
+  go test -count=1 -p 1 ./...
+
+# MySQL
+docker run --rm -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=portal -e MYSQL_USER=portal \
+  -e MYSQL_PASSWORD=portal -e MYSQL_DATABASE=wifi_portal_test --name my-test mysql:8
+TEST_DB_DSN='portal:portal@tcp(127.0.0.1:3306)/wifi_portal_test?parseTime=true&loc=UTC' \
+  go test -count=1 -p 1 ./...
+```
+
+`-p 1` matters: with an external server the tests share one database and empty it at the start of each test, so two packages running concurrently would clear each other's rows. CI runs both engines on every push (the `go-test-databases` job).
+
 Before committing, keep the code gofmt-clean:
 
 ```bash
@@ -118,7 +149,7 @@ gofmt -l .        # lists files needing formatting; should print nothing
 go fmt ./...      # rewrites in place
 ```
 
-The repository has extensive `*_test.go` coverage (config, oidc, duo, ikuai, ratelimit, admin, denylist, eventlog, session, handlers, and a dedicated `regressions_test.go`). Tests are **table-driven**: a slice of input/expected-output cases iterated in a loop, with `t.Errorf`/`t.Fatalf` reporting the offending case. New behavior must come with tests in the same style, and bug fixes should add a regression test (write it to fail first, then make it pass). Security-sensitive logic, in particular, is expected to include attack-payload cases (see `config_test.go`'s `TestSanitizeBrandColor`).
+The repository has extensive `*_test.go` coverage (config, oidc, duo, ikuai, ratelimit, admin, denylist, eventlog, session, handlers, TLS and listeners, admin APIs, multi-instance and paging behaviour in `scale_test.go`, and a dedicated `regressions_test.go`). Tests are **table-driven**: a slice of input/expected-output cases iterated in a loop, with `t.Errorf`/`t.Fatalf` reporting the offending case. New behavior must come with tests in the same style, and bug fixes should add a regression test (write it to fail first, then make it pass). Security-sensitive logic, in particular, is expected to include attack-payload cases (see `config_test.go`'s `TestSanitizeBrandColor`).
 
 `go vet ./...` and `go test ./...` must pass. CI also runs `govulncheck ./...`, `npm audit --audit-level=high` over the frontend tree, a Docker image build, and `go test` a second time against a freshly built bundle — `spa_bundle_test.go` skips itself when only the dist placeholder is present, so those checks only actually run in the job that builds the frontend first.
 

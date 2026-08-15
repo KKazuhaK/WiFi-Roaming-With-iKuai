@@ -5,8 +5,9 @@ name: build
 #       that lets a contributor without Node build the project.
 #   (2) The React bundle typechecks, builds, and passes the dist smoke check.
 #   (3) Go build / vet / test against the real bundle, including race detector.
-#   (4) govulncheck dependency and stdlib CVE scan.
-#   (5) Docker image build.
+#   (4) The same Go tests against real MySQL and PostgreSQL servers.
+#   (5) govulncheck dependency and stdlib CVE scan.
+#   (6) Docker image build.
 #
 # When Go is not installed locally, this workflow is the compiler and test machine.
 
@@ -122,6 +123,74 @@ jobs:
 
       - name: go test (coverage)
         run: go test -count=1 -cover ./...
+
+  # Everything above runs against SQLite. That is the default deployment and it
+  # is what a contributor has locally, but it is not what "MySQL and PostgreSQL
+  # are supported" means: the three engines disagree about upsert syntax, about
+  # whether SELECT ... FOR UPDATE exists, about LIKE case-sensitivity and about
+  # timestamp precision. Every one of those differences is load-bearing here —
+  # guest-code redemption is a locked read-modify-write, the settings store is an
+  # upsert, and the admin search is a LIKE. So the suite runs again against real
+  # servers, with TEST_DB_DSN pointing the shared test helper at them.
+  go-test-databases:
+    name: Go test against ${{ matrix.engine }}
+    runs-on: ubuntu-latest
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: postgres
+            dsn: "postgres://portal:portal@127.0.0.1:5432/wifi_portal_test?sslmode=disable"
+          - engine: mysql
+            dsn: "portal:portal@tcp(127.0.0.1:3306)/wifi_portal_test?parseTime=true&loc=UTC"
+    defaults:
+      run:
+        working-directory: portal
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: portal
+          POSTGRES_PASSWORD: portal
+          POSTGRES_DB: wifi_portal_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U portal"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: portal
+          MYSQL_USER: portal
+          MYSQL_PASSWORD: portal
+          MYSQL_DATABASE: wifi_portal_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uportal -pportal"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.25.10"
+          cache: true
+          cache-dependency-path: portal/go.sum
+
+      - name: download bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: portal/internal/web/dist
+
+      # -p 1 because the shared database is emptied at the start of each test:
+      # two packages running concurrently against one server would clear each
+      # other's rows. The suite is a few seconds, so serialising costs nothing.
+      - name: go test
+        env:
+          TEST_DB_DSN: ${{ matrix.dsn }}
+        run: go test -count=1 -p 1 ./...
 
   vulncheck:
     name: govulncheck

@@ -44,6 +44,10 @@ chmod 600 .env
 #      IKUAI_APPKEY                            <- iKuai 云面板生成
 #      PUBLIC_URL=https://wifi.login.example.com   <- 外部可达的 https 地址
 #      SESSION_SECRET=$(openssl rand -hex 32)      <- 跑一次贴进去
+#      ENCRYPTION_KEY=$(openssl rand -hex 32)      <- 加密入库的凭据
+#
+#    这些只是第一次启动的种子: 启动时会一次性导入数据库, 之后改配置都在
+#    /admin -> 设置 里, 保存即生效。见下面 "配置放在哪"。
 vim .env
 
 # 5. 起服务
@@ -55,6 +59,143 @@ docker compose logs -f portal
 
 想要内置 Caddy 自动签证书 (模式 B)、预构建镜像 (模式 C) 或裸二进制 + systemd (模式 D), 见下面 [四种部署模式](#四种部署模式)。完整的前置条件、变量含义、端到端自测、故障排查见 [Phase 3 · 部署](#phase-3--部署)。
 
+## 配置放在哪
+
+**除了五个引导变量, 其余全部在后台改, 存在数据库里。**
+
+以前所有配置都是环境变量, 改一个品牌名要编辑 `.env` 再重启容器。现在只有
+"启动前必须知道、且 UI 修不了" 的那几项还留在环境变量里:
+
+| 引导变量 | 为什么必须是 env |
+|---|---|
+| `SESSION_SECRET` | 用来验签 admin cookie。放数据库里就成了鸡生蛋: 得先登录才能配置能让你登录的东西 |
+| `ENCRYPTION_KEY` | 数据库里凭据的加密密钥。存进它保护的那个库里毫无意义 |
+| `DATA_DIR` | 内嵌 SQLite 的位置 |
+| `DB_DSN` | 数据库地址。读设置之前得先连上库 |
+| `DB_MAX_OPEN_CONNS` | 连接池上限。池子在能读设置表之前就建好了 |
+| `LISTEN_ADDR` | 明文 HTTP 监听地址。iKuai 会把客户端重定向到这里, 运行中不能挪 |
+| `TRUST_PROXY` | 决定信不信 `X-Forwarded-For`。填错等于悄悄关掉限流, 所以不给 UI 改 |
+
+其它全部搬进了 **/admin → 设置**, 分区展示: Entra SSO、Duo 双因素、登录策略、
+管理员准入、应急登录、iKuai 对接、iKuai 策略默认值、Portal、品牌、限流、事件日志。
+保存即生效, 不用重启 —— OIDC 客户端会跟着新配置一起原子换掉。
+
+凭据 (`CLIENT_SECRET` / `IKUAI_APPKEY` / Duo 的两个密钥) 用 `ENCRYPTION_KEY` 派生的
+AES-256-GCM 加密后入库, 且**永远不会**回传给浏览器: 设置页上只显示"已配置"标记,
+留空保存 = 不改。
+
+### 从旧版本升级
+
+**什么都不用做。** 第一次用新版本启动时, 会把 `.env` 里的值和 `DATA_DIR` 下的
+五个 JSON 状态文件 (访客码 / MAC 黑名单 / iKuai 策略 / 封禁历史 / 事件日志) 一次性
+导入数据库, 然后把它们改名成 `*.migrated` 留着。之后就只读数据库了。
+
+导入只在数据库为空时发生一次。之后 `.env` 里那些运行时变量会被忽略 —— 启动日志
+会把还留着的旧变量列出来提醒你, 不会静默生效。
+
+## 后台能配什么
+
+`/admin` 是 Passwall 风格的侧边栏布局, 四组:
+
+- **概览** — 仪表盘 (今日/本周登录、失败率、活跃访客码、封禁数)
+- **接入** — 访客码、放行策略 (iKuai 限速/时长默认值)
+- **安全** — MAC 黑名单、限流状态、事件日志
+- **系统** — TLS 证书、设置
+
+品牌 (名称 / 主色 / logo) 在 设置 → 品牌 里改, 改完 captive portal 和后台一起变色,
+不用重新构建前端。
+
+### TLS / 域名 / 端口
+
+**系统 → TLS** 有两种模式:
+
+- **反向代理终结 TLS** (默认, 老部署不受影响) — Portal 只听明文 HTTP。这一页给你
+  生成 nginx / Caddy 配置片段直接复制, 外加一个连通性自检。它**不会**去改你反代的
+  配置文件: 那需要给一个直面未认证设备的进程写 `/etc/nginx` 的权限, 换一次复制粘贴
+  不划算。
+- **Portal 自己终结 TLS** — Portal 自己绑 443, 证书从数据库读。证书来源两种:
+  - **Let's Encrypt (HTTP-01)** —— 填域名和邮箱, 点"立即签发"。续期在到期前 30 天
+    自动跑。challenge 走的是 Portal 主 mux, 和 iKuai 重定向客户端的是同一个端口。
+  - **手动上传 PEM** —— 内网机器、公司已有的泛域名证书、或者你在别处用 DNS-01 签的,
+    都走这条。私钥入库前加密。
+
+  **DNS-01 没有实现。** LAN 盒子 (模式 B) 天生过不了 HTTP-01 —— 那种部署的意义就是
+  不可公网路由 —— 所以这一页会先检测, 判定不可行时直接引导你走上传, 而不是让你反复
+  重试一个不可能成功的 challenge。
+
+改监听参数走**提交-确认**: 新监听起来之后你有两分钟在新地址上点"确认保留",
+超时自动回滚到旧配置。开了 HTTP→HTTPS 跳转会让当前这个明文地址不再提供后台,
+所以保存后页面会直接把新地址给你。
+
+绑 443 需要 root 或 `CAP_NET_BIND_SERVICE`。
+
+## 数据库
+
+默认是 `DATA_DIR` 下的内嵌 SQLite, 零配置, 单机部署就用它。多实例 / 大规模填 `DB_DSN`:
+
+```bash
+DB_DSN=user:pass@tcp(127.0.0.1:3306)/wifi_portal?parseTime=true    # MySQL 8
+DB_DSN=postgres://user:pass@127.0.0.1:5432/wifi_portal?sslmode=disable  # PostgreSQL
+DB_DSN=sqlite:/var/lib/wifi-portal/portal.db                        # 指定 SQLite 路径
+```
+
+库要提前建好, 表结构启动时自动迁移。SQLite 用的是纯 Go 驱动, 所以 `CGO_ENABLED=0`
+的静态二进制照样能跑。
+
+**多实例语义** —— 这些是跑多个 Portal 时真正要知道的:
+
+| 状态 | 是否跨实例共享 |
+|---|---|
+| 访客码兑换 | ✓ 一个事务 + 行锁。单次码被 16 个并发请求抢, 只有一个能成 |
+| MAC 黑名单 / iKuai 策略 / 设置 / 证书 | ✓ |
+| 事件日志 | ✓ 所有实例写同一张表, 后台看到的是全量 |
+| IP 冷却封禁 | ✓ 落库 + 2 秒写穿缓存 |
+| 永久封禁升级计数 | ✓ |
+| 失败计数器 (邮箱 / MAC / IP) | **✗ 每实例独立** |
+
+最后一条是有意的: 失败计数在每次失败尝试时读写, 而失败次数正是攻击者能控制的量,
+搬进数据库等于把写放在攻击者能刷的路径上。代价是 N 个实例时, 平均分摊攻击的人最多
+能拿到 N 倍阈值才触发封禁 —— 但触发之后的封禁是全局的, 反复封禁升级成永久封禁的
+计数也一直是共享的。削弱有界, 执行不打折。
+
+事件表按保留期分批清理 (每批 5000 行), 不是一条 DELETE 扫几个月 —— 后者在 MySQL 上
+会一直持锁, 在 PostgreSQL 上会留下一大堆死元组等 autovacuum。
+
+## 锁死了怎么办
+
+SSO 配置现在在数据库里, 而改它的后台又要 SSO 才能进 —— 一个填错的租户 ID 就能把所有
+管理员关在门外。两条退路:
+
+**本地应急账号** (走浏览器):
+
+```bash
+wifi-portal admin add ops          # 交互式设密码, argon2id 存储
+wifi-portal admin enable           # 打开 /admin/login/local
+wifi-portal admin enable 10.0.0.0/8,192.168.0.0/16   # 限定来源网段
+wifi-portal admin disable          # 用完关掉
+```
+
+没开的时候 `/admin/login/local` 直接 404, 不会对外暴露它的存在。十五分钟内连续失败
+十次锁账号。
+
+**命令行直接改库** (连浏览器都不需要):
+
+```bash
+wifi-portal config list                    # 全部设置, 凭据打码
+wifi-portal config get oidc.tenant_id
+wifi-portal config set oidc.tenant_id 00000000-1111-2222-3333-444444444444
+wifi-portal config unset tls.mode          # 恢复默认
+```
+
+这些命令读的是同一份引导环境变量 (`SESSION_SECRET` / `ENCRYPTION_KEY` / `DATA_DIR` /
+`DB_DSN`), 所以要带着同一个 env file 跑。Docker 部署:
+`docker compose exec portal wifi-portal config list`。
+
+还有一层: **配置错误不再导致启动失败**。以前 OIDC 配错会 `log.Fatalf` 退出, 那时候是
+对的 —— 反正只能改 `.env` 再重启。现在修的地方就在这个进程自己伺服的后台里, 退出等于
+把唯一的修复工具也拿走了。所以现在是: 照常启动, 登录返回明确错误, 后台把问题标在对应
+的设置分区上。
+
 ## 四种部署模式
 
 | | **A — 外部反代** | **B — LAN 盒子** | **C — 预构建镜像 UI** | **D — 裸二进制 + systemd** |
@@ -63,7 +204,7 @@ docker compose logs -f portal
 | 容器 | ✓ docker compose | ✓ docker compose | ✓ docker (UI) | ✗ |
 | 源码 on 设备 | ✓ (git clone) | ✓ | **×** 只上传镜像 tarball | **×** 只下载二进制 |
 | 主要 UI | CLI | CLI | 网页点击 | CLI |
-| TLS | 外部反代 | Caddy DNS-01 | Caddy DNS-01 | 外部反代 (nginx / Caddy) |
+| TLS | 外部反代 **或 Portal 自签** | Caddy DNS-01 或后台上传 PEM | Caddy DNS-01 | 外部反代 **或 Portal 自签** |
 | 公网攻击面 | 有, 靠 App 层三道限流 | **无**, iKuai DNS 劫持 | **无** | 取决于反代部署 |
 | admin 远程访问 | ✓ | ✗ (要在 WiFi 网里) | ✗ | ✓ |
 
@@ -79,6 +220,12 @@ docker compose logs -f portal
 
 四种可以混合部署, `SESSION_SECRET` 共享 → admin 一次登录所有 /admin 都认。
 
+从 TLS 后台化 (见 [配置放在哪](#配置放在哪)) 之后, 模式 A 和 D 也可以不要反代:
+在 系统 → TLS 里切成 "Portal 自己终结 TLS", 域名、端口、证书都在同一页配完。
+表里 "外部反代" 这一列仍然有效 —— 443 已经被别的站点占了的机器只能这么来。
+
+多实例共享一个 MySQL / PostgreSQL 也是支持的, 见 [数据库](#数据库)。
+
 ---
 
 ## 目录
@@ -89,23 +236,36 @@ WiFi-Roaming-With-iKuai/
 ├── portal/                    # Go 源码 + React 前端 + Dockerfile
 │   ├── main.go                # HTTP 路由
 │   ├── spa.go                 # 内嵌 React 产物的静态服务 (缓存 / 预压缩协商 / 配置注入)
-│   ├── config.go              # 环境变量读取
+│   ├── config.go              # 引导配置 (env) + 运行时配置结构
+│   ├── config_settings.go     # 设置注册表: 分区 / 键 / 默认值 / 校验
+│   ├── runtime.go             # 原子换掉配置和据此构建的 OIDC / Duo 客户端
+│   ├── cli.go                 # config / admin 子命令 (锁死时的退路)
+│   ├── localadmin.go          # 应急本地账号 (argon2id + 锁定)
+│   ├── tls.go                 # 证书存储 / TLS 配置 / 提交-确认 / 反代片段
+│   ├── acme.go                # Let's Encrypt HTTP-01 签发与续期
+│   ├── listeners.go           # 运行中增删监听器, 带回滚
+│   ├── admin_settings.go      # 设置页的读写接口
+│   ├── admin_tls.go           # TLS 页的接口
+│   ├── store_*.go             # 访客码 / 黑名单 / 策略 / 事件 / IP 封禁的数据库实现
+│   ├── migrate_legacy.go      # .env 和 JSON 状态文件的一次性导入
 │   ├── session.go             # HMAC 签名 cookie (wifi + admin)
 │   ├── oidc.go                # Entra OIDC 流程
 │   ├── duo.go                 # Duo Auth API 客户端 (preauth 探测)
 │   ├── duo_universal.go       # Duo Universal Prompt (OIDC) 客户端
-│   ├── admin.go               # 访客码存储 (内存 + 可选 JSON 落盘) + 随机生成
 │   ├── auth_proceed.go        # /auth/proceed 中转, 防账号枚举
-│   ├── ratelimit.go           # 失败计数 + IP 短时冷却 + clientIP 解析
+│   ├── ratelimit.go           # 失败计数 + clientIP 解析
 │   ├── ikuai.go               # iKuai 放行 token 生成
-│   ├── eventlog.go            # 结构化事件日志 (登录 + admin 审计) + JSONL 持久化 + CSV 导出
+│   ├── eventlog.go            # 结构化事件日志 (登录 + admin 审计) + CSV 导出
 │   ├── i18n.go                # 三语字符串 (zh-cn/zh-tw/en); Go 和前端共用同一批 JSON
 │   ├── i18n/                  # zh-cn.json / zh-tw.json / en.json
+│   ├── internal/dbstore/      # GORM 模型 + SQLite/MySQL/PostgreSQL 打开与迁移
+│   ├── internal/secret/       # 入库凭据的 AES-256-GCM 加解密
+│   ├── internal/settings/     # 设置的读写 (事务保存 / 凭据打码)
 │   ├── web-react/             # 前端源码 (Vite + React 19 + TypeScript + antd 6)
 │   │   ├── portal.html        # entry: /login, /admin/login, 错误页
 │   │   ├── admin.html         # entry: /admin 管理后台
 │   │   ├── src/lib/           # 配置注入解析 / i18n / fetch 封装 / 主题
-│   │   ├── src/pages/         # 页面与 admin 各区块
+│   │   ├── src/pages/         # 页面与 admin 各区块 (侧边栏 / 设置 / TLS / 表格分页)
 │   │   └── scripts/           # 产物冒烟检查 + .gitkeep 保活
 │   ├── internal/web/dist/     # 构建产物, 被 //go:embed 打进二进制 (不进版本库)
 │   ├── static/                # logo + 头像
@@ -189,6 +349,10 @@ COMPOSE_PROFILES=caddy
 
 ### 两种模式共通的变量
 
+> 下面这张表里除了 `SESSION_SECRET` / `ENCRYPTION_KEY`, 其余都是**首次启动的种子值**:
+> 启动时导入数据库, 之后在 /admin → 设置 里改, 改 `.env` 不再有效。详见
+> [配置放在哪](#配置放在哪)。
+
 | 变量 | 来源 |
 |---|---|
 | `TENANT_ID` | Entra 租户 ID (Entra 管理中心 → 概述) |
@@ -196,7 +360,8 @@ COMPOSE_PROFILES=caddy
 | `CLIENT_SECRET` | App Registration → 证书和机密 新建的 client secret 值 (创建后只显示一次, 存进密码管理器) |
 | `IKUAI_APPKEY` | iKuai 云面板 "生成" 得到 (Phase 4) |
 | `PUBLIC_URL` | 模式 A: `https://wifi.login.example.com` &nbsp;/&nbsp; 模式 B: `https://wifi.login.example.com:28081` (端口要对上) |
-| `SESSION_SECRET` | 运行 `openssl rand -hex 32` 生成一次, 贴进来. 多站点想共享 admin cookie 填同一个 |
+| `SESSION_SECRET` | 运行 `openssl rand -hex 32` 生成一次, 贴进来. 多站点想共享 admin cookie 填同一个 (**引导项, 一直是 env**) |
+| `ENCRYPTION_KEY` | 再跑一次 `openssl rand -hex 32`. 加密入库的凭据 (**引导项, 一直是 env**). 留空也能启动, 但凭据会明文进库并告警 |
 | `BRAND_NAME` | `Kazuha Hub` 或你喜欢的 |
 | `BRAND_COLOR` | 默认 `#2563eb`, 可改 |
 | `BRAND_LOGO_URL` | 留空用 `static/logo+title-circle{,-darkmode}.png` |
@@ -322,33 +487,34 @@ IKUAI_GUEST_UPLOAD=0     IKUAI_GUEST_DOWNLOAD=0     IKUAI_GUEST_COMMENT=
 
 #### 持久化
 
-所有持久化文件**统一写到容器内 `/data/`**, `docker-compose.yml`
-里已经把 `/data` bind-mount 到宿主机 `./data/`,跨 `docker compose up --build / down / rm`
-不丢数据。路径在代码里固定 (没有任何 `*_PATH` env, 用户也不需要配):
+**全部在数据库里。** 默认是 `DATA_DIR` (容器内 `/data/`) 下的 SQLite 文件
+`portal.db`; `docker-compose.yml` 已经把 `/data` bind-mount 到宿主机 `./data/`,
+跨 `docker compose up --build / down / rm` 不丢。
 
-| 文件 | 内容 |
+| 表 | 内容 |
 |---|---|
-| `/data/guest-codes.json` | 访客码 |
-| `/data/denylist.json` | MAC 永久封禁列表 |
-| `/data/ikuai-policy.json` | iKuai 放行策略 (admin 改的会写进来) |
-| `/data/ratelimit-state.json` | IP 冷却历史次数 (配合 `IP_BAN_ESCALATE_AT` 用) |
-| `/data/events.jsonl` | 事件日志 (登录 + admin 审计, JSONL, 默认保留 7 天) |
+| `setting` | 所有运行时配置; 凭据字段加密存储 |
+| `guest_code` / `guest_code_use` | 访客码与每一次兑换记录 |
+| `denied_mac` | MAC 永久封禁列表 |
+| `ikuai_policy` | iKuai 放行策略 |
+| `event` | 事件日志 (登录 + admin 审计) |
+| `ip_ban` / `ban_history` | IP 冷却与升级计数 |
+| `local_admin` | 应急账号 (argon2id) |
+| `certificate` | TLS 证书与 ACME 账号, 私钥加密存储 |
 
-要换位置改 `docker-compose.yml` 的 `volumes: - ./data:/data` 一行即可。
-容器启动入口会先把 bind-mounted `./data` 修成 `portal` 用户可写, 再降权运行 Portal。
-Portal 启动时还会做一次 `/data` 写入探测; 如果宿主目录权限不对, 会直接 fatal, 避免误以为持久化生效。
-落盘采用原子写 (tmp + rename), 启动加载失败会 fatal 避免覆盖损坏文件。
-事件日志写盘失败只 log 不阻塞业务路径 — 不是关键路径, 丢一条也不影响放行。
+旧版本的五个 JSON 文件 (`guest-codes.json` / `denylist.json` / `ikuai-policy.json` /
+`ratelimit-state.json` / `events.jsonl`) 在首次启动时一次性导入, 然后被改名成
+`*.migrated` 留在原地 —— 确认数据没问题之后可以自行删除。
 
-事件日志 schema (JSONL 每行一条):
-```json
-{"time":"2026-04-24T14:32:18Z","kind":"login","subject":"you@example.org",
- "result":"success","method":"duo","mac":"aa:bb:cc:dd:ee:ff","ip":"192.168.1.50"}
-{"time":"2026-04-24T14:31:04Z","kind":"admin_action","subject":"you@example.org",
- "result":"success","method":"admin","detail":"add code=1234567890"}
-```
+要换位置改 `docker-compose.yml` 的 `volumes: - ./data:/data`, 或者干脆填 `DB_DSN`
+指向外部 MySQL / PostgreSQL, 见 [数据库](#数据库)。容器启动入口会先把 bind-mounted
+`./data` 修成 `portal` 用户可写, 再降权运行 Portal。Portal 启动时还会做一次 `/data`
+写入探测; 权限不对直接 fatal, 避免误以为持久化生效。
 
-`tail -f data/events.jsonl` 可在宿主机实时看流。保留期想改: `EVENT_LOG_RETENTION_DAYS=7`。
+事件日志写库失败只 log 不阻塞业务路径 —— 审计写失败不该是拦住用户上网的原因。
+保留期在 设置 → 事件日志 里改, 到期数据由后台按批清理。
+
+CSV 导出走 `/admin/events/export.csv`, 后台的事件日志页有按钮。
 
 ### 步骤 3: 起服务
 
@@ -510,18 +676,32 @@ sudo systemctl status wifi-portal      # 看运行状态
 sudo journalctl -u wifi-portal -f      # 看实时日志
 ```
 
-### 步骤 5: 反代 (跟模式 A 一样)
+### 步骤 5: TLS
 
-Portal 只听 `127.0.0.1:28080` HTTP. nginx / Caddy / aaPanel 终结 TLS, 转发过来.
-配置参考 [`deploy/aapanel-nginx-snippet.conf`](./deploy/aapanel-nginx-snippet.conf).
+两条路, 选一条:
+
+**(a) 外部反代** (跟模式 A 一样) —— Portal 只听 `127.0.0.1:28080` HTTP,
+nginx / Caddy / aaPanel 终结 TLS 转发过来。配置参考
+[`deploy/aapanel-nginx-snippet.conf`](./deploy/aapanel-nginx-snippet.conf),
+或者直接在 后台 → 系统 → TLS 里复制生成好的片段。
+
+**(b) Portal 自己终结 TLS** —— 后台 → 系统 → TLS 切成"Portal 自己终结 TLS",
+填域名, 签发或上传证书。systemd 部署要让进程能绑 443:
+
+```ini
+# /etc/systemd/system/wifi-portal.service 的 [Service] 段
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+```
+
+不加就只能听 1024 以上的端口 (TLS 页里把监听地址改成 `0.0.0.0:8443` 之类)。
 
 ### graceful shutdown
 
 `systemctl stop` 发 SIGTERM, Portal 接到后:
-1. `srv.Shutdown` (停接新连接, 在飞中请求 10s grace)
-2. flush `banHistory` 到 `/var/lib/wifi-portal/ratelimit-state.json`
-3. close EventLog file handle
-4. 日志打 `clean exit`
+1. `srv.Shutdown` (停接新连接, 在飞中请求 10s grace), HTTPS 监听同样关掉
+2. flush `banHistory` 的 dirty 状态
+3. 日志打 `clean exit`
 
 systemd unit 的 `TimeoutStopSec=15s` 给这段时间; 超时才 SIGKILL.
 
@@ -625,8 +805,16 @@ portal.ikuai8-wifi.com
 # 查日志
 docker compose logs -f portal
 
-# 改了 .env 后生效
+# 改了 .env 里的引导变量后生效 (运行时配置改后台, 不用重启)
 docker compose restart portal
+
+# 看/改数据库里的设置 (锁死时的退路, 见 "锁死了怎么办")
+docker compose exec portal wifi-portal config list
+docker compose exec portal wifi-portal config set oidc.tenant_id <新租户ID>
+
+# 开应急本地账号
+docker compose exec -it portal wifi-portal admin add ops
+docker compose exec portal wifi-portal admin enable
 
 # 改了代码后 rebuild
 docker compose up -d --build
@@ -685,9 +873,29 @@ curl 得到 `HTTP/2 502`, 但 Portal 容器却显示 healthy — 这是**同一�
 - CLI: `docker compose up -d --force-recreate portal`
 - Synology Container Manager: 專案 → 停止 → 删除容器 → 啟動 (或"重新部署"按钮)
 
+### 改了 `.env` 但没生效
+
+设计如此。第一次启动之后, 运行时配置就只读数据库了 —— `.env` 里那些值只是种子。
+在 /admin → 设置 里改, 或者用 `wifi-portal config set`。启动日志会把仍然设置着的
+旧变量列出来提醒你。
+
+只有引导变量 (`SESSION_SECRET` / `ENCRYPTION_KEY` / `DATA_DIR` / `DB_DSN` /
+`DB_MAX_OPEN_CONNS` / `LISTEN_ADDR` / `TRUST_PROXY`) 还从环境读, 改完要重启。
+
+### 后台 TLS 页改完打不开了
+
+改监听参数是提交-确认的: 两分钟内没在新地址上点"确认保留"就自动回滚。等两分钟,
+旧地址会自己回来。等不及, 或者回滚也失败了 (日志里会写), 就用 CLI:
+
+```bash
+wifi-portal config set tls.mode proxy
+wifi-portal config set tls.redirect_http false
+# 然后重启进程
+```
+
 ### `id_token 验证失败`
 
-- `.env` 的 `TENANT_ID` 和 `CLIENT_ID` 对不对
+- 设置 → Entra SSO 里的租户 ID 和客户端 ID 对不对 (不是 `.env` 里的了)
 - 系统时间有没有漂移太多: `timedatectl`
 - Entra 是不是改过 App Registration 配置
 
@@ -711,7 +919,7 @@ curl 得到 `HTTP/2 502`, 但 Portal 容器却显示 healthy — 这是**同一�
 ## 安全 / 防滥用
 
 Portal 面向公网, 默认就带以下应用层防御, **不需要额外配置** 就能跑起来。
-阈值全部走 env, 想调的话见 `.env.example` 里 "限流 / 防滥用" 段, 留空走默认。
+阈值在 /admin → 设置 → 限流 里改 (以前是 env, 首次启动会把旧值导进来), 保存即生效。
 
 ### 设备封禁与三层失败计数
 
@@ -739,20 +947,26 @@ Portal 面向公网, 默认就带以下应用层防御, **不需要额外配置*
 被 Duo `deny` 的账号也被路由到 Entra (让 Entra 自己拒), 不暴露 "deny" 信号。
 攻击者想枚举谁在 Duo 得为每个邮箱跟一次 302, 成本翻倍且立刻触发规则 1/6。
 
-### 阈值 env (全部可选, 默认已列在表里)
+### 阈值 (设置 → 限流, 括号里是默认值)
 
 ```
-AUTH_EMAIL_FAILS_SHORT=5         AUTH_EMAIL_WINDOW_SHORT=3m
-AUTH_EMAIL_FAILS_LONG=20         AUTH_EMAIL_WINDOW_LONG=1h
-GUEST_CODE_MAC_FAILS=6           GUEST_CODE_MAC_WINDOW=30m
-IP_FAILS_LIMIT=20                IP_FAILS_WINDOW=5m
-IP_BAN_DURATION=2m               # IP 短时冷却时长
-IP_BAN_ESCALATE_AT=999999        # 基本等于不升级永久 (≤0 显式禁用 + 跳过 banHistory 写盘)
-AUTH_PROCEED_TTL=5m              # opaque token 存活时间
-EVENT_LOG_RETENTION_DAYS=7       # 事件日志保留期
+ratelimit.email_fails_short=5    ratelimit.email_window_short=3m
+ratelimit.email_fails_long=20    ratelimit.email_window_long=1h
+ratelimit.mac_fails=6            ratelimit.mac_window=30m
+ratelimit.ip_fails=20            ratelimit.ip_window=5m
+ratelimit.ip_ban_duration=2m     # IP 短时冷却时长
+ratelimit.ip_ban_escalate_at=999999   # 基本等于不升级永久 (≤0 显式禁用)
+auth.proceed_ttl=5m              # opaque token 存活时间
+eventlog.retention_days=7        # 事件日志保留期
 ```
 
-(所有持久化文件路径都固定在 `/data/`, 见上面"持久化"段, 没有 `*_PATH` env 可配。)
+后台改, 或者 `wifi-portal config set ratelimit.ip_fails 30`。旧的 `IP_FAILS_LIMIT`
+之类的环境变量只在首次导入时读一次。
+
+### 多实例下的限流语义
+
+跑多个 Portal 实例共享一个数据库时: IP 冷却封禁和永久封禁计数是**共享**的, 失败
+计数器是**每实例独立**的。完整说明和为什么这么选, 见 [数据库](#数据库)。
 
 ### 反代信任边界 (TRUST_PROXY)
 
@@ -763,6 +977,10 @@ Portal 的 IP 限流靠 `X-Real-IP` / `X-Forwarded-For` 拿真实客户端 IP。
 TRUST_PROXY=true     # 默认, 反代场景
 TRUST_PROXY=false    # 直暴公网必须设, 否则攻击者伪造 X-Real-IP 绕过所有限流
 ```
+
+这一项**故意留在环境变量里**, 不给后台改: 填错等于悄悄关掉全部 IP 限流, 而这种
+开关不应该是一次误点就能改的。Portal 自己终结 TLS 时同样按需设置 —— 这时候没有
+反代, 一般应该是 `false`。
 
 > ⚠️ 安全要点: 直接把 Portal 端口暴露到公网时 *必须* `TRUST_PROXY=false`,
 > 否则攻击者每个请求带 `X-Real-IP: <随机>` 让 IP 限流永远不累计。
@@ -787,13 +1005,12 @@ CSV 导出 / admin 列表显示 / 日志时间戳全跟这个 env 走。
 ### 优雅退出 (SIGTERM)
 
 `docker compose down` / `docker stop` 会发 SIGTERM, Portal 接到后:
-1. `srv.Shutdown` (停接新连接, 在飞中请求 10s grace)
-2. flush `banHistory` 的 dirty 状态到 `/data/ratelimit-state.json` (异步 flusher 平时 30s 一次,
-   退出时强制同步一次, 防丢失 IP 冷却升级历史)
-3. close EventLog file handle
-4. 日志打 `clean exit`
+1. `srv.Shutdown` (停接新连接, 在飞中请求 10s grace), HTTPS 监听同样关掉
+2. flush `banHistory` 的 dirty 状态
+3. 日志打 `clean exit`
 
-kill -9 / OOM 会跳过这步, 最多丢 30s 内的 banHistory 增量。
+状态现在都在数据库里, 每次写入即提交, 所以 kill -9 / OOM 不再丢访客码兑换记录或
+事件日志 —— 这是搬进数据库顺带拿到的。
 
 ### IP 短时冷却模型
 
@@ -805,7 +1022,7 @@ kill -9 / OOM 会跳过这步, 最多丢 30s 内的 banHistory 增量。
 - 失败次数按对应窗口自动过期: 邮箱 3 分钟 / 1 小时, 访客码 MAC 30 分钟, IP 5 分钟
 - 前端只显示"操作过于频繁, 请在 X 分钟后再试"
 - 不向用户暴露命中的是邮箱 / MAC / IP 哪条规则
-- IP 冷却历史 (`/data/ratelimit-state.json`) 跨重启保留 — 仅当 `IP_BAN_ESCALATE_AT < 999999` 时生效, 默认基本等于不用
+- IP 冷却本身和冷却历史都在数据库里 — 跨重启保留, 也跨实例共享 (见 [数据库](#数据库))
 - 只有 MAC 永久封禁会提示联系管理员
 
 ### Admin 限流 / 封禁面板
@@ -895,8 +1112,10 @@ Captive portal 只服务 "已连上 Kazuha Hub Roaming SSID 的设备"。那些�
 
 ## 安全清单
 
-- [x] Client Secret 只在本地密码管理器 + VPS `.env`, 不进 git
-- [x] `.env` 权限 600
+- [x] Client Secret 只在本地密码管理器 + 后台设置页, 不进 git
+- [x] `ENCRYPTION_KEY` 已设 — 否则凭据以明文进数据库, 而数据库会被备份、被复制
+- [x] `.env` 权限 600 (引导变量仍在里面)
+- [x] 应急本地账号只在需要时开启, 用完 `wifi-portal admin disable`
 - [x] Portal 不直接暴露公网 — 宿主端口只映射到 `127.0.0.1:28080` (模式 A 的外部反代可达) 或根本不发布 (模式 B/C 的 Caddy 经 compose 网络访问). 容器内部 `LISTEN_ADDR=0.0.0.0` 以便反代可达
 - [x] OIDC state + nonce 防 CSRF / 重放
 - [x] `tid` claim 校验防跨租户
@@ -904,10 +1123,11 @@ Captive portal 只服务 "已连上 Kazuha Hub Roaming SSID 的设备"。那些�
 - [x] 签名 cookie 短期过期 (wifi 登录 15 分钟, admin 后台 1 小时)
 - [x] 安全响应头 (CSP / X-Frame-Options / X-Content-Type-Options / Referrer-Policy)
 - [x] 三层失败计数 + IP 短时冷却 (规则 1 邮箱 / 规则 5 MAC / 规则 6 IP, 详见"安全 / 防滥用")
-- [x] MAC 永久封禁列表 (持久化到 `/data/denylist.json`, 管理员在 `/admin` 维护, 支持 CSV 导入导出)
+- [x] MAC 永久封禁列表 (入库, 管理员在 `/admin` 维护, 支持 CSV 导入导出)
 - [x] 账号枚举防护 (`/auth/start` → opaque token → `/auth/proceed` 中转)
 - [x] `robots.txt` 拒爬 + 前端入口文档 `<meta robots noindex nofollow>`
-- [x] 结构化事件日志 + admin 审计 (`/data/events.jsonl`, JSONL, 默认保留 7 天)
+- [x] 结构化事件日志 + admin 审计 (入库, 默认保留 7 天, 按批清理)
+- [x] 入库凭据 AES-256-GCM 加密, 且永不回传浏览器
 - [ ] Client Secret 日历提醒 2028-04-08 前轮换
 - [ ] (未来) Prometheus 监控 + 到期自动告警
 
