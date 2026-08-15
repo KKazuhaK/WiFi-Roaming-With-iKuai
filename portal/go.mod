@@ -2,9 +2,16 @@ module github.com/kazuhahub/wifi-portal
 
 go 1.25.0
 
+// Pinned so every build — local, CI, Docker and release — uses a stdlib with
+// the current TLS, x509 and net/http fixes. govulncheck reports against the
+// toolchain that built the binary, so leaving this to whatever a machine
+// happens to have installed means the scan result depends on the machine.
+toolchain go1.25.13
+
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/glebarez/sqlite v1.11.0
+	github.com/go-acme/lego/v4 v4.35.2
 	golang.org/x/crypto v0.55.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/term v0.45.0
@@ -14,12 +21,10 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
+	filippo.io/edwards25519 v1.1.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
-	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/glebarez/go-sqlite v1.21.2 // indirect
-	github.com/go-acme/lego/v4 v4.35.2 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -31,7 +36,6 @@ require (
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/mattn/go-isatty v0.0.21 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
-	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
