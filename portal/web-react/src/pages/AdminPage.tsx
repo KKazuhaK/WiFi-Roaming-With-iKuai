@@ -74,11 +74,11 @@ export function AdminPage({ lang, onLang }: { lang: Lang; onLang: (l: Lang) => v
       case 'dashboard':
         return <DashboardSection state={state} onView={selectView} />
       case 'codes':
-        return <CodesSection state={state} refresh={reload} />
+        return <CodesSection refresh={reload} />
       case 'policy':
         return <PolicySection state={state} refresh={reload} />
       case 'macs':
-        return <MacsSection state={state} refresh={reload} />
+        return <MacsSection refresh={reload} />
       default:
         return null
     }

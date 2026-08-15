@@ -101,6 +101,7 @@
   "admin.macs.empty": "目前沒有永久封禁的 MAC.",
   "admin.macs.placeholder.mac": "aa:bb:cc:dd:ee:ff",
   "admin.macs.placeholder.reason": "原因，可選",
+  "admin.macs.searchPlaceholder": "搜尋 MAC / 原因 / 操作人…",
   "admin.macs.title": "MAC 封禁",
   "admin.modal.add.btn.autoGen": "自動生成",
   "admin.modal.add.btn.save": "儲存",

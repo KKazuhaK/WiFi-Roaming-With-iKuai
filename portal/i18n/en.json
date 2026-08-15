@@ -101,6 +101,7 @@
   "admin.macs.empty": "No banned MACs.",
   "admin.macs.placeholder.mac": "aa:bb:cc:dd:ee:ff",
   "admin.macs.placeholder.reason": "reason (optional)",
+  "admin.macs.searchPlaceholder": "Search MAC, reason or admin…",
   "admin.macs.title": "MAC denylist",
   "admin.modal.add.btn.autoGen": "Auto-generate",
   "admin.modal.add.btn.save": "Save",

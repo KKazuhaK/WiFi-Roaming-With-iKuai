@@ -4,14 +4,26 @@ import type { ColumnsType } from 'antd/es/table'
 import { DeleteOutlined, DownloadOutlined, StopOutlined, UploadOutlined } from '@ant-design/icons'
 import { postForm, postMultipart, ApiError } from '@/lib/api'
 import { t } from '@/lib/i18n'
-import type { AdminState, DeniedMacRow } from './types'
+import { useDebounced, useServerTable, PAGE_SIZES } from './useServerTable'
+import type { DeniedMacRow } from './types'
 
-export function MacsSection({ state, refresh }: { state: AdminState; refresh: () => void }) {
+export function MacsSection({ refresh }: { refresh: () => void }) {
   const { message, modal } = App.useApp()
   const [mac, setMac] = useState('')
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
+  const [query, setQuery] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
+
+  const search = useDebounced(query)
+  const table = useServerTable<DeniedMacRow>('/admin/api/macs', { q: search.trim() })
+
+  // Every mutation refreshes both: the table for the rows, the shared state for
+  // the dashboard's banned-device counter.
+  function reload() {
+    void table.reload()
+    refresh()
+  }
 
   async function ban() {
     const value = mac.trim()
@@ -32,7 +44,7 @@ export function MacsSection({ state, refresh }: { state: AdminState; refresh: ()
       )
       setMac('')
       setReason('')
-      refresh()
+      reload()
     } catch (err) {
       message.error(t('admin.toast.macBanFailed', err instanceof ApiError ? err.code : 'error'))
     } finally {
@@ -50,7 +62,7 @@ export function MacsSection({ state, refresh }: { state: AdminState; refresh: ()
         try {
           await postForm('/admin/denylist/macs/delete', { mac: target })
           message.success(t('admin.toast.unbanned'))
-          refresh()
+          reload()
         } catch (err) {
           message.error(t('admin.toast.unbanFailed', err instanceof ApiError ? err.code : 'unknown'))
         }
@@ -72,7 +84,7 @@ export function MacsSection({ state, refresh }: { state: AdminState; refresh: ()
         try {
           const body = await postForm<{ cleared?: number }>('/admin/denylist/macs/delete-all', {})
           message.success(t('admin.toast.unbanAllCleared', body.cleared ?? 0))
-          refresh()
+          reload()
         } catch (err) {
           message.error(t('admin.toast.clearFailed', err instanceof ApiError ? err.code : 'unknown'))
         }
@@ -100,7 +112,7 @@ export function MacsSection({ state, refresh }: { state: AdminState; refresh: ()
       } else {
         message.success(summary)
       }
-      refresh()
+      reload()
     } catch (err) {
       message.error(t('admin.toast.importFailed', err instanceof ApiError ? err.code : 'error'))
     }
@@ -153,6 +165,13 @@ export function MacsSection({ state, refresh }: { state: AdminState; refresh: ()
             {t('admin.macs.btn.ban')}
           </Button>
         </Space.Compact>
+        <Input.Search
+          allowClear
+          placeholder={t('admin.macs.searchPlaceholder')}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ width: 220 }}
+        />
         <div className="admin-toolbar-spacer" />
         {/* A plain link, not a fetch: the handler answers with a
             Content-Disposition attachment and letting the browser handle the
@@ -185,9 +204,21 @@ export function MacsSection({ state, refresh }: { state: AdminState; refresh: ()
         rowKey="mac"
         size="small"
         columns={columns}
-        dataSource={state.deniedMacs}
-        locale={{ emptyText: t('admin.macs.empty') }}
-        pagination={{ pageSize: 50, hideOnSinglePage: true }}
+        dataSource={table.rows}
+        loading={table.loading}
+        locale={{ emptyText: table.error ?? t('admin.macs.empty') }}
+        pagination={{
+          current: table.page,
+          pageSize: table.pageSize,
+          total: table.total,
+          showSizeChanger: true,
+          pageSizeOptions: PAGE_SIZES,
+          hideOnSinglePage: table.total <= table.pageSize,
+          onChange: (page, size) => {
+            table.setPage(page)
+            table.setPageSize(size)
+          },
+        }}
         scroll={{ x: 'max-content' }}
       />
     </>

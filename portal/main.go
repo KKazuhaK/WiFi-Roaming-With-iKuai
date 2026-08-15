@@ -414,7 +414,9 @@ func main() {
 		log.Fatalf("data dir is not writable: %v", err)
 	}
 
-	db, err := dbstore.Open(dbstore.Options{DSN: boot.DBDSN, DataDir: boot.DataDir})
+	db, err := dbstore.Open(dbstore.Options{
+		DSN: boot.DBDSN, DataDir: boot.DataDir, MaxOpenConns: boot.DBMaxOpenConns,
+	})
 	if err != nil {
 		log.Fatalf("database init failed: %v", err)
 	}
@@ -450,7 +452,7 @@ func main() {
 		settings:   settingStore,
 		guestCodes: guestStore,
 		denylist:   denylistStore,
-		ipBans:     newIPBanList(),
+		ipBans:     newIPBanList(db),
 		banHistory: banHist,
 		usedStates: newUsedStateSet(sessionTTL),
 
@@ -535,6 +537,9 @@ func main() {
 	mux.HandleFunc("/auth/guest-code", app.handleGuestCode)
 	mux.HandleFunc("/admin", app.handleAdmin)
 	mux.HandleFunc("/admin/api/state", app.handleAdminState)
+	// The two big tables are paged rather than shipped whole with the state.
+	mux.HandleFunc("/admin/api/codes", app.handleAdminCodes)
+	mux.HandleFunc("/admin/api/macs", app.handleAdminMACs)
 	// Trailing slash: ServeMux treats this as a subtree, which is how the
 	// section name reaches the handler as a path segment.
 	mux.HandleFunc("/admin/api/settings/", app.handleAdminSettings)
@@ -2177,15 +2182,39 @@ func (a *App) renderError(w http.ResponseWriter, r *http.Request, lang Lang, msg
 // updating AdminState there breaks the panel silently, since a missing field
 // decodes as undefined rather than failing.
 type adminPageData struct {
-	Lang          Lang                `json:"lang"`
-	Codes         []adminCodeRow      `json:"codes"`
-	DeniedMACs    []adminDeniedMACRow `json:"deniedMacs"`
-	IKuaiPolicies []IKuaiPolicyRow    `json:"ikuaiPolicies"`
-	Total         int                 `json:"total"`
-	Used          int                 `json:"used"`
-	Unused        int                 `json:"unused"`
-	Expired       int                 `json:"expired"`
-	Dashboard     DashboardStats      `json:"dashboard"`
+	Lang Lang `json:"lang"`
+	// The guest-code and denylist tables are NOT here. They arrive page by page
+	// from /admin/api/codes and /admin/api/macs, because a site with fifty
+	// thousand codes was otherwise serialising all of them, plus every
+	// redemption ever recorded, on each admin page load.
+	IKuaiPolicies []IKuaiPolicyRow `json:"ikuaiPolicies"`
+	Total         int              `json:"total"`
+	Used          int              `json:"used"`
+	Unused        int              `json:"unused"`
+	Expired       int              `json:"expired"`
+	Dashboard     DashboardStats   `json:"dashboard"`
+}
+
+// codePageResponse is one page of GET /admin/api/codes.
+type codePageResponse struct {
+	Rows  []adminCodeRow `json:"rows"`
+	Total int            `json:"total"`
+	// Counts by status, for the tabs above the table. Computed with the same
+	// SQL the status filter uses, so a tab's number always matches what
+	// selecting it shows.
+	Stats codeStats `json:"stats"`
+}
+
+type codeStats struct {
+	Total   int `json:"total"`
+	Used    int `json:"used"`
+	Unused  int `json:"unused"`
+	Expired int `json:"expired"`
+}
+
+type macPageResponse struct {
+	Rows  []adminDeniedMACRow `json:"rows"`
+	Total int                 `json:"total"`
 }
 
 // DashboardStats backs the top summary cards. All fields are available in memory at render time.
@@ -2242,76 +2271,130 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 // what a phone in another timezone would call that moment — and Intl in the
 // browser has no way to know that zone.
 func (a *App) buildAdminData(lang Lang) adminPageData {
-	raw := a.guestCodes.List()
 	total, used, unused, expired := a.guestCodes.Stats()
-	rows := make([]adminCodeRow, 0, len(raw))
-	for _, c := range raw {
-		row := adminCodeRow{
-			Code:        c.Code,
-			CreatedAt:   c.CreatedAt.Local().Format("2006-01-02 15:04"),
-			Status:      c.Status(),
-			UseCount:    c.UseCount(),
-			DurationMin: c.DurationMin,
-			MaxUses:     c.MaxUses,
-			Note:        c.Note,
-		}
-		row.Duration = formatDurationMin(c.DurationMin, lang)
-		if c.ExpiresAt.IsZero() {
-			row.ExpiresAt = T(lang, "admin.codes.neverExpires")
-		} else {
-			row.ExpiresAt = c.ExpiresAt.Local().Format("2006-01-02 15:04")
-			row.ExpiresAtInput = c.ExpiresAt.Local().Format("2006-01-02T15:04")
-		}
-		if len(c.Uses) > 0 {
-			u := c.Uses[len(c.Uses)-1]
-			row.LastUsedAt = u.At.Local().Format("2006-01-02 15:04")
-			row.LastUsedMAC = u.MAC
-			row.LastUsedIP = u.IP
-		}
-		rows = append(rows, row)
-	}
-	denied := a.denylist.ListMACs()
-	deniedRows := make([]adminDeniedMACRow, 0, len(denied))
-	for _, item := range denied {
-		deniedRows = append(deniedRows, adminDeniedMACRow{
-			MAC:       item.MAC,
-			Reason:    item.Reason,
-			CreatedAt: item.CreatedAt.Local().Format("2006-01-02 15:04"),
-			CreatedBy: item.CreatedBy,
-		})
-	}
 	return adminPageData{
 		Lang:          lang,
-		Codes:         rows,
-		DeniedMACs:    deniedRows,
 		IKuaiPolicies: a.ikuaiPolicies.List(),
 		Total:         total,
 		Used:          used,
 		Unused:        unused,
 		Expired:       expired,
-		Dashboard:     a.buildDashboard(raw),
+		Dashboard:     a.buildDashboard(),
 	}
+}
+
+// codeRow formats one code for the table. Timestamps are rendered here rather
+// than shipped as RFC3339 for the browser: the portal displays wall-clock times
+// in the server's zone — an operator reading the audit trail cares when the
+// router saw an event, not what a phone in another timezone would call that
+// moment — and Intl in the browser has no way to know that zone.
+func codeRow(c *GuestCode, lang Lang) adminCodeRow {
+	row := adminCodeRow{
+		Code:        c.Code,
+		CreatedAt:   c.CreatedAt.Local().Format("2006-01-02 15:04"),
+		Status:      c.Status(),
+		UseCount:    c.UseCount(),
+		DurationMin: c.DurationMin,
+		MaxUses:     c.MaxUses,
+		Note:        c.Note,
+		Duration:    formatDurationMin(c.DurationMin, lang),
+	}
+	if c.ExpiresAt.IsZero() {
+		row.ExpiresAt = T(lang, "admin.codes.neverExpires")
+	} else {
+		row.ExpiresAt = c.ExpiresAt.Local().Format("2006-01-02 15:04")
+		row.ExpiresAtInput = c.ExpiresAt.Local().Format("2006-01-02T15:04")
+	}
+	if len(c.Uses) > 0 {
+		u := c.Uses[len(c.Uses)-1]
+		row.LastUsedAt = u.At.Local().Format("2006-01-02 15:04")
+		row.LastUsedMAC = u.MAC
+		row.LastUsedIP = u.IP
+	}
+	return row
+}
+
+// handleAdminCodes serves one page of the guest-code table.
+func (a *App) handleAdminCodes(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.requireAdmin(w, r, true); !ok {
+		return
+	}
+	lang := pickLang(r)
+	q := r.URL.Query()
+	offset, limit := pageParams(q)
+
+	codes, total := a.guestCodes.Page(CodeQuery{
+		Search: q.Get("q"),
+		Status: q.Get("status"),
+		Offset: offset,
+		Limit:  limit,
+	})
+	rows := make([]adminCodeRow, 0, len(codes))
+	for _, c := range codes {
+		rows = append(rows, codeRow(c, lang))
+	}
+	all, used, unused, expired := a.guestCodes.Stats()
+	writeJSON(w, http.StatusOK, codePageResponse{
+		Rows:  rows,
+		Total: total,
+		Stats: codeStats{Total: all, Used: used, Unused: unused, Expired: expired},
+	})
+}
+
+// handleAdminMACs serves one page of the MAC denylist.
+func (a *App) handleAdminMACs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.requireAdmin(w, r, true); !ok {
+		return
+	}
+	q := r.URL.Query()
+	offset, limit := pageParams(q)
+	macs, total := a.denylist.PageMACs(q.Get("q"), offset, limit)
+	rows := make([]adminDeniedMACRow, 0, len(macs))
+	for _, m := range macs {
+		rows = append(rows, adminDeniedMACRow{
+			MAC:       m.MAC,
+			Reason:    m.Reason,
+			CreatedAt: m.CreatedAt.Local().Format("2006-01-02 15:04"),
+			CreatedBy: m.CreatedBy,
+		})
+	}
+	writeJSON(w, http.StatusOK, macPageResponse{Rows: rows, Total: total})
+}
+
+// pageParams reads offset and limit from a query string.
+//
+// The cap is the point: page size arrives from the browser, and without a
+// ceiling "pageSize=1000000" turns a paginated endpoint back into the full-table
+// read it was written to replace.
+func pageParams(q url.Values) (offset, limit int) {
+	const (
+		defaultLimit = 50
+		maxLimit     = 500
+	)
+	limit = defaultLimit
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 {
+		limit = min(v, maxLimit)
+	}
+	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v > 0 {
+		offset = v
+	}
+	return offset, limit
 }
 
 // buildDashboard computes the top summary counters on /admin.
 //   - Login stats come from KindLogin events in eventLog.
 //   - Guest-code and denylist stats come directly from their stores.
 //   - Current online devices should be checked in iKuai; the portal does not duplicate that.
-func (a *App) buildDashboard(allCodes []*GuestCode) DashboardStats {
+func (a *App) buildDashboard() DashboardStats {
 	now := time.Now()
+	// Counted in SQL. These used to be len() over two fully materialised tables,
+	// which meant the dashboard's cost grew with the history rather than with the
+	// number of things it displays.
 	stats := DashboardStats{
-		BannedMACs: len(a.denylist.ListMACs()),
-		BannedIPs:  len(a.ipBans.snapshot()),
+		BannedMACs:       a.denylist.CountMACs(),
+		BannedIPs:        len(a.ipBans.snapshot()),
+		ActiveGuestCodes: a.guestCodes.ActiveCount(),
 	}
-	// Active guest codes are not expired and not exhausted, matching Validate.
-	validCodes := 0
-	for _, c := range allCodes {
-		if c.IsExpired() || c.IsExhausted() {
-			continue
-		}
-		validCodes++
-	}
-	stats.ActiveGuestCodes = validCodes
 
 	if a.eventLog == nil {
 		return stats

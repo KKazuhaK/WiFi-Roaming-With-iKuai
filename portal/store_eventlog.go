@@ -139,21 +139,58 @@ func (e *EventLog) MultiCount(filters []EventQueryFilter) []int {
 	return out
 }
 
+// pruneBatch is how many rows one DELETE removes.
+//
+// The sweep is batched rather than a single statement because of what the first
+// sweep after a retention change looks like: one DELETE covering months of a
+// busy site is millions of rows in one transaction, which on MySQL holds locks
+// and grows the undo log for the duration, and on PostgreSQL produces a very
+// large amount of dead tuples for one autovacuum pass. Thousands of small
+// transactions are slower in total and never make the portal stop answering.
+const pruneBatch = 5000
+
+// pruneMaxBatches bounds one sweep. At the batch size above that is five million
+// rows an hour, far more than any deployment produces, and it means a database
+// that is deleting more slowly than it is inserting cannot pin this goroutine
+// forever.
+const pruneMaxBatches = 1000
+
 // Prune deletes events past the retention window and returns how many went.
 func (e *EventLog) Prune() int {
 	if e.retention <= 0 {
 		return 0
 	}
 	cutoff := time.Now().UTC().Add(-e.retention)
-	res := e.db.Where("time < ?", cutoff).Delete(&dbstore.Event{})
-	if res.Error != nil {
-		log.Printf("event log: prune failed: %v", res.Error)
-		return 0
+	deleted := 0
+	for i := 0; i < pruneMaxBatches; i++ {
+		// Selected by primary key, then deleted by it: DELETE ... LIMIT is MySQL
+		// and SQLite only, and PostgreSQL rejects it. This works everywhere and
+		// uses the same time index either way.
+		var ids []uint
+		if err := e.db.Model(&dbstore.Event{}).
+			Where("time < ?", cutoff).
+			Order("id ASC").Limit(pruneBatch).
+			Pluck("id", &ids).Error; err != nil {
+			log.Printf("event log: prune scan failed: %v", err)
+			return deleted
+		}
+		if len(ids) == 0 {
+			break
+		}
+		res := e.db.Where("id IN ?", ids).Delete(&dbstore.Event{})
+		if res.Error != nil {
+			log.Printf("event log: prune failed: %v", res.Error)
+			return deleted
+		}
+		deleted += int(res.RowsAffected)
+		if len(ids) < pruneBatch {
+			break
+		}
 	}
-	if res.RowsAffected > 0 {
-		log.Printf("event log: pruned %d event(s) older than %s", res.RowsAffected, e.retention)
+	if deleted > 0 {
+		log.Printf("event log: pruned %d event(s) older than %s", deleted, e.retention)
 	}
-	return int(res.RowsAffected)
+	return deleted
 }
 
 // gcLoop prunes hourly. Started as a goroutine by main.

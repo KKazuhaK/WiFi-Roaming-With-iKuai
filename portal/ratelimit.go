@@ -1,16 +1,26 @@
 package main
 
 // ratelimit.go
-// Three in-memory failure-count and cooldown mechanisms, sufficient for a single-container deployment:
+// Failure counting and the helpers around it.
 //
 //   failCounter  Stores timestamp lists, supports counts within arbitrary windows, and resets on success.
 //                Used by rule 1 (email dual windows) and rule 5 (MAC).
 //
-//   ipBanList    Stores IP -> cooldown expiry, with automatic expiry cleanup.
-//                Used by rule 6: failures by one IP over limit -> short cooldown.
-//
 //   clientIP     Extracts the real client IP from reverse-proxy headers.
 //                The portal normally binds 127.0.0.1 and all traffic arrives through a trusted proxy.
+//
+// What is deliberately NOT here any more is the ban list: cooldowns are shared
+// through the database (store_ipban.go), because a ban only one instance knows
+// about is not a ban.
+//
+// The counters below are still per-process, and that is a considered trade
+// rather than an oversight. They are read and written on every failed attempt,
+// which is the path an attacker controls the volume of, and moving them into the
+// database would put a write there. The consequence is that with N instances an
+// attacker spreading attempts evenly gets up to N times the threshold before a
+// ban — but the ban that follows is global, and the permanent escalation that
+// follows repeated bans has been shared from the start (banHistory). So the
+// weakening is bounded and the enforcement is not.
 
 import (
 	"net"
@@ -185,134 +195,6 @@ func (c *failCounter) gcLoop() {
 		}
 		c.mu.Unlock()
 	}
-}
-
-// ipBanList stores per-IP cooldown expiries. isBanned also cleans up expired entries.
-type ipBanList struct {
-	mu   sync.Mutex
-	bans map[string]time.Time // ip → banUntil
-}
-
-func newIPBanList() *ipBanList {
-	return &ipBanList{bans: make(map[string]time.Time)}
-}
-
-// maxIPBanEntries caps IPs in one ipBanList. When full, expired entries are removed first, then the earliest expiry is evicted.
-const maxIPBanEntries = 50000
-
-func (b *ipBanList) ban(ip string, d time.Duration) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if _, exists := b.bans[ip]; !exists && len(b.bans) >= maxIPBanEntries {
-		now := time.Now()
-		for k, exp := range b.bans {
-			if now.After(exp) {
-				delete(b.bans, k)
-			}
-		}
-		if len(b.bans) >= maxIPBanEntries {
-			type kv struct {
-				k   string
-				exp time.Time
-			}
-			all := make([]kv, 0, len(b.bans))
-			for k, exp := range b.bans {
-				all = append(all, kv{k, exp})
-			}
-			sort.Slice(all, func(i, j int) bool { return all[i].exp.Before(all[j].exp) })
-			target := maxIPBanEntries * 9 / 10
-			for i := 0; i < len(all) && len(b.bans) > target; i++ {
-				delete(b.bans, all[i].k)
-			}
-		}
-	}
-	b.bans[ip] = time.Now().Add(d)
-}
-
-func (b *ipBanList) isBanned(ip string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	exp, ok := b.bans[ip]
-	if !ok {
-		return false
-	}
-	if time.Now().After(exp) {
-		delete(b.bans, ip)
-		return false
-	}
-	return true
-}
-
-// expiryOf returns an IP cooldown expiry. ok=false means the IP is not cooling down.
-// Like isBanned, it also cleans expired entries.
-func (b *ipBanList) expiryOf(ip string) (time.Time, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	exp, ok := b.bans[ip]
-	if !ok {
-		return time.Time{}, false
-	}
-	if time.Now().After(exp) {
-		delete(b.bans, ip)
-		return time.Time{}, false
-	}
-	return exp, true
-}
-
-func (b *ipBanList) gcLoop() {
-	t := time.NewTicker(10 * time.Minute)
-	defer t.Stop()
-	for range t.C {
-		b.mu.Lock()
-		now := time.Now()
-		for ip, exp := range b.bans {
-			if now.After(exp) {
-				delete(b.bans, ip)
-			}
-		}
-		b.mu.Unlock()
-	}
-}
-
-// unban manually removes one IP from cooldown and reports whether it was present.
-func (b *ipBanList) unban(ip string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if _, ok := b.bans[ip]; ok {
-		delete(b.bans, ip)
-		return true
-	}
-	return false
-}
-
-// unbanAll clears all cooldowns for the admin clear-all action and returns the number removed.
-func (b *ipBanList) unbanAll() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	n := len(b.bans)
-	b.bans = make(map[string]time.Time)
-	return n
-}
-
-// BanSnapshot is used by the admin panel.
-type BanSnapshot struct {
-	IP        string `json:"ip"`
-	ExpiresAt int64  `json:"expires_unix"` // Ban expiry as Unix seconds.
-}
-
-// snapshot returns currently banned IPs sorted by expiry ascending.
-func (b *ipBanList) snapshot() []BanSnapshot {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	now := time.Now()
-	out := make([]BanSnapshot, 0, len(b.bans))
-	for ip, exp := range b.bans {
-		if exp.After(now) {
-			out = append(out, BanSnapshot{IP: ip, ExpiresAt: exp.Unix()})
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ExpiresAt < out[j].ExpiresAt })
-	return out
 }
 
 // banHistory records how many times each IP has been cooled down. It is non-persistent and does not

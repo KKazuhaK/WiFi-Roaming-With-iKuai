@@ -174,6 +174,10 @@ func (s *DenylistStore) DeleteAllMACs() int {
 }
 
 // ListMACs returns the denylist, newest ban first.
+//
+// Still whole-table, and deliberately: the CSV export has to be complete, and
+// the denylist is bounded by how many devices an operator has banned by hand.
+// The admin table uses PageMACs instead.
 func (s *DenylistStore) ListMACs() []DeniedMAC {
 	var rows []dbstore.DeniedMAC
 	if err := s.db.Order("created_at DESC, mac ASC").Find(&rows).Error; err != nil {
@@ -185,4 +189,48 @@ func (s *DenylistStore) ListMACs() []DeniedMAC {
 		out = append(out, toDomainMAC(r))
 	}
 	return out
+}
+
+// PageMACs returns one page of the denylist plus the total matching the search.
+func (s *DenylistStore) PageMACs(search string, offset, limit int) ([]DeniedMAC, int) {
+	apply := func(q *gorm.DB) *gorm.DB {
+		if s := strings.TrimSpace(search); s != "" {
+			like := "%" + strings.ToLower(s) + "%"
+			q = q.Where("mac LIKE ? OR LOWER(reason) LIKE ? OR LOWER(created_by) LIKE ?", like, like, like)
+		}
+		return q
+	}
+
+	var n int64
+	if err := apply(s.db.Model(&dbstore.DeniedMAC{})).Count(&n).Error; err != nil {
+		log.Printf("denylist: count failed: %v", err)
+		return nil, 0
+	}
+	q := apply(s.db.Model(&dbstore.DeniedMAC{})).Order("created_at DESC, mac ASC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if offset > 0 {
+		q = q.Offset(offset)
+	}
+	var rows []dbstore.DeniedMAC
+	if err := q.Find(&rows).Error; err != nil {
+		log.Printf("denylist: page failed: %v", err)
+		return nil, int(n)
+	}
+	out := make([]DeniedMAC, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, toDomainMAC(r))
+	}
+	return out, int(n)
+}
+
+// CountMACs is the dashboard's banned-device counter, without loading the rows.
+func (s *DenylistStore) CountMACs() int {
+	var n int64
+	if err := s.db.Model(&dbstore.DeniedMAC{}).Count(&n).Error; err != nil {
+		log.Printf("denylist: count failed: %v", err)
+		return 0
+	}
+	return int(n)
 }

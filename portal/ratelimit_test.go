@@ -80,7 +80,7 @@ func TestFailCounter_OldEntriesIgnoredByCount(t *testing.T) {
 // --- ipBanList ---
 
 func TestIPBanList_AutoExpire(t *testing.T) {
-	b := newIPBanList()
+	b := newIPBanList(testDB(t))
 	b.ban("1.1.1.1", time.Millisecond)
 	if !b.isBanned("1.1.1.1") {
 		t.Fatal("just banned, must be banned")
@@ -92,7 +92,7 @@ func TestIPBanList_AutoExpire(t *testing.T) {
 }
 
 func TestIPBanList_ExpiryOfRespectsExpiry(t *testing.T) {
-	b := newIPBanList()
+	b := newIPBanList(testDB(t))
 	b.ban("1.1.1.1", time.Hour)
 	exp, ok := b.expiryOf("1.1.1.1")
 	if !ok {
@@ -108,7 +108,7 @@ func TestIPBanList_ExpiryOfRespectsExpiry(t *testing.T) {
 }
 
 func TestIPBanList_UnbanReturnsWhetherWasBanned(t *testing.T) {
-	b := newIPBanList()
+	b := newIPBanList(testDB(t))
 	if b.unban("never-banned") {
 		t.Error("unban of never-banned should return false")
 	}
@@ -723,7 +723,7 @@ func mkTestApp(t *testing.T) *App {
 		authEmailFails: newFailCounter(cfg.AuthEmailWindowLong),
 		guestCodeFails: newFailCounter(cfg.GuestCodeMacWindow),
 		ipFails:        newFailCounter(cfg.IPFailsWindow),
-		ipBans:         newIPBanList(),
+		ipBans:         newIPBanList(testDB(t)),
 		banHistory:     bh,
 		proceedStore:   newProceedTokenStore(cfg.AuthProceedTTL),
 		usedStates:     newUsedStateSet(sessionTTL),

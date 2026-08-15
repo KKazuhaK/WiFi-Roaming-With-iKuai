@@ -161,6 +161,24 @@ type BanHistory struct {
 	UpdatedAt time.Time
 }
 
+// IPBan is an active cooldown, shared by every instance.
+//
+// It is in the database rather than in each process's memory for the reason the
+// guest codes are: a ban that only one instance knows about is not a ban. Two
+// portals behind a load balancer would each hold their own map, and an attacker
+// cooled down on one would be served by the other on the next request.
+//
+// Rows are deleted when they expire rather than kept as history — that is what
+// BanHistory is for, and it counts cooldowns rather than storing them.
+// A permanent ban is a very distant Until rather than a separate flag, matching
+// how the rate limiter has always represented it — two representations of the
+// same fact is how they end up disagreeing.
+type IPBan struct {
+	IP        string    `gorm:"primaryKey;size:64"`
+	Until     time.Time `gorm:"index"`
+	UpdatedAt time.Time
+}
+
 // LocalAdmin is the break-glass account.
 //
 // Admin access is otherwise entirely Entra SSO, and the SSO configuration now
@@ -226,6 +244,7 @@ func AllModels() []any {
 		&IKuaiPolicy{},
 		&Event{},
 		&BanHistory{},
+		&IPBan{},
 		&LocalAdmin{},
 		&Certificate{},
 	}

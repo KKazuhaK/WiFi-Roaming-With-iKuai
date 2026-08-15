@@ -52,10 +52,24 @@ export interface DashboardStats {
   bannedMacs: number
 }
 
+/** Counts behind the status tabs, computed server-side over the whole table. */
+export interface CodeStats {
+  total: number
+  used: number
+  unused: number
+  expired: number
+}
+
+/**
+ * The shared admin state.
+ *
+ * Deliberately no longer carries the guest-code or denylist rows: those arrive
+ * a page at a time from /admin/api/codes and /admin/api/macs, so an installation
+ * with fifty thousand codes no longer serialises all of them — plus every
+ * redemption ever recorded — on each page load.
+ */
 export interface AdminState {
   lang: string
-  codes: CodeRow[]
-  deniedMacs: DeniedMacRow[]
   ikuaiPolicies: IKuaiPolicyRow[]
   total: number
   used: number

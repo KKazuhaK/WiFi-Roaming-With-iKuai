@@ -145,6 +145,13 @@ type BootstrapConfig struct {
 	DataDir string
 	// DBDSN selects and addresses the database. Empty means SQLite in DataDir.
 	DBDSN string
+	// DBMaxOpenConns caps the connection pool for MySQL and PostgreSQL. Zero
+	// takes the storage layer's default. It is a bootstrap value rather than a
+	// setting because the pool is built before the settings table can be read,
+	// and because the number an operator needs is a property of their database
+	// server — max_connections divided by the number of portal instances — not
+	// of the portal.
+	DBMaxOpenConns int
 	// TrustProxy decides whether X-Forwarded-For is believed. It gates the
 	// client-IP parsing that the rate limiter and the audit log depend on, so it
 	// is read before any request is served and is not runtime-editable: getting
@@ -157,11 +164,12 @@ type BootstrapConfig struct {
 // has not managed to start.
 func loadBootstrap() BootstrapConfig {
 	b := BootstrapConfig{
-		ListenAddr:    envOr("LISTEN_ADDR", "127.0.0.1:28080"),
-		EncryptionKey: strings.TrimSpace(envOr("ENCRYPTION_KEY", "")),
-		DataDir:       envOr("DATA_DIR", "/data"),
-		DBDSN:         strings.TrimSpace(envOr("DB_DSN", "")),
-		TrustProxy:    envOrBool("TRUST_PROXY", true),
+		ListenAddr:     envOr("LISTEN_ADDR", "127.0.0.1:28080"),
+		EncryptionKey:  strings.TrimSpace(envOr("ENCRYPTION_KEY", "")),
+		DataDir:        envOr("DATA_DIR", "/data"),
+		DBDSN:          strings.TrimSpace(envOr("DB_DSN", "")),
+		DBMaxOpenConns: envOrInt("DB_MAX_OPEN_CONNS", 0),
+		TrustProxy:     envOrBool("TRUST_PROXY", true),
 	}
 
 	secretHex := mustEnv("SESSION_SECRET")

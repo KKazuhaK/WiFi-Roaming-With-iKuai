@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -122,6 +123,119 @@ func (s *GuestCodeStore) List() []*GuestCode {
 		return out[i].Code < out[j].Code
 	})
 	return out
+}
+
+// CodeQuery is one page of the admin table.
+//
+// This exists because List does not scale. It loads every code and every
+// redemption ever recorded, which was fine for the hundreds of codes a single
+// site issues and is not fine for the installation this portal is now being
+// pointed at: fifty thousand codes and their history is tens of megabytes of
+// JSON built on every admin page load, and the browser then filters it in
+// memory. Filtering and paging belong in the query.
+type CodeQuery struct {
+	// Search matches the code or the note, case-insensitively.
+	Search string
+	// Status is "", "unused", "used" or "expired", matching GuestCode.Status.
+	Status string
+	Offset int
+	Limit  int
+}
+
+// codeStatusWhere translates a status filter into SQL.
+//
+// The definitions have to match GuestCode.Status exactly or the table's counts
+// and its rows disagree, which looks like data loss to an operator. Expiry wins
+// over exhaustion there, so it wins here.
+func codeStatusWhere(q *gorm.DB, status string, now time.Time) *gorm.DB {
+	const exhausted = `max_uses > 0 AND max_uses <= (
+		SELECT COUNT(*) FROM guest_code_use WHERE guest_code_use.code = guest_code.code
+	)`
+	switch status {
+	case "expired":
+		return q.Where("expires_at IS NOT NULL AND expires_at < ?", now)
+	case "used":
+		return q.Where("(expires_at IS NULL OR expires_at >= ?) AND ("+exhausted+")", now)
+	case "unused":
+		return q.Where("(expires_at IS NULL OR expires_at >= ?) AND NOT ("+exhausted+")", now)
+	default:
+		return q
+	}
+}
+
+func (s *GuestCodeStore) applyCodeQuery(q *gorm.DB, f CodeQuery) *gorm.DB {
+	if search := strings.TrimSpace(f.Search); search != "" {
+		// LOWER on both sides for the same reason the event log does it: the
+		// three engines disagree about whether LIKE is case-sensitive.
+		like := "%" + strings.ToLower(search) + "%"
+		q = q.Where("code_lower LIKE ? OR LOWER(note) LIKE ?", like, like)
+	}
+	return codeStatusWhere(q, f.Status, time.Now().UTC())
+}
+
+// Page returns one page of codes plus the number matching the filter.
+//
+// The redemption history is fetched only for the codes on the page, which is the
+// difference that matters: a site with a year of redemptions has millions of use
+// rows and the admin table shows fifty of them.
+func (s *GuestCodeStore) Page(f CodeQuery) (codes []*GuestCode, total int) {
+	var n int64
+	if err := s.applyCodeQuery(s.db.Model(&dbstore.GuestCode{}), f).Count(&n).Error; err != nil {
+		log.Printf("guest codes: count failed: %v", err)
+		return nil, 0
+	}
+	if n == 0 {
+		return nil, 0
+	}
+
+	q := s.applyCodeQuery(s.db.Model(&dbstore.GuestCode{}), f).
+		Order("created_at DESC, code ASC")
+	if f.Limit > 0 {
+		q = q.Limit(f.Limit)
+	}
+	if f.Offset > 0 {
+		q = q.Offset(f.Offset)
+	}
+	var rows []dbstore.GuestCode
+	if err := q.Find(&rows).Error; err != nil {
+		log.Printf("guest codes: page failed: %v", err)
+		return nil, int(n)
+	}
+	if len(rows) == 0 {
+		return nil, int(n)
+	}
+
+	keys := make([]string, 0, len(rows))
+	for _, r := range rows {
+		keys = append(keys, r.Code)
+	}
+	var uses []dbstore.GuestCodeUse
+	if err := s.db.Where("code IN ?", keys).Order("at ASC").Find(&uses).Error; err != nil {
+		log.Printf("guest codes: loading redemption history failed, codes shown without it: %v", err)
+	}
+	byCode := make(map[string][]dbstore.GuestCodeUse, len(rows))
+	for _, u := range uses {
+		byCode[u.Code] = append(byCode[u.Code], u)
+	}
+
+	out := make([]*GuestCode, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, toDomainCode(r, byCode[r.Code]))
+	}
+	return out, int(n)
+}
+
+// ActiveCount returns how many codes are currently redeemable, for the
+// dashboard. Counted in SQL rather than by walking every code in Go, which is
+// what the dashboard used to do.
+func (s *GuestCodeStore) ActiveCount() int {
+	var n int64
+	q := codeStatusWhere(s.db.Model(&dbstore.GuestCode{}), "unused", time.Now().UTC())
+	if err := q.Count(&n).Error; err != nil {
+		log.Printf("guest codes: active count failed: %v", err)
+		return 0
+	}
+	return int(n)
 }
 
 // Get returns one code with its uses, or nil.

@@ -5,7 +5,8 @@ import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
 import { postForm, ApiError } from '@/lib/api'
 import { t } from '@/lib/i18n'
 import { AddCodeModal, BatchCodeModal, BatchResultModal, EditCodeModal } from './CodeModals'
-import type { AdminState, CodeRow } from './types'
+import { useDebounced, useServerTable, PAGE_SIZES } from './useServerTable'
+import type { CodeRow, CodeStats } from './types'
 
 type StatusFilter = 'all' | 'used' | 'unused' | 'expired'
 
@@ -15,7 +16,7 @@ const STATUS_COLOR: Record<CodeRow['status'], string> = {
   expired: 'default',
 }
 
-export function CodesSection({ state, refresh }: { state: AdminState; refresh: () => void }) {
+export function CodesSection({ refresh }: { refresh: () => void }) {
   const { message, modal } = App.useApp()
   const [status, setStatus] = useState<StatusFilter>('all')
   const [query, setQuery] = useState('')
@@ -25,19 +26,19 @@ export function CodesSection({ state, refresh }: { state: AdminState; refresh: (
   const [editing, setEditing] = useState<CodeRow | null>(null)
   const [generated, setGenerated] = useState<string[] | null>(null)
 
-  const rows = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return state.codes.filter((c) => {
-      if (status !== 'all' && c.status !== status) return false
-      if (!q) return true
-      return c.code.toLowerCase().includes(q) || c.note.toLowerCase().includes(q)
-    })
-  }, [state.codes, status, query])
+  // Debounced so a typed search is one request per pause rather than per key.
+  const search = useDebounced(query)
+  const table = useServerTable<CodeRow, { stats: CodeStats }>('/admin/api/codes', {
+    q: search.trim(),
+    status: status === 'all' ? '' : status,
+  })
+  const rows = table.rows
+  const stats = table.extra?.stats
 
-  // The old page counted only *visible* checked rows, because filtering hid rows
-  // without unchecking them and a stale selection would delete codes the admin
-  // could no longer see. Intersecting the selection with the filtered rows keeps
-  // that guarantee without the DOM inspection it used to need.
+  // Only *visible* checked rows count. Filtering hides rows without unchecking
+  // them, and a stale selection would delete codes the admin can no longer see —
+  // which matters more now that the rows they cannot see are on another page
+  // rather than merely filtered out.
   const visibleSelected = useMemo(() => {
     const visible = new Set(rows.map((r) => r.code))
     return selected.filter((c) => visible.has(c))
@@ -46,6 +47,9 @@ export function CodesSection({ state, refresh }: { state: AdminState; refresh: (
   async function afterMutation(msg: string) {
     message.success(msg)
     setSelected([])
+    await table.reload()
+    // The dashboard counters live in /admin/api/state and are derived from
+    // these rows, so they need the refresh too.
     refresh()
   }
 
@@ -103,6 +107,11 @@ export function CodesSection({ state, refresh }: { state: AdminState; refresh: (
     })
   }
 
+  function reload() {
+    void table.reload()
+    refresh()
+  }
+
   const columns: ColumnsType<CodeRow> = [
     {
       title: t('admin.codes.col.code'),
@@ -122,10 +131,9 @@ export function CodesSection({ state, refresh }: { state: AdminState; refresh: (
       title: t('admin.codes.col.expires'),
       dataIndex: 'expiresAt',
       width: 170,
-      // Sorted on the raw string because it is either "YYYY-MM-DD HH:mm" — which
-      // sorts correctly as text — or the localised "never" label, which sorts to
-      // one end and stays grouped.
-      sorter: (a, b) => a.expiresAt.localeCompare(b.expiresAt),
+      // No sorter any more: it would sort the fifty rows currently loaded and
+      // present the result as if it were the whole table, which is worse than
+      // not offering it. The server order — newest first — is the useful one.
     },
     {
       title: t('admin.codes.col.usage'),
@@ -177,10 +185,10 @@ export function CodesSection({ state, refresh }: { state: AdminState; refresh: (
           value={status}
           onChange={setStatus}
           options={[
-            { label: `${t('admin.codes.filter.all')} (${state.total})`, value: 'all' },
-            { label: `${t('admin.codes.filter.used')} (${state.used})`, value: 'used' },
-            { label: `${t('admin.codes.filter.unused')} (${state.unused})`, value: 'unused' },
-            { label: `${t('admin.codes.filter.expired')} (${state.expired})`, value: 'expired' },
+            { label: `${t('admin.codes.filter.all')} (${stats?.total ?? 0})`, value: 'all' },
+            { label: `${t('admin.codes.filter.used')} (${stats?.used ?? 0})`, value: 'used' },
+            { label: `${t('admin.codes.filter.unused')} (${stats?.unused ?? 0})`, value: 'unused' },
+            { label: `${t('admin.codes.filter.expired')} (${stats?.expired ?? 0})`, value: 'expired' },
           ]}
         />
         <Input.Search
@@ -210,25 +218,40 @@ export function CodesSection({ state, refresh }: { state: AdminState; refresh: (
         size="small"
         columns={columns}
         dataSource={rows}
-        locale={{ emptyText: t('admin.codes.empty') }}
+        loading={table.loading}
+        locale={{ emptyText: table.error ?? t('admin.codes.empty') }}
         rowSelection={{
           selectedRowKeys: visibleSelected,
           onChange: (keys) => setSelected(keys as string[]),
         }}
-        pagination={{ pageSize: 50, showSizeChanger: true, hideOnSinglePage: true }}
+        // Controlled by the server: `total` is the count of matching rows, not
+        // of loaded ones, so the pager knows about pages the browser has never
+        // seen.
+        pagination={{
+          current: table.page,
+          pageSize: table.pageSize,
+          total: table.total,
+          showSizeChanger: true,
+          pageSizeOptions: PAGE_SIZES,
+          showTotal: (n) => t('admin.codes.filter.all') + `: ${n}`,
+          onChange: (page, size) => {
+            table.setPage(page)
+            table.setPageSize(size)
+          },
+        }}
         scroll={{ x: 'max-content' }}
       />
 
-      <AddCodeModal open={addOpen} onClose={() => setAddOpen(false)} onDone={refresh} />
+      <AddCodeModal open={addOpen} onClose={() => setAddOpen(false)} onDone={reload} />
       <BatchCodeModal
         open={batchOpen}
         onClose={() => setBatchOpen(false)}
         onGenerated={(codes) => {
           setGenerated(codes)
-          refresh()
+          reload()
         }}
       />
-      <EditCodeModal row={editing} onClose={() => setEditing(null)} onDone={refresh} />
+      <EditCodeModal row={editing} onClose={() => setEditing(null)} onDone={reload} />
       <BatchResultModal codes={generated} onClose={() => setGenerated(null)} />
     </>
   )
