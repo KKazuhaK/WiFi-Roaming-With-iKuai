@@ -88,6 +88,12 @@ func NormalizeCode(code string) string {
 // is the second half of the same defence.
 func (g *GuestCode) BeforeSave(*gorm.DB) error {
 	g.CodeLower = NormalizeCode(g.Code)
+	// See GuestCodeUse.BeforeSave: a zero time is '0000-00-00' to MySQL, which
+	// rejects it. ExpiresAt is deliberately not touched — it is a nullable
+	// pointer precisely so that "never expires" needs no sentinel date.
+	if g.CreatedAt.IsZero() {
+		g.CreatedAt = time.Now().UTC()
+	}
 	return nil
 }
 
@@ -106,6 +112,21 @@ type GuestCodeUse struct {
 	// GuestUPN is the synthetic identity issued for this redemption
 	// (Guest-abc12345), which is what the event log records as the subject.
 	GuestUPN string `gorm:"size:64"`
+}
+
+// BeforeSave fills in a missing timestamp.
+//
+// A zero time.Time reaches MySQL as '0000-00-00', which its default strict mode
+// rejects outright — so a legacy JSON file with a redemption that lost its
+// timestamp, or any caller that builds a use without one, fails the whole insert
+// on MySQL while inserting happily on SQLite and PostgreSQL. Normalising here
+// rather than at each call site keeps the three engines behaving the same, which
+// is the only way "MySQL is supported" can be true.
+func (u *GuestCodeUse) BeforeSave(*gorm.DB) error {
+	if u.At.IsZero() {
+		u.At = time.Now().UTC()
+	}
+	return nil
 }
 
 // DeniedMAC replaces denylist.json.
@@ -231,6 +252,31 @@ type Certificate struct {
 	LastAttempt  *time.Time
 	ACMEAccount  string `gorm:"type:text"` // Encrypted registration key.
 	ACMEAccountU string `gorm:"size:255"`  // Account URL, not secret.
+}
+
+// BeforeSave fills in the validity window.
+//
+// Rows here are not always certificates: a failed issuance records its error
+// against the domain, and the ACME account key is stored before any certificate
+// exists. Those rows carry no dates, and a zero time.Time is '0000-00-00' to
+// MySQL, which refuses the insert — so on MySQL a failing ACME challenge could
+// not even record why it failed.
+//
+// Now is the honest filler for a row with no certificate in it: NotAfter in the
+// past reads as "not valid", which is exactly right. Nothing depends on the
+// value, because both Status and needsRenewal check CertPEM first.
+func (c *Certificate) BeforeSave(*gorm.DB) error {
+	now := time.Now().UTC()
+	if c.NotBefore.IsZero() {
+		c.NotBefore = now
+	}
+	if c.NotAfter.IsZero() {
+		c.NotAfter = now
+	}
+	if c.UpdatedAt.IsZero() {
+		c.UpdatedAt = now
+	}
+	return nil
 }
 
 // AllModels is the AutoMigrate list. Order matters only for the foreign key

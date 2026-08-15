@@ -236,3 +236,50 @@ func TestEventIndexesExist(t *testing.T) {
 		}
 	}
 }
+
+// Zero timestamps must never reach the database.
+//
+// Go's zero time.Time is year 1, which MySQL renders as '0000-00-00' and its
+// default strict mode refuses — while SQLite and PostgreSQL accept it silently.
+// So this is exactly the class of bug that passes every local test and breaks
+// one engine in production: a legacy import whose record lost its timestamp, or
+// a certificate row that exists only to record why issuance failed.
+func TestZeroTimestampsAreFilledIn(t *testing.T) {
+	db := openTestDB(t)
+
+	code := GuestCode{Code: "ZEROTIME01"} // No CreatedAt.
+	if err := db.Create(&code).Error; err != nil {
+		t.Fatalf("inserting a code with no CreatedAt: %v", err)
+	}
+	if code.CreatedAt.IsZero() {
+		t.Error("GuestCode.CreatedAt was left at zero")
+	}
+
+	use := GuestCodeUse{Code: "ZEROTIME01"} // No At.
+	if err := db.Create(&use).Error; err != nil {
+		t.Fatalf("inserting a use with no At: %v", err)
+	}
+	if use.At.IsZero() {
+		t.Error("GuestCodeUse.At was left at zero")
+	}
+
+	// The shape a failed ACME issuance writes: a domain and an error, no
+	// certificate and therefore no validity window.
+	cert := Certificate{Domain: "portal.example.com", Source: "acme", LastError: "challenge failed"}
+	if err := db.Create(&cert).Error; err != nil {
+		t.Fatalf("inserting a certificate row with no dates: %v", err)
+	}
+	if cert.NotBefore.IsZero() || cert.NotAfter.IsZero() || cert.UpdatedAt.IsZero() {
+		t.Errorf("certificate dates left at zero: %+v", cert)
+	}
+
+	// Read back, so the assertion is about what the database holds rather than
+	// what the hook did to the struct in memory.
+	var stored GuestCodeUse
+	if err := db.Where("code = ?", "ZEROTIME01").First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.At.IsZero() || stored.At.Year() < 2000 {
+		t.Errorf("stored redemption timestamp is %s", stored.At)
+	}
+}
