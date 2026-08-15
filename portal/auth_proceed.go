@@ -131,7 +131,7 @@ func (s *proceedTokenStore) gcLoop() {
 // Validate that the token exists, is not expired, and matches session.State, then 302 to the real destination.
 func (a *App) handleAuthProceed(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
-	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
+	sess, err := readSessionCookie(r, a.conf().SessionSecret)
 	if err != nil {
 		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return

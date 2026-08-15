@@ -317,7 +317,7 @@ func (a *App) renderSPA(w http.ResponseWriter, r *http.Request, doc string, data
 	// config load; escaping it here as well keeps this function safe on its own
 	// terms rather than depending on that.
 	head.WriteString(`<style>:root{--brand-color:`)
-	head.WriteString(html.EscapeString(a.cfg.BrandColor))
+	head.WriteString(html.EscapeString(a.conf().BrandColor))
 	head.WriteString(`}</style>`)
 	head.WriteString(`<script type="application/json" id="` + cfgElementID + `">`)
 	head.Write(cfg)
@@ -348,13 +348,13 @@ func (a *App) renderSPA(w http.ResponseWriter, r *http.Request, doc string, data
 func (a *App) spaTitle(data spaPageData) string {
 	switch data.Page {
 	case "error":
-		return fmt.Sprintf("%s · %s", T(data.Lang, "errors.title"), a.cfg.BrandName)
+		return fmt.Sprintf("%s · %s", T(data.Lang, "errors.title"), a.conf().BrandName)
 	case "adminLogin":
-		return T(data.Lang, "admin.login.title", a.cfg.BrandName)
+		return T(data.Lang, "admin.login.title", a.conf().BrandName)
 	case "admin":
-		return T(data.Lang, "admin.pageTitle", a.cfg.BrandName)
+		return T(data.Lang, "admin.pageTitle", a.conf().BrandName)
 	default:
-		return T(data.Lang, "login.title", a.cfg.BrandName)
+		return T(data.Lang, "login.title", a.conf().BrandName)
 	}
 }
 
@@ -365,10 +365,10 @@ func (a *App) baseSPAData(page string, lang Lang) spaPageData {
 		Lang:    lang,
 		NowYear: time.Now().Year(),
 		Brand: spaBrand{
-			Name:    a.cfg.BrandName,
-			Color:   a.cfg.BrandColor,
-			LogoURL: a.cfg.BrandLogoURL,
-			Initial: brandInitial(a.cfg.BrandName),
+			Name:    a.conf().BrandName,
+			Color:   a.conf().BrandColor,
+			LogoURL: a.conf().BrandLogoURL,
+			Initial: brandInitial(a.conf().BrandName),
 		},
 	}
 }

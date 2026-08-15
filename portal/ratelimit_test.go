@@ -212,10 +212,10 @@ func TestClearSuccessfulAuthState_PreservesBanHistory(t *testing.T) {
 
 func TestRecordIPFailure_TriggersCooldownAtThreshold(t *testing.T) {
 	app := mkTestApp(t)
-	app.cfg.IPFailsLimit = 3
-	app.cfg.IPFailsWindow = time.Hour
-	app.cfg.IPBanDuration = time.Minute
-	app.cfg.IPBanEscalateAt = 999999
+	app.conf().IPFailsLimit = 3
+	app.conf().IPFailsWindow = time.Hour
+	app.conf().IPBanDuration = time.Minute
+	app.conf().IPBanEscalateAt = 999999
 
 	const ip = "7.7.7.7"
 	app.recordIPFailure(ip, "test")
@@ -231,10 +231,10 @@ func TestRecordIPFailure_TriggersCooldownAtThreshold(t *testing.T) {
 
 func TestRecordIPFailure_EscalatesToPermanent(t *testing.T) {
 	app := mkTestApp(t)
-	app.cfg.IPFailsLimit = 1
-	app.cfg.IPFailsWindow = time.Hour
-	app.cfg.IPBanDuration = time.Minute
-	app.cfg.IPBanEscalateAt = 3 // Third cooldown becomes permanent.
+	app.conf().IPFailsLimit = 1
+	app.conf().IPFailsWindow = time.Hour
+	app.conf().IPBanDuration = time.Minute
+	app.conf().IPBanEscalateAt = 3 // Third cooldown becomes permanent.
 
 	const ip = "8.8.8.8"
 
@@ -270,9 +270,9 @@ func TestRecordIPFailure_EscalatesToPermanent(t *testing.T) {
 func TestRecordIPFailure_DoesNotRebanWhileCooling(t *testing.T) {
 	// More failures while already cooling down should not increment banHistory or extend cooldown.
 	app := mkTestApp(t)
-	app.cfg.IPFailsLimit = 1
-	app.cfg.IPBanDuration = time.Hour
-	app.cfg.IPBanEscalateAt = 5
+	app.conf().IPFailsLimit = 1
+	app.conf().IPBanDuration = time.Hour
+	app.conf().IPBanEscalateAt = 5
 
 	const ip = "9.9.9.9"
 	app.recordIPFailure(ip, "test")
@@ -368,11 +368,11 @@ func TestProceedTokenStore_ExpiredRejected(t *testing.T) {
 
 func TestRequireAdmin_BlocksCrossOriginPOST(t *testing.T) {
 	app := mkTestApp(t)
-	app.cfg.AdminEmails = []string{"admin@example.com"}
+	app.conf().AdminEmails = []string{"admin@example.com"}
 
 	// Cross-site Origin should be blocked even with a valid admin cookie.
 	rec := httptest.NewRecorder()
-	_ = writeAdminCookie(rec, app.cfg.SessionSecret, AdminSession{
+	_ = writeAdminCookie(rec, app.conf().SessionSecret, AdminSession{
 		UPN: "admin@example.com",
 		Exp: time.Now().Add(time.Hour).Unix(),
 	}, false)
@@ -397,10 +397,10 @@ func TestRequireAdmin_BlocksCrossOriginPOST(t *testing.T) {
 
 func TestRequireAdmin_AllowsSameOriginPOST(t *testing.T) {
 	app := mkTestApp(t)
-	app.cfg.AdminEmails = []string{"admin@example.com"}
+	app.conf().AdminEmails = []string{"admin@example.com"}
 
 	rec := httptest.NewRecorder()
-	_ = writeAdminCookie(rec, app.cfg.SessionSecret, AdminSession{
+	_ = writeAdminCookie(rec, app.conf().SessionSecret, AdminSession{
 		UPN: "admin@example.com",
 		Exp: time.Now().Add(time.Hour).Unix(),
 	}, false)
@@ -408,7 +408,7 @@ func TestRequireAdmin_AllowsSameOriginPOST(t *testing.T) {
 	r, _ := http.NewRequest("POST", "/admin/codes/delete-bulk",
 		strings.NewReader("codes=1234"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.Header.Set("Origin", app.cfg.PublicURL)
+	r.Header.Set("Origin", app.conf().PublicURL)
 	for _, c := range rec.Result().Cookies() {
 		r.AddCookie(c)
 	}
@@ -424,10 +424,10 @@ func TestRequireAdmin_BlocksPOSTWithoutOriginHeader(t *testing.T) {
 	// Defense in depth: modern browser form POSTs include Origin/Referer. Missing headers are usually
 	// curl, forged clients, or old browsers, so reject them.
 	app := mkTestApp(t)
-	app.cfg.AdminEmails = []string{"admin@example.com"}
+	app.conf().AdminEmails = []string{"admin@example.com"}
 
 	rec := httptest.NewRecorder()
-	_ = writeAdminCookie(rec, app.cfg.SessionSecret, AdminSession{
+	_ = writeAdminCookie(rec, app.conf().SessionSecret, AdminSession{
 		UPN: "admin@example.com",
 		Exp: time.Now().Add(time.Hour).Unix(),
 	}, false)
@@ -449,10 +449,10 @@ func TestRequireAdmin_BlocksPOSTWithoutOriginHeader(t *testing.T) {
 func TestRequireAdmin_AllowsGETWithoutOrigin(t *testing.T) {
 	// GET for page rendering/status queries does not require Origin because many browser GETs omit it.
 	app := mkTestApp(t)
-	app.cfg.AdminEmails = []string{"admin@example.com"}
+	app.conf().AdminEmails = []string{"admin@example.com"}
 
 	rec := httptest.NewRecorder()
-	_ = writeAdminCookie(rec, app.cfg.SessionSecret, AdminSession{
+	_ = writeAdminCookie(rec, app.conf().SessionSecret, AdminSession{
 		UPN: "admin@example.com",
 		Exp: time.Now().Add(time.Hour).Unix(),
 	}, false)
@@ -482,7 +482,7 @@ func TestHandleAuthProceed_StateMismatchRejected(t *testing.T) {
 		MAC:   "aa:bb:cc:dd:ee:ff",
 		Exp:   time.Now().Add(time.Minute).Unix(),
 	}
-	if err := writeSessionCookie(rec, app.cfg.SessionSecret, sess, false); err != nil {
+	if err := writeSessionCookie(rec, app.conf().SessionSecret, sess, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -724,8 +724,7 @@ func mkTestApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &App{
-		cfg:            cfg,
+	app := &App{
 		denylist:       dl,
 		authEmailFails: newFailCounter(cfg.AuthEmailWindowLong),
 		guestCodeFails: newFailCounter(cfg.GuestCodeMacWindow),
@@ -735,4 +734,26 @@ func mkTestApp(t *testing.T) *App {
 		proceedStore:   newProceedTokenStore(cfg.AuthProceedTTL),
 		usedStates:     newUsedStateSet(sessionTTL),
 	}
+	app.rtPtr.Store(&runtimeState{cfg: cfg})
+	return app
+}
+
+// newTestApp builds an App whose runtime state is installed the same way
+// reloadRuntime installs it, so tests exercise the same accessor path as
+// production instead of a hand-set field that no longer exists.
+func newTestApp(cfg Config) *App {
+	a := &App{}
+	a.rtPtr.Store(&runtimeState{cfg: cfg})
+	return a
+}
+
+// setTestConfig swaps an existing App's configuration, preserving the clients
+// already installed.
+func setTestConfig(a *App, cfg Config) {
+	prev := a.rt()
+	next := &runtimeState{cfg: cfg}
+	if prev != nil {
+		next.oidc, next.duo, next.duoUniversal = prev.oidc, prev.duo, prev.duoUniversal
+	}
+	a.rtPtr.Store(next)
 }

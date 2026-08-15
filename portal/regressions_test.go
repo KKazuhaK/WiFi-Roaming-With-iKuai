@@ -340,7 +340,7 @@ func TestH7_EditAcceptsPastExpiry(t *testing.T) {
 	}
 	r, _ := http.NewRequest("POST", "/admin/codes/edit", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.Header.Set("Origin", app.cfg.PublicURL)
+	r.Header.Set("Origin", app.conf().PublicURL)
 	r.AddCookie(mkAdminCookie(t, app))
 
 	w := httptest.NewRecorder()
@@ -442,7 +442,7 @@ func TestM5_QuerySubjectFilterCaseInsensitive(t *testing.T) {
 func TestM8_AuthStartRecordsAfterProceedStorePut(t *testing.T) {
 	app := mkTestApp(t)
 	rec := httptest.NewRecorder()
-	_ = writeSessionCookie(rec, app.cfg.SessionSecret, Session{
+	_ = writeSessionCookie(rec, app.conf().SessionSecret, Session{
 		MAC: "aa:bb:cc:dd:ee:ff", UserIP: "1.1.1.1",
 		State: "s", Nonce: "n",
 		Exp: time.Now().Add(time.Minute).Unix(),
@@ -545,8 +545,8 @@ func TestM6_QueryHandlesOutOfOrderTimes(t *testing.T) {
 
 func TestL6_DisablesBanHistoryWhenEscalateAtZero(t *testing.T) {
 	app := mkTestApp(t)
-	app.cfg.IPBanEscalateAt = 0 // Explicitly disable permanent escalation.
-	app.cfg.IPFailsLimit = 1    // Trigger cooldown immediately.
+	app.conf().IPBanEscalateAt = 0 // Explicitly disable permanent escalation.
+	app.conf().IPFailsLimit = 1    // Trigger cooldown immediately.
 
 	app.recordIPFailure("3.3.3.3", "test")
 

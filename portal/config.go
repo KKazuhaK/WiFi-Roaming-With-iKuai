@@ -90,94 +90,78 @@ type Config struct {
 	EventLogRetention time.Duration // Events older than this are garbage-collected, default 7 days.
 }
 
-func loadConfig() Config {
-	cfg := Config{
-		TenantID:     mustEnv("TENANT_ID"),
-		ClientID:     mustEnv("CLIENT_ID"),
-		ClientSecret: mustEnv("CLIENT_SECRET"),
-		IKuaiAppKey:  mustEnv("IKUAI_APPKEY"),
-		PublicURL:    mustEnv("PUBLIC_URL"),
+// BootstrapConfig is the part of the configuration that has to exist before the
+// database can be opened, so it is the only part still read from the
+// environment. Everything else moved into the setting table — see
+// config_settings.go for why the environment is an import source rather than an
+// override.
+type BootstrapConfig struct {
+	// ListenAddr is where the process binds at startup. TLS and a
+	// database-configured listener replace this later; this value is what gets
+	// the admin UI reachable in the first place, including after a bad TLS
+	// change, so it stays in the file an operator can edit over SSH.
+	ListenAddr string
+	// SessionSecret signs the cookies that authenticate the administrator who
+	// edits everything else. It cannot live in the database it protects access
+	// to.
+	SessionSecret []byte
+	// EncryptionKey protects credentials stored in the database. Empty means
+	// they are stored in plaintext, which is allowed so an existing deployment
+	// still starts after an upgrade — with a loud warning.
+	EncryptionKey string
+	// DataDir holds the default SQLite file and anything else on disk.
+	DataDir string
+	// DBDSN selects and addresses the database. Empty means SQLite in DataDir.
+	DBDSN string
+	// TrustProxy decides whether X-Forwarded-For is believed. It gates the
+	// client-IP parsing that the rate limiter and the audit log depend on, so it
+	// is read before any request is served and is not runtime-editable: getting
+	// it wrong from a settings page would silently disable abuse protection.
+	TrustProxy bool
+}
 
-		IKuaiWebAuthURL: envOr("IKUAI_WEBAUTH_URL",
-			"https://portal.ikuai8-wifi.com/Action/webauth-up"),
-		IKuaiReleaseType:    envOr("IKUAI_RELEASE_TYPE", "1"),
-		IKuaiPolicyDefaults: defaultIKuaiPoliciesFromEnv(),
-
-		ListenAddr:   envOr("LISTEN_ADDR", "127.0.0.1:28080"),
-		BrandName:    envOr("BRAND_NAME", "Kazuha Hub"),
-		BrandColor:   sanitizeBrandColor(envOr("BRAND_COLOR", ""), "#2563eb"),
-		BrandLogoURL: envOr("BRAND_LOGO_URL", ""),
-
-		IKuaiIPKeys:  splitCSV(envOr("IKUAI_IP_KEYS", "user_ip,ip,ipaddr")),
-		IKuaiMACKeys: splitCSV(envOr("IKUAI_MAC_KEYS", "user_mac,mac,usrmac,devmac")),
-
-		DuoIKey:             envOr("DUO_IKEY", ""),
-		DuoSKey:             envOr("DUO_SKEY", ""),
-		DuoClientID:         envOr("DUO_CLIENT_ID", ""),
-		DuoClientSecret:     envOr("DUO_CLIENT_SECRET", ""),
-		DuoAPIHost:          envOr("DUO_API_HOST", ""),
-		AllowedEmailDomains: splitCSV(envOr("ALLOWED_EMAIL_DOMAINS", "")),
-
-		AdminEmails:   splitCSV(envOr("ADMIN_EMAILS", "")),
-		AdminGroupIDs: splitCSV(envOr("ADMIN_GROUP_IDS", "")),
-
-		AuthEmailFailsShort:  envOrInt("AUTH_EMAIL_FAILS_SHORT", 5),
-		AuthEmailWindowShort: envOrDuration("AUTH_EMAIL_WINDOW_SHORT", 3*time.Minute),
-		AuthEmailFailsLong:   envOrInt("AUTH_EMAIL_FAILS_LONG", 20),
-		AuthEmailWindowLong:  envOrDuration("AUTH_EMAIL_WINDOW_LONG", time.Hour),
-		GuestCodeMacFails:    envOrInt("GUEST_CODE_MAC_FAILS", 6),
-		GuestCodeMacWindow:   envOrDuration("GUEST_CODE_MAC_WINDOW", 30*time.Minute),
-		IPFailsLimit:         envOrInt("IP_FAILS_LIMIT", 20),
-		IPFailsWindow:        envOrDuration("IP_FAILS_WINDOW", 5*time.Minute),
-		IPBanDuration:        envOrDuration("IP_BAN_DURATION", 2*time.Minute),
-		IPBanEscalateAt:      envOrInt("IP_BAN_ESCALATE_AT", 999999),
-		AuthProceedTTL:       envOrDuration("AUTH_PROCEED_TTL", 5*time.Minute),
-
-		EventLogRetention: time.Duration(envOrInt("EVENT_LOG_RETENTION_DAYS", 7)) * 24 * time.Hour,
-
-		TrustProxy: envOrBool("TRUST_PROXY", true),
-		DataDir:    envOr("DATA_DIR", "/data"),
+// loadBootstrap reads the environment-only configuration. It exits on a problem,
+// which is still right here: none of these can be repaired from a UI the portal
+// has not managed to start.
+func loadBootstrap() BootstrapConfig {
+	b := BootstrapConfig{
+		ListenAddr:    envOr("LISTEN_ADDR", "127.0.0.1:28080"),
+		EncryptionKey: strings.TrimSpace(envOr("ENCRYPTION_KEY", "")),
+		DataDir:       envOr("DATA_DIR", "/data"),
+		DBDSN:         strings.TrimSpace(envOr("DB_DSN", "")),
+		TrustProxy:    envOrBool("TRUST_PROXY", true),
 	}
 
 	secretHex := mustEnv("SESSION_SECRET")
-	secret, err := hex.DecodeString(secretHex)
+	sec, err := hex.DecodeString(secretHex)
 	if err != nil {
 		log.Fatalf("SESSION_SECRET must be a hex string: %v", err)
 	}
-	if len(secret) < 32 {
-		log.Fatalf("SESSION_SECRET must be at least 32 bytes (64 hex chars), got %d", len(secret))
+	if len(sec) < 32 {
+		log.Fatalf("SESSION_SECRET must be at least 32 bytes (64 hex chars), got %d", len(sec))
 	}
-	cfg.SessionSecret = secret
+	b.SessionSecret = sec
 
-	if !strings.HasPrefix(cfg.PublicURL, "https://") {
-		log.Fatalf("PUBLIC_URL must start with https://, got: %s", cfg.PublicURL)
-	}
-	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
-
-	// Duo: all five fields must be either set or empty; partial configuration is fatal.
-	duoFields := map[string]string{
-		"DUO_IKEY":          cfg.DuoIKey,
-		"DUO_SKEY":          cfg.DuoSKey,
-		"DUO_CLIENT_ID":     cfg.DuoClientID,
-		"DUO_CLIENT_SECRET": cfg.DuoClientSecret,
-		"DUO_API_HOST":      cfg.DuoAPIHost,
-	}
-	filled, empty := 0, 0
-	for _, v := range duoFields {
-		if v == "" {
-			empty++
-		} else {
-			filled++
-		}
-	}
-	if filled > 0 && empty > 0 {
-		log.Fatalf("Duo config incomplete: the following 5 fields must all be set or all be empty: %v", duoFields)
-	}
-	if cfg.IsDuoEnabled() && len(cfg.AllowedEmailDomains) == 0 {
-		log.Fatalf("Duo requires ALLOWED_EMAIL_DOMAINS to be set")
+	if b.EncryptionKey == "" {
+		log.Printf("WARNING: ENCRYPTION_KEY is not set, so credentials in the database " +
+			"(OIDC client secret, iKuai app key, Duo keys) are stored in PLAINTEXT. " +
+			"Generate one with `openssl rand -hex 32` and set it before the database " +
+			"is backed up or replicated. Existing plaintext values are re-encrypted on the next save.")
+	} else if len(b.EncryptionKey) < 32 {
+		log.Fatalf("ENCRYPTION_KEY must be at least 32 characters, got %d", len(b.EncryptionKey))
 	}
 
-	return cfg
+	return b
+}
+
+// applyBootstrap copies the bootstrap fields into a Config. Config keeps holding
+// both halves so the ~60 call sites reading a.conf().X did not have to learn
+// which half a field came from.
+func applyBootstrap(cfg *Config, b BootstrapConfig) {
+	cfg.ListenAddr = b.ListenAddr
+	cfg.SessionSecret = b.SessionSecret
+	cfg.DataDir = b.DataDir
+	cfg.TrustProxy = b.TrustProxy
 }
 
 // IsDuoEnabled reports whether all five Duo fields are configured.

@@ -33,11 +33,11 @@ func requireBuiltBundle(t *testing.T) *spaBundle {
 func mkBundleServer(t *testing.T) (*httptest.Server, *App) {
 	t.Helper()
 	loadTranslations()
-	app := &App{cfg: Config{
+	app := newTestApp(Config{
 		BrandName:  "Kazuha Hub",
 		BrandColor: "#2563eb",
 		PublicURL:  "https://wifi.test",
-	}}
+	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/assets/", app.handleAssets)
 	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {

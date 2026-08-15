@@ -3,7 +3,9 @@ package main
 import "testing"
 
 // TestIsGuest_DetectsExternalUPN: Entra B2B guest UPNs look like:
-//   alice_partner.com#EXT#@tenant.onmicrosoft.com
+//
+//	alice_partner.com#EXT#@tenant.onmicrosoft.com
+//
 // Microsoft currently documents uppercase "#EXT#", but security decisions should not depend on one
 // fixed casing. Use defensive case-insensitive matching.
 func TestIsGuest_DetectsExternalUPN(t *testing.T) {

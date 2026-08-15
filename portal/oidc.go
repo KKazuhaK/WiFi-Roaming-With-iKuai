@@ -37,8 +37,9 @@ func (u UserInfo) IsGuest() bool {
 }
 
 // IsAdmin reports whether the user can access /admin. Either path is sufficient:
-//   1. UPN is in ADMIN_EMAILS.
-//   2. Any user group ID is in ADMIN_GROUP_IDS.
+//  1. UPN is in ADMIN_EMAILS.
+//  2. Any user group ID is in ADMIN_GROUP_IDS.
+//
 // It only runs during login callback; later /admin requests trust the cookie.
 // Note: Entra uses _claim_names overage indicators for users in more than ~200 groups and stops
 // listing groups directly in id_token. Small teams usually do not hit this.

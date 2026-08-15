@@ -42,8 +42,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/kazuhahub/wifi-portal/internal/dbstore"
+	"github.com/kazuhahub/wifi-portal/internal/secret"
+	"github.com/kazuhahub/wifi-portal/internal/settings"
 )
 
 //go:embed static
@@ -85,7 +90,7 @@ func makeDataPaths(dataDir string) dataPaths {
 // Prefer Origin, then fall back to Referer. Reject when both are missing; modern form POSTs normally
 // include Referer, so missing headers are usually curl or forged clients.
 func (a *App) isSameOriginRequest(r *http.Request) bool {
-	expected := strings.TrimRight(a.cfg.PublicURL, "/")
+	expected := strings.TrimRight(a.conf().PublicURL, "/")
 	if origin := r.Header.Get("Origin"); origin != "" {
 		// Origin is scheme+host[:port] without path, so compare directly.
 		return strings.TrimRight(origin, "/") == expected
@@ -135,11 +140,35 @@ func ensureDataDirWritable(dir string) error {
 	return nil
 }
 
+// runtimeState is everything derived from the database-backed settings, swapped
+// as a unit when they change.
+//
+// The clients live here rather than beside the config because they are built
+// FROM it: changing the Entra tenant means a new OIDC client, and a reader that
+// picked up the new config with the old client would authenticate against the
+// wrong directory. One atomic pointer makes that impossible — a request either
+// sees the whole old world or the whole new one.
+type runtimeState struct {
+	cfg  Config
+	oidc *OIDCClient
+	// duo and duoUniversal are nil when Duo is not fully configured. Callers
+	// must nil-check: unlike before, an operator can now turn Duo off at runtime.
+	duo          *DuoClient          // Duo Auth API, preauth only.
+	duoUniversal *DuoUniversalClient // Duo Universal Prompt (OIDC)
+}
+
 type App struct {
-	cfg           Config
-	oidc          *OIDCClient
-	duo           *DuoClient          // Duo Auth API, preauth only.
-	duoUniversal  *DuoUniversalClient // Duo Universal Prompt (OIDC)
+	// rt holds the current runtimeState. Read it through a.rt(); write it only
+	// through reloadRuntime.
+	rtPtr atomic.Pointer[runtimeState]
+
+	// boot is the environment-only configuration, fixed for the process
+	// lifetime.
+	boot BootstrapConfig
+
+	db       *dbstore.DB
+	settings *settings.Store
+
 	guestCodes    *GuestCodeStore
 	denylist      *DenylistStore
 	ikuaiPolicies *IKuaiPolicyStore
@@ -164,6 +193,16 @@ type App struct {
 	// --- Observability ---
 	eventLog *EventLog
 }
+
+// rt returns the current runtime state. Never nil after newApp.
+func (a *App) rt() *runtimeState { return a.rtPtr.Load() }
+
+// conf returns the current configuration.
+//
+// A pointer, and callers must not mutate through it: the value it points at is
+// shared by every in-flight request. Mutation goes through reloadRuntime, which
+// builds a fresh state and swaps the pointer.
+func (a *App) conf() *Config { return &a.rtPtr.Load().cfg }
 
 // runInit handles `wifi-portal init [dir]`: write embedded .env.example and systemd unit templates
 // to the target directory so bare-binary deployments do not need git clone for examples.
@@ -260,15 +299,25 @@ DATA_DIR=%s
 	return nil
 }
 
-// looksUninitialized returns true when none of the key env vars are set, which usually means the
-// user is first-running the bare binary before sourcing .env or wiring systemd EnvironmentFile.
-// In that case, enter first-run init and generate config templates instead of mustEnv fatal.
+// looksUninitialized returns true when the bare binary is being run before any
+// configuration exists, in which case the portal writes config templates instead
+// of exiting on a missing variable.
 //
-// Only "all empty" triggers this. Partial configuration still goes through mustEnv so users get the
-// precise missing key instead of being misdetected as first-run.
+// Since runtime settings moved into the database, SESSION_SECRET is the only
+// variable the portal genuinely cannot start without — everything that used to
+// be mandatory here is now configured in the admin console. So a deployment
+// that sets SESSION_SECRET and nothing else is a valid fresh install, not an
+// uninitialised one: it boots, reports what is unconfigured, and serves /admin
+// so an operator can finish the job.
+//
+// The legacy variables are still consulted for the case where an operator has an
+// old .env with everything except SESSION_SECRET; treating that as first-run
+// would overwrite templates next to a real configuration.
 func looksUninitialized() bool {
-	keys := []string{"TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "IKUAI_APPKEY", "PUBLIC_URL", "SESSION_SECRET"}
-	for _, k := range keys {
+	if strings.TrimSpace(os.Getenv("SESSION_SECRET")) != "" {
+		return false
+	}
+	for _, k := range []string{"TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "IKUAI_APPKEY", "PUBLIC_URL", "ENCRYPTION_KEY", "DB_DSN"} {
 		if strings.TrimSpace(os.Getenv(k)) != "" {
 			return false
 		}
@@ -301,46 +350,41 @@ func main() {
 
 	loadTranslations()
 
-	cfg := loadConfig()
+	boot := loadBootstrap()
 
 	// Inject into ratelimit.go package var before any clientIP call.
-	trustProxyHeaders = cfg.TrustProxy
-	if !cfg.TrustProxy {
+	trustProxyHeaders = boot.TrustProxy
+	if !boot.TrustProxy {
 		log.Printf("TRUST_PROXY=false: 忽略 X-Real-IP / X-Forwarded-For, 仅按 r.RemoteAddr 计客户端 IP")
-	} else if !isLoopbackListen(cfg.ListenAddr) {
+	} else if !isLoopbackListen(boot.ListenAddr) {
 		log.Printf("warning: LISTEN_ADDR=%s 不是 loopback 且 TRUST_PROXY=true. 若 Portal 端口直接暴露公网, 攻击者可伪造 X-Real-IP/X-Forwarded-For 绕过 IP 限流; 务必让反代终结连接, 或显式 TRUST_PROXY=false",
-			cfg.ListenAddr)
+			boot.ListenAddr)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	oidcClient, err := newOIDCClient(ctx, cfg)
-	if err != nil {
-		log.Fatalf("OIDC init failed: %v", err)
-	}
-
-	var duoClient *DuoClient
-	var duoUni *DuoUniversalClient
-	if cfg.IsDuoEnabled() {
-		duoClient = newDuoClient(cfg)
-		duoUni = newDuoUniversalClient(cfg)
-		log.Printf("Duo: enabled (Auth API + Universal Prompt), host=%s, allowed_domains=%v",
-			cfg.DuoAPIHost, cfg.AllowedEmailDomains)
-	} else {
-		log.Printf("Duo: disabled")
-	}
-
-	if cfg.IsAdminEnabled() {
-		log.Printf("admin console: enabled, admin=%v", cfg.AdminEmails)
-	} else {
-		log.Printf("admin console: disabled")
-	}
-
-	paths := makeDataPaths(cfg.DataDir)
-	if err := ensureDataDirWritable(cfg.DataDir); err != nil {
+	if err := ensureDataDirWritable(boot.DataDir); err != nil {
 		log.Fatalf("data dir is not writable: %v", err)
 	}
+
+	db, err := dbstore.Open(dbstore.Options{DSN: boot.DBDSN, DataDir: boot.DataDir})
+	if err != nil {
+		log.Fatalf("database init failed: %v", err)
+	}
+	defer db.Close()
+	if err := dbstore.Migrate(db); err != nil {
+		log.Fatalf("database migration failed: %v", err)
+	}
+
+	keyring := secret.NewKeyring(boot.EncryptionKey)
+	settingStore := settings.New(db, keyring, isSecretSetting)
+
+	// One-time adoption of an existing installation: copy .env and the JSON
+	// state files in, then never look at them again.
+	if err := importLegacyState(db, settingStore, boot); err != nil {
+		log.Fatalf("legacy import failed: %v", err)
+	}
+	warnIgnoredRuntimeEnv()
+
+	paths := makeDataPaths(boot.DataDir)
 
 	guestStore, err := newGuestCodeStore(paths.GuestCodes)
 	if err != nil {
@@ -352,40 +396,57 @@ func main() {
 		log.Fatalf("MAC denylist init failed: %v", err)
 	}
 
-	ikuaiPolicyStore, err := newIKuaiPolicyStore(cfg.IKuaiPolicyDefaults, paths.IKuaiPolicy)
-	if err != nil {
-		log.Fatalf("iKuai policy init failed: %v", err)
-	}
-
 	banHist, err := newBanHistory(paths.BanHistory)
 	if err != nil {
 		log.Fatalf("ban history init failed: %v", err)
 	}
 
+	app := &App{
+		boot:       boot,
+		db:         db,
+		settings:   settingStore,
+		guestCodes: guestStore,
+		denylist:   denylistStore,
+		ipBans:     newIPBanList(),
+		banHistory: banHist,
+		usedStates: newUsedStateSet(sessionTTL),
+	}
+
+	// Build the first runtime state. A failure here is NOT fatal, and that is
+	// the whole point of moving settings into the database: the OIDC tenant is
+	// now editable through an admin UI this process serves, so exiting because
+	// the tenant is wrong would take away the only tool for fixing it. The
+	// portal comes up degraded — sign-in returns a clear error — and an
+	// administrator repairs it through the console.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := app.reloadRuntime(ctx); err != nil {
+		log.Printf("startup: runtime configuration is incomplete: %v", err)
+		log.Printf("startup: the portal is running so the admin console can be used to fix it")
+	}
+	cfg := app.conf()
+
+	ikuaiPolicyStore, err := newIKuaiPolicyStore(cfg.IKuaiPolicyDefaults, paths.IKuaiPolicy)
+	if err != nil {
+		log.Fatalf("iKuai policy init failed: %v", err)
+	}
+	app.ikuaiPolicies = ikuaiPolicyStore
+
 	eventLog, err := newEventLog(paths.EventLog, cfg.EventLogRetention)
 	if err != nil {
 		log.Fatalf("event log init failed: %v", err)
 	}
+	app.eventLog = eventLog
 	log.Printf("data dir: %s (guest codes, MAC denylist, iKuai policy, ban history, event log; event retention %s)",
-		cfg.DataDir, cfg.EventLogRetention)
+		boot.DataDir, cfg.EventLogRetention)
 
-	app := &App{
-		cfg:            cfg,
-		oidc:           oidcClient,
-		duo:            duoClient,
-		duoUniversal:   duoUni,
-		guestCodes:     guestStore,
-		denylist:       denylistStore,
-		ikuaiPolicies:  ikuaiPolicyStore,
-		authEmailFails: newFailCounter(cfg.AuthEmailWindowLong),
-		guestCodeFails: newFailCounter(cfg.GuestCodeMacWindow),
-		ipFails:        newFailCounter(cfg.IPFailsWindow),
-		ipBans:         newIPBanList(),
-		banHistory:     banHist,
-		proceedStore:   newProceedTokenStore(cfg.AuthProceedTTL),
-		usedStates:     newUsedStateSet(sessionTTL),
-		eventLog:       eventLog,
-	}
+	// The fail counters size their windows from configuration, so they are
+	// created after the first reload rather than before it.
+	app.authEmailFails = newFailCounter(cfg.AuthEmailWindowLong)
+	app.guestCodeFails = newFailCounter(cfg.GuestCodeMacWindow)
+	app.ipFails = newFailCounter(cfg.IPFailsWindow)
+	app.proceedStore = newProceedTokenStore(cfg.AuthProceedTTL)
+
 	go app.authEmailFails.gcLoop()
 	go app.guestCodeFails.gcLoop()
 	go app.ipFails.gcLoop()
@@ -526,7 +587,7 @@ func (a *App) logRequests(h http.Handler) http.Handler {
 		h.ServeHTTP(lrw, r)
 		client := clientIP(r)
 		userIP, mac := "-", "-"
-		if sess, err := readSessionCookie(r, a.cfg.SessionSecret); err == nil {
+		if sess, err := readSessionCookie(r, a.conf().SessionSecret); err == nil {
 			if sess.UserIP != "" {
 				userIP = sess.UserIP
 			}
@@ -569,11 +630,11 @@ func (a *App) robotsTxt(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handlePortal(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
-	dev, ok := extractDeviceInfo(r, a.cfg)
+	dev, ok := extractDeviceInfo(r, *a.conf())
 	if !ok {
 		// Language switching or refresh may revisit without iKuai query fields; fall back to the
 		// existing cookie. If it is valid and contains IP/MAC, do not treat the session as lost.
-		if existing, err := readSessionCookie(r, a.cfg.SessionSecret); err == nil &&
+		if existing, err := readSessionCookie(r, a.conf().SessionSecret); err == nil &&
 			existing.UserIP != "" && existing.MAC != "" {
 			dev = DeviceInfo{IP: existing.UserIP, MAC: existing.MAC}
 			ok = true
@@ -594,7 +655,7 @@ func (a *App) handlePortal(w http.ResponseWriter, r *http.Request) {
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
-	if err := writeSessionCookie(w, a.cfg.SessionSecret, sess, true); err != nil {
+	if err := writeSessionCookie(w, a.conf().SessionSecret, sess, true); err != nil {
 		log.Printf("write cookie failed: %v", err)
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
@@ -617,7 +678,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
+	sess, err := readSessionCookie(r, a.conf().SessionSecret)
 	if err != nil {
 		if bannedIP, ok := a.bannedIPForRequest(r, nil); ok {
 			a.writeRateLimited(w, "ip_ban", bannedIP)
@@ -647,7 +708,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Enforce the domain allowlist only when Duo is enabled; without Duo, Entra handles domain/tenant filtering.
-	if a.cfg.IsDuoEnabled() && !isAllowedDomain(email, a.cfg.AllowedEmailDomains) {
+	if a.conf().IsDuoEnabled() && !isAllowedDomain(email, a.conf().AllowedEmailDomains) {
 		log.Printf("deny domain not in allowlist: %q", email)
 		a.recordRequestFailure(r, &sess, "invalid_domain")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_domain"})
@@ -655,15 +716,15 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rule 1: check this email's failure count in both windows.
-	shortN := a.authEmailFails.countIn(email, a.cfg.AuthEmailWindowShort)
-	longN := a.authEmailFails.countIn(email, a.cfg.AuthEmailWindowLong)
-	if shortN >= a.cfg.AuthEmailFailsShort || longN >= a.cfg.AuthEmailFailsLong {
+	shortN := a.authEmailFails.countIn(email, a.conf().AuthEmailWindowShort)
+	longN := a.authEmailFails.countIn(email, a.conf().AuthEmailWindowLong)
+	if shortN >= a.conf().AuthEmailFailsShort || longN >= a.conf().AuthEmailFailsLong {
 		log.Printf("/auth/start email ratelimit: %q short=%d long=%d ip=%s",
 			email, shortN, longN, ip)
 		a.recordRequestFailure(r, &sess, "rate_limited_email")
 		// Use the retry_after from whichever window fills first.
 		rule := "email_long"
-		if shortN >= a.cfg.AuthEmailFailsShort {
+		if shortN >= a.conf().AuthEmailFailsShort {
 			rule = "email_short"
 		}
 		// If this recordIPFailure call just triggered an IP cooldown, report that cooldown first.
@@ -678,7 +739,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	// Store email in the session for later handlers.
 	sess.Email = email
-	if err := writeSessionCookie(w, a.cfg.SessionSecret, sess, true); err != nil {
+	if err := writeSessionCookie(w, a.conf().SessionSecret, sess, true); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cookie_write"})
 		return
 	}
@@ -689,10 +750,10 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		realURL string
 		kind    proceedKind
 	)
-	if a.duo == nil || a.duoUniversal == nil {
+	if a.rt().duo == nil || a.rt().duoUniversal == nil {
 		realURL, kind = ssoURL, proceedEntra
 	} else {
-		pre, perr := a.duo.Preauth(email)
+		pre, perr := a.rt().duo.Preauth(email)
 		if perr != nil {
 			log.Printf("Duo preauth failed for %s: %v, falling back to SSO", email, perr)
 			realURL, kind = ssoURL, proceedEntra
@@ -702,7 +763,7 @@ func (a *App) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 			switch pre.Result {
 			case "auth":
 				if pre.HasUniversalPromptCapable() {
-					duoURL, derr := a.duoUniversal.AuthURL(email, sess.State)
+					duoURL, derr := a.rt().duoUniversal.AuthURL(email, sess.State)
 					if derr != nil {
 						log.Printf("Duo AuthURL build failed: %v, falling back to SSO", derr)
 						realURL, kind = ssoURL, proceedEntra
@@ -764,11 +825,11 @@ func (a *App) writeRateLimited(w http.ResponseWriter, rule, ip string) {
 			}
 		}
 	case "email_short":
-		body["retry_after_seconds"] = int(a.cfg.AuthEmailWindowShort.Seconds())
+		body["retry_after_seconds"] = int(a.conf().AuthEmailWindowShort.Seconds())
 	case "email_long":
-		body["retry_after_seconds"] = int(a.cfg.AuthEmailWindowLong.Seconds())
+		body["retry_after_seconds"] = int(a.conf().AuthEmailWindowLong.Seconds())
 	case "mac":
-		body["retry_after_seconds"] = int(a.cfg.GuestCodeMacWindow.Seconds())
+		body["retry_after_seconds"] = int(a.conf().GuestCodeMacWindow.Seconds())
 	}
 	writeJSON(w, http.StatusTooManyRequests, body)
 }
@@ -839,8 +900,8 @@ func (a *App) clearSuccessfulAuthState(r *http.Request, sess Session, emails ...
 // reason is only logged for troubleshooting.
 func (a *App) recordIPFailure(ip, reason string) {
 	a.ipFails.record(ip)
-	n := a.ipFails.countIn(ip, a.cfg.IPFailsWindow)
-	if n < a.cfg.IPFailsLimit {
+	n := a.ipFails.countIn(ip, a.conf().IPFailsWindow)
+	if n < a.conf().IPFailsLimit {
 		return
 	}
 	// If already banned, do not re-ban; that would extend cooldown and scramble escalation counts.
@@ -848,24 +909,24 @@ func (a *App) recordIPFailure(ip, reason string) {
 		return
 	}
 	// L6: when escalation is disabled, skip banHistory because the history is meaningless.
-	if a.cfg.IPBanEscalateAt <= 0 {
-		a.ipBans.ban(ip, a.cfg.IPBanDuration)
+	if a.conf().IPBanEscalateAt <= 0 {
+		a.ipBans.ban(ip, a.conf().IPBanDuration)
 		log.Printf("IP fail-limit reached, cooldown %s: %s (count=%d window=%s reason=%s, escalation disabled)",
-			a.cfg.IPBanDuration, ip, n, a.cfg.IPFailsWindow, reason)
+			a.conf().IPBanDuration, ip, n, a.conf().IPFailsWindow, reason)
 		return
 	}
 	banCount := a.banHistory.increment(ip)
 	var duration time.Duration
-	if banCount >= a.cfg.IPBanEscalateAt {
+	if banCount >= a.conf().IPBanEscalateAt {
 		duration = time.Until(PermanentBanUntil) // Duration until the "permanent" marker.
 		a.ipBans.ban(ip, duration)
 		log.Printf("IP fail-limit reached, **permanent ban** (attempt %d): %s (count=%d window=%s reason=%s)",
-			banCount, ip, n, a.cfg.IPFailsWindow, reason)
+			banCount, ip, n, a.conf().IPFailsWindow, reason)
 	} else {
-		duration = a.cfg.IPBanDuration
+		duration = a.conf().IPBanDuration
 		a.ipBans.ban(ip, duration)
 		log.Printf("IP fail-limit reached, cooldown %s (attempt %d): %s (count=%d window=%s reason=%s)",
-			duration, banCount, ip, n, a.cfg.IPFailsWindow, reason)
+			duration, banCount, ip, n, a.conf().IPFailsWindow, reason)
 	}
 }
 
@@ -873,7 +934,7 @@ func (a *App) recordIPFailure(ip, reason string) {
 // If no hint exists but the session has email, use that.
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
-	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
+	sess, err := readSessionCookie(r, a.conf().SessionSecret)
 	if err != nil {
 		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
@@ -882,13 +943,13 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if hint == "" {
 		hint = sess.Email
 	}
-	http.Redirect(w, r, a.oidc.AuthURL(sess.State, sess.Nonce, hint), http.StatusFound)
+	http.Redirect(w, r, a.rt().oidc.AuthURL(sess.State, sess.Nonce, hint), http.StatusFound)
 }
 
 // handleCallback handles Entra callback and routes by session.Purpose.
 func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
-	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
+	sess, err := readSessionCookie(r, a.conf().SessionSecret)
 	if err != nil {
 		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
@@ -920,7 +981,7 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	user, err := a.oidc.Exchange(ctx, a.cfg, code, sess.Nonce)
+	user, err := a.rt().oidc.Exchange(ctx, *a.conf(), code, sess.Nonce)
 	if err != nil {
 		log.Printf("OIDC Exchange failed: %v", err)
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusUnauthorized)
@@ -947,7 +1008,7 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	a.logLogin(user.UPN, ResultSuccess, MethodSSO, sess.MAC, sess.UserIP, "")
 	// After successful auth, clear temporary failure state for the same email/device/IP.
 	a.clearSuccessfulAuthState(r, sess, user.UPN)
-	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, user.UPN,
+	ikuaiURL := buildWebAuthURL(*a.conf(), DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, user.UPN,
 		IKuaiProfileSSO, a.ikuaiPolicies.Get(IKuaiProfileSSO))
 	clearSessionCookie(w, true)
 	http.Redirect(w, r, ikuaiURL, http.StatusFound)
@@ -956,11 +1017,11 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 // handleDuoCallback handles Duo Universal Prompt callback: verify state, exchange code, get username, allow-list.
 func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
-	if a.duoUniversal == nil {
+	if a.rt().duoUniversal == nil {
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusServiceUnavailable)
 		return
 	}
-	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
+	sess, err := readSessionCookie(r, a.conf().SessionSecret)
 	if err != nil {
 		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
@@ -1000,7 +1061,7 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 		a.renderError(w, r, lang, T(lang, "errors.sessionLost"), http.StatusBadRequest)
 		return
 	}
-	username, err := a.duoUniversal.Exchange(duoCode, sess.Email)
+	username, err := a.rt().duoUniversal.Exchange(duoCode, sess.Email)
 	if err != nil {
 		log.Printf("Duo Exchange failed for %s: %v", sess.Email, err)
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusUnauthorized)
@@ -1017,7 +1078,7 @@ func (a *App) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	a.logLogin(username, ResultSuccess, MethodDuo, sess.MAC, sess.UserIP, "")
 	// After successful auth, clear temporary failure state for the same email/device/IP.
 	a.clearSuccessfulAuthState(r, sess, username)
-	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, username,
+	ikuaiURL := buildWebAuthURL(*a.conf(), DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, username,
 		IKuaiProfileDuo, a.ikuaiPolicies.Get(IKuaiProfileDuo))
 	clearSessionCookie(w, true)
 	http.Redirect(w, r, ikuaiURL, http.StatusFound)
@@ -1030,11 +1091,11 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	if !a.cfg.IsAdminEnabled() {
+	if !a.conf().IsAdminEnabled() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "guest_disabled"})
 		return
 	}
-	sess, err := readSessionCookie(r, a.cfg.SessionSecret)
+	sess, err := readSessionCookie(r, a.conf().SessionSecret)
 	if err != nil {
 		if bannedIP, ok := a.bannedIPForRequest(r, nil); ok {
 			a.writeRateLimited(w, "ip_ban", bannedIP)
@@ -1060,7 +1121,7 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	}
 	// Rule 5: count failures by session MAC. The MAC is signed into the cookie by /portal, so
 	// attackers cannot change it; this is more stable than IP.
-	if a.guestCodeFails.countIn(sess.MAC, a.cfg.GuestCodeMacWindow) >= a.cfg.GuestCodeMacFails {
+	if a.guestCodeFails.countIn(sess.MAC, a.conf().GuestCodeMacWindow) >= a.conf().GuestCodeMacFails {
 		log.Printf("guest-code ratelimited by MAC: mac=%s ip=%s", sess.MAC, ip)
 		a.recordRequestFailure(r, &sess, "rate_limited_mac")
 		a.logLogin("(guest)", ResultRateLimited, MethodGuestCode, sess.MAC, ip, "mac")
@@ -1098,7 +1159,7 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 	a.clearSuccessfulAuthState(r, sess)
 	policy := a.ikuaiPolicies.Get(IKuaiProfileGuest)
 	policy.Timeout = c.DurationMin
-	ikuaiURL := buildWebAuthURL(a.cfg, DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, upn,
+	ikuaiURL := buildWebAuthURL(*a.conf(), DeviceInfo{IP: sess.UserIP, MAC: sess.MAC}, upn,
 		IKuaiProfileGuest, policy)
 	clearSessionCookie(w, true)
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": ikuaiURL})
@@ -1108,11 +1169,11 @@ func (a *App) handleGuestCode(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
-	if !a.cfg.IsAdminEnabled() {
+	if !a.conf().IsAdminEnabled() {
 		a.renderError(w, r, lang, T(lang, "errors.adminDisabled"), http.StatusNotFound)
 		return
 	}
-	if _, err := readAdminCookie(r, a.cfg.SessionSecret); err == nil {
+	if _, err := readAdminCookie(r, a.conf().SessionSecret); err == nil {
 		http.Redirect(w, r, "/admin", http.StatusFound)
 		return
 	}
@@ -1121,7 +1182,7 @@ func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAdminLoginStart(w http.ResponseWriter, r *http.Request) {
 	lang := pickLang(r)
-	if !a.cfg.IsAdminEnabled() {
+	if !a.conf().IsAdminEnabled() {
 		a.renderError(w, r, lang, T(lang, "errors.adminDisabled"), http.StatusNotFound)
 		return
 	}
@@ -1136,16 +1197,16 @@ func (a *App) handleAdminLoginStart(w http.ResponseWriter, r *http.Request) {
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
-	if err := writeSessionCookie(w, a.cfg.SessionSecret, sess, true); err != nil {
+	if err := writeSessionCookie(w, a.conf().SessionSecret, sess, true); err != nil {
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
 	// Do not prefill email for admin login.
-	http.Redirect(w, r, a.oidc.AuthURL(sess.State, sess.Nonce, ""), http.StatusFound)
+	http.Redirect(w, r, a.rt().oidc.AuthURL(sess.State, sess.Nonce, ""), http.StatusFound)
 }
 
 func (a *App) finishAdminLogin(w http.ResponseWriter, r *http.Request, lang Lang, user *UserInfo) {
-	if user.IsGuest() || !user.IsAdmin(a.cfg) {
+	if user.IsGuest() || !user.IsAdmin(*a.conf()) {
 		log.Printf("admin login denied: upn=%s groups=%v", user.UPN, user.Groups)
 		a.logAdminAction(user.UPN, clientIP(r), ResultDenied, "admin login rejected (not in allow-list)")
 		a.renderError(w, r, lang, T(lang, "errors.notAdminMember"), http.StatusForbidden)
@@ -1155,13 +1216,13 @@ func (a *App) finishAdminLogin(w http.ResponseWriter, r *http.Request, lang Lang
 		UPN: user.UPN,
 		Exp: time.Now().Add(adminSessionTTL).Unix(),
 	}
-	if err := writeAdminCookie(w, a.cfg.SessionSecret, adminSess, true); err != nil {
+	if err := writeAdminCookie(w, a.conf().SessionSecret, adminSess, true); err != nil {
 		a.renderError(w, r, lang, T(lang, "errors.generic"), http.StatusInternalServerError)
 		return
 	}
 	clearSessionCookie(w, true)
-	log.Printf("admin login success: upn=%s via=%s", user.UPN, adminGrantReason(a.cfg, user))
-	a.logAdminAction(user.UPN, clientIP(r), ResultSuccess, "admin login via="+adminGrantReason(a.cfg, user))
+	log.Printf("admin login success: upn=%s via=%s", user.UPN, adminGrantReason(*a.conf(), user))
+	a.logAdminAction(user.UPN, clientIP(r), ResultSuccess, "admin login via="+adminGrantReason(*a.conf(), user))
 	http.Redirect(w, r, "/admin", http.StatusFound)
 }
 
@@ -1179,7 +1240,7 @@ func (a *App) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request, apiMode bool) (AdminSession, bool) {
-	if !a.cfg.IsAdminEnabled() {
+	if !a.conf().IsAdminEnabled() {
 		if apiMode {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "admin_disabled"})
 		} else {
@@ -1202,7 +1263,7 @@ func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request, apiMode bool)
 			return AdminSession{}, false
 		}
 	}
-	sess, err := readAdminCookie(r, a.cfg.SessionSecret)
+	sess, err := readAdminCookie(r, a.conf().SessionSecret)
 	if err != nil {
 		if apiMode {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not_logged_in"})
@@ -1537,16 +1598,16 @@ func (a *App) handleRateLimitStatus(w http.ResponseWriter, r *http.Request) {
 		"ip_fails":        a.ipFails.snapshot(),
 		"now_unix":        time.Now().Unix(),
 		"thresholds": map[string]any{
-			"email_short":     a.cfg.AuthEmailFailsShort,
-			"email_short_s":   int(a.cfg.AuthEmailWindowShort.Seconds()),
-			"email_long":      a.cfg.AuthEmailFailsLong,
-			"email_long_s":    int(a.cfg.AuthEmailWindowLong.Seconds()),
-			"mac":             a.cfg.GuestCodeMacFails,
-			"mac_s":           int(a.cfg.GuestCodeMacWindow.Seconds()),
-			"ip":              a.cfg.IPFailsLimit,
-			"ip_s":            int(a.cfg.IPFailsWindow.Seconds()),
-			"ip_ban_s":        int(a.cfg.IPBanDuration.Seconds()),
-			"ip_ban_escalate": a.cfg.IPBanEscalateAt,
+			"email_short":     a.conf().AuthEmailFailsShort,
+			"email_short_s":   int(a.conf().AuthEmailWindowShort.Seconds()),
+			"email_long":      a.conf().AuthEmailFailsLong,
+			"email_long_s":    int(a.conf().AuthEmailWindowLong.Seconds()),
+			"mac":             a.conf().GuestCodeMacFails,
+			"mac_s":           int(a.conf().GuestCodeMacWindow.Seconds()),
+			"ip":              a.conf().IPFailsLimit,
+			"ip_s":            int(a.conf().IPFailsWindow.Seconds()),
+			"ip_ban_s":        int(a.conf().IPBanDuration.Seconds()),
+			"ip_ban_escalate": a.conf().IPBanEscalateAt,
 		},
 	})
 }
@@ -1996,8 +2057,8 @@ func parseDurationMin(r *http.Request) int {
 // --- Rendering ---
 
 func (a *App) firstAllowedDomain() string {
-	if len(a.cfg.AllowedEmailDomains) > 0 {
-		return a.cfg.AllowedEmailDomains[0]
+	if len(a.conf().AllowedEmailDomains) > 0 {
+		return a.conf().AllowedEmailDomains[0]
 	}
 	return "example.com"
 }
@@ -2010,7 +2071,7 @@ func (a *App) firstAllowedDomain() string {
 
 func (a *App) renderLogin(w http.ResponseWriter, r *http.Request, lang Lang, dev DeviceInfo) {
 	data := a.baseSPAData("login", lang)
-	data.GuestEnabled = a.cfg.IsAdminEnabled()
+	data.GuestEnabled = a.conf().IsAdminEnabled()
 	data.AllowedDomainsHint = a.firstAllowedDomain()
 	_ = dev // IP/MAC are no longer displayed, but handlePortal still verifies they exist.
 	a.renderSPA(w, r, "portal.html", data, http.StatusOK)

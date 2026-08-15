@@ -25,7 +25,7 @@ import (
 func mkAdminCookie(t *testing.T, app *App) *http.Cookie {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	if err := writeAdminCookie(rec, app.cfg.SessionSecret, AdminSession{
+	if err := writeAdminCookie(rec, app.conf().SessionSecret, AdminSession{
 		UPN: "admin@example.com",
 		Exp: time.Now().Add(time.Hour).Unix(),
 	}, false); err != nil {
@@ -41,7 +41,7 @@ func mkAdminCookie(t *testing.T, app *App) *http.Cookie {
 func mkAdminTestApp(t *testing.T) *App {
 	t.Helper()
 	app := mkTestApp(t)
-	app.cfg.AdminEmails = []string{"admin@example.com"}
+	app.conf().AdminEmails = []string{"admin@example.com"}
 	gc, err := newGuestCodeStore("")
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +63,7 @@ func adminPOST(t *testing.T, app *App, path string, form url.Values) *http.Reque
 	t.Helper()
 	r, _ := http.NewRequest("POST", path, strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.Header.Set("Origin", app.cfg.PublicURL)
+	r.Header.Set("Origin", app.conf().PublicURL)
 	r.AddCookie(mkAdminCookie(t, app))
 	return r
 }
@@ -178,7 +178,7 @@ func TestHandleAuthStart_OpaqueResponseRegardlessOfDuoStatus(t *testing.T) {
 		Lang: "en",
 		Exp:  time.Now().Add(time.Minute).Unix(),
 	}
-	if err := writeSessionCookie(rec, app.cfg.SessionSecret, sess, false); err != nil {
+	if err := writeSessionCookie(rec, app.conf().SessionSecret, sess, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -214,7 +214,7 @@ func TestHandleAuthStart_OpaqueResponseRegardlessOfDuoStatus(t *testing.T) {
 func TestHandleAuthStart_RejectsInvalidEmail(t *testing.T) {
 	app := mkTestApp(t)
 	rec := httptest.NewRecorder()
-	_ = writeSessionCookie(rec, app.cfg.SessionSecret, Session{
+	_ = writeSessionCookie(rec, app.conf().SessionSecret, Session{
 		MAC: "aa", UserIP: "1.1.1.1",
 		State: "s", Nonce: "n",
 		Exp: time.Now().Add(time.Minute).Unix(),
@@ -260,7 +260,7 @@ func TestHandlePortal_BlocksDeniedMAC(t *testing.T) {
 
 	// Simulate iKuai redirect and an existing cookie carrying this MAC.
 	rec := httptest.NewRecorder()
-	_ = writeSessionCookie(rec, app.cfg.SessionSecret, Session{
+	_ = writeSessionCookie(rec, app.conf().SessionSecret, Session{
 		MAC:    "aa:bb:cc:dd:ee:ff",
 		UserIP: "192.168.1.10",
 		State:  "s", Nonce: "n",
@@ -321,7 +321,7 @@ func TestIsLoopbackListen(t *testing.T) {
 }
 
 func TestIsSameOriginRequest(t *testing.T) {
-	app := &App{cfg: Config{PublicURL: "https://wifi.example.com"}}
+	app := newTestApp(Config{PublicURL: "https://wifi.example.com"})
 
 	cases := []struct {
 		name    string

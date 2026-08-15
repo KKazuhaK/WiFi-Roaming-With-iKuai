@@ -17,11 +17,11 @@ func mkSPAApp(t *testing.T, assets map[string]*spaAsset) *App {
 	spaLoaded = &spaBundle{assets: assets, built: true}
 	spaOnce.Do(func() {}) // Burn the Once so a later loadSPA cannot overwrite the fixture.
 	t.Cleanup(func() { spaLoaded = &spaBundle{assets: map[string]*spaAsset{}} })
-	return &App{cfg: Config{
+	return newTestApp(Config{
 		BrandName:  "Kazuha Hub",
 		BrandColor: "#2563eb",
 		PublicURL:  "https://wifi.test",
-	}}
+	})
 }
 
 func testDoc(body string) *spaAsset {

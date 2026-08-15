@@ -23,8 +23,8 @@ func TestSanitizeBrandColor(t *testing.T) {
 		// Invalid -> fallback.
 		{"red", fallback},
 		{"#xyz", fallback},
-		{"#12", fallback},     // Wrong length.
-		{"#12345", fallback},  // Wrong length.
+		{"#12", fallback},    // Wrong length.
+		{"#12345", fallback}, // Wrong length.
 		{"#123456789", fallback},
 		// Attack payloads.
 		{"red; } body { display: none } /*", fallback},

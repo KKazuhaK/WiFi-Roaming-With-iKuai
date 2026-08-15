@@ -93,8 +93,8 @@ func buildWebAuthURL(cfg Config, dev DeviceInfo, userUPN string, profile IKuaiAu
 	params.Set("user_ip", dev.IP)
 	params.Set("timestamp", timestamp)
 	params.Set("mac", dev.MAC)
-	params.Set("upload", upload)     // Upload speed limit; 0 means unlimited.
-	params.Set("download", download) // Download speed limit; 0 means unlimited.
+	params.Set("upload", upload)                             // Upload speed limit; 0 means unlimited.
+	params.Set("download", download)                         // Download speed limit; 0 means unlimited.
 	params.Set("timeout", fmt.Sprintf("%d", policy.Timeout)) // Minutes; 0 means never expires.
 	if policy.Comment != "" {
 		params.Set("comment", policy.Comment)

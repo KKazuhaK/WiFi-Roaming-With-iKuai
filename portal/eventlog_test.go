@@ -30,7 +30,7 @@ func newTestCSVResponseWriter() *testCSVResponseWriter {
 	return &testCSVResponseWriter{header: make(http.Header)}
 }
 
-func (w *testCSVResponseWriter) Header() http.Header       { return w.header }
+func (w *testCSVResponseWriter) Header() http.Header         { return w.header }
 func (w *testCSVResponseWriter) Write(b []byte) (int, error) { return w.body.Write(b) }
 func (w *testCSVResponseWriter) WriteHeader(code int)        { w.status = code }
 
@@ -286,7 +286,7 @@ func TestWriteEventsCSV_SanitizesFormulaInjection(t *testing.T) {
 		{
 			Time:    time.Unix(1700000000, 0),
 			Kind:    KindLogin,
-			Subject: "=BAD()",         // Attacker-controlled subject.
+			Subject: "=BAD()", // Attacker-controlled subject.
 			Result:  ResultSuccess,
 			Method:  MethodSSO,
 			MAC:     "aa:bb:cc:dd:ee:ff",
