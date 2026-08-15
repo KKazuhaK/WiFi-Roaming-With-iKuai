@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "useDefineForClassFields": true,
+    "skipLibCheck": true,
+    // vite/client declares the ambient modules for asset imports — without it
+    // `import '@/styles/card.css'` has no type and tsc -b fails the build.
+    "types": ["vite/client"],
+    "allowImportingTsExtensions": false,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "exactOptionalPropertyTypes": false,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@i18n/*": ["../i18n/*"]
+    }
+  },
+  "include": ["src"]
+}

@@ -8,12 +8,26 @@ secrets/
 
 # ===== Go 构建产物 =====
 /portal/portal
+# `go build ./...` 在 portal/ 下按模块名产出 wifi-portal。
+/portal/wifi-portal
 /portal/dist/
 *.exe
 *.test
 *.out
 coverage.out
 vendor/
+
+# ===== 前端构建产物 =====
+node_modules/
+# vite 把 bundle 直接写进 //go:embed 的目录 (portal/internal/web/web.go)。
+# 产物不进版本库, 只跟踪那个 .gitkeep 占位符 —— 它的存在让 `go:embed all:dist`
+# 在干净 clone 上也能找到非空目录, 从而 `go build ./...` 和只跑 go vet/go test
+# 的 CI 作业不必先构建前端。
+/portal/internal/web/dist/*
+!/portal/internal/web/dist/.gitkeep
+# tsc -b 的增量缓存, 每次构建重新生成。
+/portal/web-react/tsconfig.tsbuildinfo
+/portal/web-react/*.tsbuildinfo
 
 # ===== 本地 IDE / 编辑器 =====
 .idea/

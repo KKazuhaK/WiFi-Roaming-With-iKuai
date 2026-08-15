@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="__PORTAL_LANG__">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="robots" content="noindex, nofollow">
+  <!--
+    The Go handler replaces this marker with <title>, the brand colour custom
+    property and a <script type="application/json"> configuration block. A JSON
+    script is a data block, not executable code, so it does not need
+    script-src 'unsafe-inline' the way the old template's inline JS did.
+  -->
+  <!--PORTAL_HEAD-->
+  <link rel="preload" as="image" href="/static/logo+title-circle.png" media="(prefers-color-scheme: light)">
+  <link rel="preload" as="image" href="/static/logo+title-circle-darkmode.png" media="(prefers-color-scheme: dark)">
+  <style>
+    /*
+      Static first-paint shell. The captive-portal mini browser shows this the
+      moment the HTML lands, so the user never stares at a white rectangle while
+      the bundle downloads over a link that has not been unlocked yet. React
+      replaces #root's contents on mount; #boot is inside #root, so no explicit
+      teardown is needed.
+    */
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --text: #111827;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b0f19;
+        --surface: #111827;
+        --text: #f3f4f6;
+        --text-muted: #9ca3af;
+        --border: #1f2937;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; min-height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                   "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      min-height: 100vh;
+    }
+    #boot {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
+      padding: 32px 28px;
+      max-width: 420px;
+      width: 100%;
+    }
+    #boot .bar {
+      height: 14px;
+      border-radius: 7px;
+      background: var(--border);
+      opacity: 0.65;
+      animation: boot-pulse 1.4s ease-in-out infinite;
+    }
+    #boot .bar + .bar { margin-top: 12px; }
+    #boot .bar.logo { height: 64px; border-radius: 12px; margin-bottom: 24px; }
+    #boot .bar.w60 { width: 60%; margin-left: auto; margin-right: auto; }
+    #boot .bar.w80 { width: 80%; margin-left: auto; margin-right: auto; }
+    #boot .bar.tall { height: 44px; border-radius: 10px; margin-top: 24px; }
+    @keyframes boot-pulse {
+      0%, 100% { opacity: 0.35; }
+      50%      { opacity: 0.75; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #boot .bar { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="boot" role="status" aria-busy="true">
+      <div class="bar logo"></div>
+      <div class="bar w60"></div>
+      <div class="bar w80"></div>
+      <div class="bar tall"></div>
+      <div class="bar tall"></div>
+    </div>
+  </div>
+  <script type="module" src="/src/entries/portal.tsx"></script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="__PORTAL_LANG__">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <!-- Replaced by the Go handler; see the note in portal.html. -->
+  <!--PORTAL_HEAD-->
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --text: #111827;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b0f19;
+        --surface: #111827;
+        --text: #f3f4f6;
+        --text-muted: #9ca3af;
+        --border: #1f2937;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; min-height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                   "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    /* First-paint shell: header bar + stat card row + table block. Mirrors the
+       real layout closely enough that the mount is not a visual jump. */
+    #boot { padding: 0 0 32px; }
+    #boot .topbar {
+      height: 56px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 24px;
+    }
+    #boot .inner { max-width: 1280px; margin: 0 auto; padding: 0 24px; }
+    #boot .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    #boot .card {
+      height: 84px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+    #boot .table {
+      height: 360px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+    #boot .card, #boot .table {
+      animation: boot-pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes boot-pulse {
+      0%, 100% { opacity: 0.55; }
+      50%      { opacity: 0.9; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #boot .card, #boot .table { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="boot" role="status" aria-busy="true">
+      <div class="topbar"></div>
+      <div class="inner">
+        <div class="cards">
+          <div class="card"></div><div class="card"></div><div class="card"></div>
+          <div class="card"></div><div class="card"></div><div class="card"></div>
+          <div class="card"></div>
+        </div>
+        <div class="table"></div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/entries/admin.tsx"></script>
+</body>
+</html>

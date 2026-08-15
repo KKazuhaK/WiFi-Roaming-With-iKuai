@@ -1,0 +1,137 @@
+/*
+  Card shell for the three single-purpose pages: captive-portal login, the
+  admin SSO hand-off, and the error page.
+
+  These deliberately stay hand-written rather than becoming an antd Card. The
+  colour tokens are the same custom properties the static shell in portal.html
+  already defines, so the skeleton and the mounted app paint identically — an
+  antd Card would introduce a second, differently-derived palette and the mount
+  would show as a colour flash. The tokens also mirror --brand-color, which
+  ThemeProvider keeps in sync with the deployment's BRAND_COLOR.
+*/
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
+  padding: 32px 28px;
+  max-width: 420px;
+  width: 100%;
+}
+
+.card-logo {
+  display: block;
+  margin: 0 auto 24px;
+  max-width: 240px;
+  max-height: 90px;
+  width: auto;
+  height: auto;
+}
+
+.card-title {
+  font-size: 20px;
+  line-height: 1.4;
+  margin: 0 0 8px;
+  text-align: center;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.card-title.danger {
+  color: var(--danger, #dc2626);
+}
+
+.card-subtitle {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+  margin: 0 0 24px;
+  line-height: 1.5;
+}
+
+.card-hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0 0 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.card-footer {
+  margin-top: 32px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Stack of full-width actions. antd Button carries its own sizing, so this only
+   owns the rhythm between them. */
+.card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card-back {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 10px;
+  text-align: center;
+}
+
+.card-back:hover {
+  color: var(--brand-color);
+}
+
+.lang-switch {
+  text-align: center;
+  margin-top: 16px;
+  font-size: 12px;
+}
+
+.lang-switch button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0 8px;
+  font-size: inherit;
+  font-family: inherit;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.lang-switch button.active {
+  color: var(--brand-color);
+  font-weight: 600;
+}
+
+.lang-switch button:disabled {
+  cursor: default;
+}
+
+/* Inline validation text under an input. Kept as static layout rather than an
+   antd Alert: on a 4-inch screen inside a captive-portal mini browser an Alert's
+   padding pushes the primary button below the fold. */
+.field-error {
+  color: var(--danger, #dc2626);
+  font-size: 13px;
+  margin: 0 0 10px;
+  text-align: center;
+  min-height: 18px;
+}
+
+:root {
+  --danger: #dc2626;
+}
+
+:root[data-theme='dark'] {
+  --danger: #f87171;
+}
