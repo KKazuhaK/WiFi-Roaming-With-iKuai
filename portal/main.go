@@ -32,7 +32,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"html/template"
 	"io/fs"
 	"log"
 	"net"
@@ -46,9 +45,6 @@ import (
 	"syscall"
 	"time"
 )
-
-//go:embed templates/*.html
-var templateFS embed.FS
 
 //go:embed static
 var staticFS embed.FS
@@ -147,7 +143,6 @@ type App struct {
 	guestCodes    *GuestCodeStore
 	denylist      *DenylistStore
 	ikuaiPolicies *IKuaiPolicyStore
-	templates     *template.Template
 
 	// --- Rate limiting / abuse prevention ---
 	// Rule 1: /auth/start counts email failures with two windows and resets on successful callback.
@@ -362,14 +357,6 @@ func main() {
 		log.Fatalf("iKuai policy init failed: %v", err)
 	}
 
-	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"T":        T,
-		"jsonI18N": jsonI18N,
-	}).ParseFS(templateFS, "templates/*.html")
-	if err != nil {
-		log.Fatalf("template load failed: %v", err)
-	}
-
 	banHist, err := newBanHistory(paths.BanHistory)
 	if err != nil {
 		log.Fatalf("ban history init failed: %v", err)
@@ -390,7 +377,6 @@ func main() {
 		guestCodes:     guestStore,
 		denylist:       denylistStore,
 		ikuaiPolicies:  ikuaiPolicyStore,
-		templates:      tmpl,
 		authEmailFails: newFailCounter(cfg.AuthEmailWindowLong),
 		guestCodeFails: newFailCounter(cfg.GuestCodeMacWindow),
 		ipFails:        newFailCounter(cfg.IPFailsWindow),
@@ -437,6 +423,7 @@ func main() {
 	mux.HandleFunc("/auth/duo-callback", app.handleDuoCallback)
 	mux.HandleFunc("/auth/guest-code", app.handleGuestCode)
 	mux.HandleFunc("/admin", app.handleAdmin)
+	mux.HandleFunc("/admin/api/state", app.handleAdminState)
 	mux.HandleFunc("/admin/login", app.handleAdminLogin)
 	mux.HandleFunc("/admin/login/start", app.handleAdminLoginStart)
 	mux.HandleFunc("/admin/logout", app.handleAdminLogout)
@@ -459,6 +446,10 @@ func main() {
 	mux.HandleFunc("/admin/denylist/export.csv", app.handleDenylistExportCSV)
 	mux.HandleFunc("/admin/denylist/import", app.handleDenylistImportCSV)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+	// Content-hashed output of the Vite build. Separate from /static/, which
+	// holds hand-managed files (the brand logos) served without a hash and so
+	// without the year-long immutable caching /assets/ gets.
+	mux.HandleFunc("/assets/", app.handleAssets)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -510,8 +501,20 @@ func securityHeaders(h http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		// script-src has no 'unsafe-inline' since the move to a bundled frontend:
+		// every script is now a hashed file under /assets/, and the per-request
+		// configuration travels in a <script type="application/json"> data block,
+		// which the browser parses rather than executes and which script-src
+		// therefore does not gate.
+		//
+		// style-src keeps 'unsafe-inline'. antd 6 styles components through
+		// @ant-design/cssinjs, which injects <style> elements at runtime, and the
+		// two documents carry an inline sheet for the pre-mount skeleton. Removing
+		// it would need antd's static style extraction plus a nonce threaded
+		// through both documents — worth revisiting, but it is not free and the
+		// script-src tightening is where the real exposure was.
 		w.Header().Set("Content-Security-Policy",
-			"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data: https:; frame-ancestors 'none'")
+			"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
 		h.ServeHTTP(w, r)
 	})
 }
@@ -1224,6 +1227,35 @@ func (a *App) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	a.renderAdmin(w, r, sess)
 }
 
+// handleAdminState backs GET /admin/api/state — the panel's single read
+// endpoint. It is what the shell fetches on mount and what every mutation
+// re-fetches afterwards, so the table can never drift from the store.
+//
+// Answering the whole view in one response rather than one endpoint per section
+// is deliberate: the sections share derived counters (the dashboard's active-code
+// count is computed from the same slice the table renders), and splitting them
+// would mean either recomputing under separate locks or letting the header and
+// the table disagree by a request.
+func (a *App) handleAdminState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	// apiMode=true is required even though this is a GET. With it false, an
+	// expired admin cookie answers with a 302 to /admin/login, which fetch
+	// follows transparently — the panel would receive the login page's HTML with
+	// a 200 and try to parse it as state. apiMode makes it a 401
+	// {"error":"not_logged_in"}, which is what lib/api.ts watches for to send the
+	// operator back to SSO. The origin check apiMode also enables is a no-op
+	// here: requireAdmin skips it for GET and HEAD.
+	if _, ok := a.requireAdmin(w, r, true); !ok {
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, a.buildAdminData(pickLang(r)))
+}
+
 func (a *App) handleCodeCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
@@ -1250,9 +1282,9 @@ func (a *App) handleCodeCreate(w http.ResponseWriter, r *http.Request) {
 		MaxUses:     parseMaxUses(r.FormValue("max_uses")),
 		Note:        capLen(strings.TrimSpace(r.FormValue("note")), 256),
 	}
-		// User-provided codes are length-limited to avoid 1MB codes in events.jsonl.
-		// Enforce a 6-char minimum because tailN(code, 4) is used as the audit suffix; shorter codes
-		// would effectively expose the whole code. This matches batch generation limits.
+	// User-provided codes are length-limited to avoid 1MB codes in events.jsonl.
+	// Enforce a 6-char minimum because tailN(code, 4) is used as the audit suffix; shorter codes
+	// would effectively expose the whole code. This matches batch generation limits.
 	if userProvidedCode {
 		if len(gc.Code) > 64 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code_too_long"})
@@ -1271,8 +1303,8 @@ func (a *App) handleCodeCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "duplicate_code"})
 		return
 	}
-		// Audit logs never store full codes. The UI returns the code to the admin once at creation;
-		// long-term audit only needs a creation trace and last 4 chars for troubleshooting.
+	// Audit logs never store full codes. The UI returns the code to the admin once at creation;
+	// long-term audit only needs a creation trace and last 4 chars for troubleshooting.
 	suffix := tailN(gc.Code, 4)
 	detail := "add auto-gen code-suffix=" + suffix
 	if userProvidedCode {
@@ -1315,20 +1347,20 @@ func (a *App) handleCodeBatch(w http.ResponseWriter, r *http.Request) {
 	note := capLen(strings.TrimSpace(r.FormValue("note")), 256)
 	durationMin := parseDurationMin(r)
 	maxUses := parseMaxUses(r.FormValue("max_uses"))
-		// baseProbe only reuses parseExpiry. Each code gets its own CreatedAt so List ordering does
-		// not flicker because of identical timestamps.
+	// baseProbe only reuses parseExpiry. Each code gets its own CreatedAt so List ordering does
+	// not flicker because of identical timestamps.
 	baseProbe := &GuestCode{CreatedAt: time.Now()}
 	if err := parseExpiry(r, baseProbe, false); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-		// Collision cap: avoid infinite loops if admin chooses a tiny nearly-full code space.
+	// Collision cap: avoid infinite loops if admin chooses a tiny nearly-full code space.
 	maxAttempts := count * 50
 	if maxAttempts < 200 {
 		maxAttempts = 200
 	}
-		// Generate candidate codes first, then AddMany once. crypto/rand makes same-batch collisions
-		// rare, and AddMany avoids N saveLocked rewrites of guest-codes.json (H3).
+	// Generate candidate codes first, then AddMany once. crypto/rand makes same-batch collisions
+	// rare, and AddMany avoids N saveLocked rewrites of guest-codes.json (H3).
 	pending := make([]*GuestCode, 0, count)
 	pendingSet := make(map[string]struct{}, count)
 	for attempts := 0; len(pending) < count && attempts < maxAttempts; attempts++ {
@@ -1963,36 +1995,6 @@ func parseDurationMin(r *http.Request) int {
 
 // --- Rendering ---
 
-type pageData struct {
-	Lang               Lang
-	Brand              brandData
-	Message            string
-	NowYear            int
-	GuestEnabled       bool
-	AllowedDomainsHint string // Email input placeholder uses the first allowed domain.
-}
-
-type brandData struct {
-	Name    string
-	Color   string
-	LogoURL string
-	Initial string
-}
-
-func (a *App) makeBrand() brandData {
-	initial := "?"
-	for _, r := range a.cfg.BrandName {
-		initial = string(r)
-		break
-	}
-	return brandData{
-		Name:    a.cfg.BrandName,
-		Color:   a.cfg.BrandColor,
-		LogoURL: a.cfg.BrandLogoURL,
-		Initial: initial,
-	}
-}
-
 func (a *App) firstAllowedDomain() string {
 	if len(a.cfg.AllowedEmailDomains) > 0 {
 		return a.cfg.AllowedEmailDomains[0]
@@ -2000,101 +2002,100 @@ func (a *App) firstAllowedDomain() string {
 	return "example.com"
 }
 
+// The three card pages all come out of the same built document (portal.html).
+// They are variants of one small React entry, distinguished by the `page` field
+// in the injected config, so serving them from one bundle means a user who hits
+// an error after signing in re-uses the assets already in their cache instead of
+// downloading a second document's worth of JavaScript.
+
 func (a *App) renderLogin(w http.ResponseWriter, r *http.Request, lang Lang, dev DeviceInfo) {
-	data := pageData{
-		Lang:               lang,
-		Brand:              a.makeBrand(),
-		NowYear:            time.Now().Year(),
-		GuestEnabled:       a.cfg.IsAdminEnabled(),
-		AllowedDomainsHint: a.firstAllowedDomain(),
-	}
+	data := a.baseSPAData("login", lang)
+	data.GuestEnabled = a.cfg.IsAdminEnabled()
+	data.AllowedDomainsHint = a.firstAllowedDomain()
 	_ = dev // IP/MAC are no longer displayed, but handlePortal still verifies they exist.
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	if err := a.templates.ExecuteTemplate(w, "login.html", data); err != nil {
-		log.Printf("template render failed: %v", err)
-	}
+	a.renderSPA(w, r, "portal.html", data, http.StatusOK)
 }
 
 func (a *App) renderAdminLogin(w http.ResponseWriter, r *http.Request, lang Lang) {
-	data := pageData{
-		Lang:    lang,
-		Brand:   a.makeBrand(),
-		NowYear: time.Now().Year(),
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	if err := a.templates.ExecuteTemplate(w, "admin_login.html", data); err != nil {
-		log.Printf("admin login template render failed: %v", err)
-	}
+	a.renderSPA(w, r, "portal.html", a.baseSPAData("adminLogin", lang), http.StatusOK)
 }
 
 func (a *App) renderError(w http.ResponseWriter, r *http.Request, lang Lang, msg string, code int) {
-	data := pageData{
-		Lang:    lang,
-		Brand:   a.makeBrand(),
-		Message: msg,
-		NowYear: time.Now().Year(),
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(code)
-	if err := a.templates.ExecuteTemplate(w, "error.html", data); err != nil {
-		log.Printf("template render failed: %v", err)
-	}
+	data := a.baseSPAData("error", lang)
+	data.Message = msg
+	a.renderSPA(w, r, "portal.html", data, code)
 }
 
+// adminPageData is the payload of GET /admin/api/state. The JSON tags are the
+// wire contract with web-react/src/pages/admin — renaming a field here without
+// updating AdminState there breaks the panel silently, since a missing field
+// decodes as undefined rather than failing.
 type adminPageData struct {
-	Lang          Lang
-	Brand         brandData
-	AdminUPN      string
-	NowYear       int
-	Codes         []adminCodeRow
-	DeniedMACs    []adminDeniedMACRow
-	IKuaiPolicies []IKuaiPolicyRow
-	Total         int
-	Used          int
-	Unused        int
-	Expired       int
-	Dashboard     DashboardStats
+	Lang          Lang                `json:"lang"`
+	Codes         []adminCodeRow      `json:"codes"`
+	DeniedMACs    []adminDeniedMACRow `json:"deniedMacs"`
+	IKuaiPolicies []IKuaiPolicyRow    `json:"ikuaiPolicies"`
+	Total         int                 `json:"total"`
+	Used          int                 `json:"used"`
+	Unused        int                 `json:"unused"`
+	Expired       int                 `json:"expired"`
+	Dashboard     DashboardStats      `json:"dashboard"`
 }
 
 // DashboardStats backs the top summary cards. All fields are available in memory at render time.
 type DashboardStats struct {
-	LoginsToday      int
-	LoginsWeek       int
-	FailedRatePct    int // 0..100 failure percentage in the last 7 days.
-	FailedCount7d    int
-	ActiveGuestCodes int
-	BannedIPs        int
-	BannedMACs       int
+	LoginsToday      int `json:"loginsToday"`
+	LoginsWeek       int `json:"loginsWeek"`
+	FailedRatePct    int `json:"failedRatePct"` // 0..100 failure percentage in the last 7 days.
+	FailedCount7d    int `json:"failedCount7d"`
+	ActiveGuestCodes int `json:"activeGuestCodes"`
+	BannedIPs        int `json:"bannedIps"`
+	BannedMACs       int `json:"bannedMacs"`
 }
 
 type adminCodeRow struct {
-	Code           string
-	CreatedAt      string
-	ExpiresAt      string // Display format "2006-01-02 15:04".
-	ExpiresAtInput string // datetime-local input format "2006-01-02T15:04".
-	Duration       string
-	DurationMin    int
-	Status         string
-	UseCount       int
-	MaxUses        int // 0 means unlimited.
-	LastUsedAt     string
-	LastUsedMAC    string
-	LastUsedIP     string
-	Note           string
+	Code           string `json:"code"`
+	CreatedAt      string `json:"createdAt"`
+	ExpiresAt      string `json:"expiresAt"`      // Display format "2006-01-02 15:04".
+	ExpiresAtInput string `json:"expiresAtInput"` // datetime-local input format "2006-01-02T15:04".
+	Duration       string `json:"duration"`
+	DurationMin    int    `json:"durationMin"`
+	Status         string `json:"status"`
+	UseCount       int    `json:"useCount"`
+	MaxUses        int    `json:"maxUses"` // 0 means unlimited.
+	LastUsedAt     string `json:"lastUsedAt"`
+	LastUsedMAC    string `json:"lastUsedMac"`
+	LastUsedIP     string `json:"lastUsedIp"`
+	Note           string `json:"note"`
 }
 
 type adminDeniedMACRow struct {
-	MAC       string
-	Reason    string
-	CreatedAt string
-	CreatedBy string
+	MAC       string `json:"mac"`
+	Reason    string `json:"reason"`
+	CreatedAt string `json:"createdAt"`
+	CreatedBy string `json:"createdBy"`
 }
 
+// renderAdmin serves the admin shell. Everything the panel displays now arrives
+// from GET /admin/api/state (see buildAdminData): the page needs a refresh path
+// after every mutation anyway, and having the first paint and every subsequent
+// refresh go through one code path removes a whole class of "the table says one
+// thing, the server says another" bug that two rendering paths invite.
 func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSession) {
-	lang := pickLang(r)
+	data := a.baseSPAData("admin", pickLang(r))
+	data.AdminUPN = admin.UPN
+	a.renderSPA(w, r, "admin.html", data, http.StatusOK)
+}
+
+// buildAdminData assembles the full admin view: guest codes, denied MACs, the
+// iKuai policy table and the dashboard counters.
+//
+// Timestamps are pre-formatted here rather than shipped as RFC3339 for the
+// browser to render. The portal displays wall-clock times in the *server's* zone
+// — an operator reading the audit trail cares when the router saw an event, not
+// what a phone in another timezone would call that moment — and Intl in the
+// browser has no way to know that zone.
+func (a *App) buildAdminData(lang Lang) adminPageData {
 	raw := a.guestCodes.List()
 	total, used, unused, expired := a.guestCodes.Stats()
 	rows := make([]adminCodeRow, 0, len(raw))
@@ -2133,11 +2134,8 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 			CreatedBy: item.CreatedBy,
 		})
 	}
-	data := adminPageData{
+	return adminPageData{
 		Lang:          lang,
-		Brand:         a.makeBrand(),
-		AdminUPN:      admin.UPN,
-		NowYear:       time.Now().Year(),
 		Codes:         rows,
 		DeniedMACs:    deniedRows,
 		IKuaiPolicies: a.ikuaiPolicies.List(),
@@ -2146,11 +2144,6 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, admin AdminSes
 		Unused:        unused,
 		Expired:       expired,
 		Dashboard:     a.buildDashboard(raw),
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	if err := a.templates.ExecuteTemplate(w, "admin.html", data); err != nil {
-		log.Printf("admin template render failed: %v", err)
 	}
 }
 

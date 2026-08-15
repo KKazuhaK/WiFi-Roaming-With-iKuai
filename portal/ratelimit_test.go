@@ -12,7 +12,6 @@ package main
 
 import (
 	"fmt"
-	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -692,8 +691,11 @@ func uniqKey(i int) string {
 // --- helpers ---
 
 // mkTestApp builds a minimal usable *App for rate-limit and middleware-path tests.
-// It does not start gcLoop, connect OIDC, or write to disk. Templates and i18n use real files so
-// renderError does not nil-panic.
+// It does not start gcLoop, connect OIDC, or write to disk. i18n loads the real
+// files so renderError produces real strings; the SPA bundle it renders into is
+// whatever portal/internal/web/dist holds, which on a Node-less checkout is just
+// the .gitkeep placeholder — renderError then answers 500 with the "frontend
+// bundle not built" hint instead of panicking, which is what these tests need.
 func mkTestApp(t *testing.T) *App {
 	t.Helper()
 	loadTranslations()
@@ -722,17 +724,9 @@ func mkTestApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"T":        T,
-		"jsonI18N": jsonI18N,
-	}).ParseFS(templateFS, "templates/*.html")
-	if err != nil {
-		t.Fatal(err)
-	}
 	return &App{
 		cfg:            cfg,
 		denylist:       dl,
-		templates:      tmpl,
 		authEmailFails: newFailCounter(cfg.AuthEmailWindowLong),
 		guestCodeFails: newFailCounter(cfg.GuestCodeMacWindow),
 		ipFails:        newFailCounter(cfg.IPFailsWindow),

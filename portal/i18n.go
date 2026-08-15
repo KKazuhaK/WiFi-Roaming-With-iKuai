@@ -2,8 +2,9 @@ package main
 
 // i18n.go
 // Trilingual string table and language detection. Strings live in portal/i18n/<lang>.json,
-// are embedded into the binary at build time, and cached in a singleton map. Templates query via T,
-// and JS receives namespace subsets through jsonI18N.
+// are embedded into the binary at build time, and cached in a singleton map. Go code queries via T;
+// the React bundle imports the same JSON files directly (web-react/src/lib/i18n.ts) and reimplements
+// T's lookup and %s/%d substitution, so there is still exactly one copy of every string.
 //
 // Tradeoffs:
 //   - No type-safe struct: there are many fields, and admin already has around 150 strings.
@@ -16,7 +17,6 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"log"
 	"net/http"
 	"sort"
@@ -96,30 +96,6 @@ func T(lang Lang, key string, args ...any) string {
 		return fmt.Sprintf(s, args...)
 	}
 	return s
-}
-
-// jsonI18N is used by frontend JS. It returns a JSON object with every key=value whose key starts
-// with prefix, stripping the prefix to shorten keys. Injection:
-//   <script>window.__I18N = {{ jsonI18N .Lang "admin." }};</script>
-// Then JS reads __I18N["toast.added"] / __I18N["btn.delete"].
-// It returns template.JS instead of string so html/template does not escape already-valid JSON.
-func jsonI18N(lang Lang, prefix string) (template.JS, error) {
-	src := translations[lang]
-	if src == nil {
-		src = translations[LangEN]
-	}
-	sub := make(map[string]string, len(src))
-	for k, v := range src {
-		if !strings.HasPrefix(k, prefix) {
-			continue
-		}
-		sub[strings.TrimPrefix(k, prefix)] = v
-	}
-	data, err := json.Marshal(sub)
-	if err != nil {
-		return "", err
-	}
-	return template.JS(data), nil
 }
 
 // pickLang: query > Accept-Language > LangEN (fallback).
