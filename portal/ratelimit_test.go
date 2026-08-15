@@ -79,13 +79,20 @@ func TestFailCounter_OldEntriesIgnoredByCount(t *testing.T) {
 
 // --- ipBanList ---
 
+// The window here is milliseconds rather than the one millisecond it used to
+// be. Bans are recorded in the database now, so a write and a read have a round
+// trip between them: against a server on the far side of a socket that took
+// longer than the ban lasted, and the test failed claiming a just-issued ban was
+// not in effect. Two hundred milliseconds is still far too short to slow the
+// suite down and long enough to outlive a query.
 func TestIPBanList_AutoExpire(t *testing.T) {
+	const window = 200 * time.Millisecond
 	b := newIPBanList(testDB(t))
-	b.ban("1.1.1.1", time.Millisecond)
+	b.ban("1.1.1.1", window)
 	if !b.isBanned("1.1.1.1") {
 		t.Fatal("just banned, must be banned")
 	}
-	time.Sleep(5 * time.Millisecond)
+	time.Sleep(window + 50*time.Millisecond)
 	if b.isBanned("1.1.1.1") {
 		t.Fatal("after expiry, must not be banned")
 	}
