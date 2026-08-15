@@ -187,6 +187,34 @@ type LocalAdmin struct {
 	LockedUntil    *time.Time
 }
 
+// Certificate is a TLS certificate the portal serves for its own listener.
+//
+// Single-row by convention (Domain is the key, and the portal serves one), but
+// modelled as a table so a future multi-domain listener does not need a
+// migration. The private key is encrypted at rest with the same keyring that
+// protects the OIDC client secret — a certificate key in a database backup is
+// exactly the material this whole encryption layer exists for.
+type Certificate struct {
+	Domain string `gorm:"primaryKey;size:255"`
+	// Source is "acme" or "manual", which decides whether the renewal loop owns
+	// this certificate or leaves it alone.
+	Source string `gorm:"size:16"`
+	// CertPEM is the full chain, leaf first. Not secret, but stored alongside
+	// the key so the pair cannot be separated by a partial write.
+	CertPEM string `gorm:"type:text"`
+	// KeyPEM carries an enc:v1: AES-GCM blob.
+	KeyPEM    string `gorm:"type:text"`
+	NotBefore time.Time
+	NotAfter  time.Time `gorm:"index"`
+	UpdatedAt time.Time
+	// LastError records why the most recent issuance or renewal failed, so the
+	// TLS page can show it instead of an operator having to read the log.
+	LastError    string `gorm:"type:text"`
+	LastAttempt  *time.Time
+	ACMEAccount  string `gorm:"type:text"` // Encrypted registration key.
+	ACMEAccountU string `gorm:"size:255"`  // Account URL, not secret.
+}
+
 // AllModels is the AutoMigrate list. Order matters only for the foreign key
 // from GuestCodeUse to GuestCode.
 func AllModels() []any {
@@ -199,5 +227,6 @@ func AllModels() []any {
 		&Event{},
 		&BanHistory{},
 		&LocalAdmin{},
+		&Certificate{},
 	}
 }

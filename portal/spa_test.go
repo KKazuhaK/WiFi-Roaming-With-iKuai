@@ -326,3 +326,43 @@ func TestHandleAssetsHeadSendsNoBody(t *testing.T) {
 		t.Errorf("Content-Length = %q, want 2 (the brotli variant)", got)
 	}
 }
+
+// The favicon is generated rather than a file on disk, so the escaping is worth
+// asserting: the brand name reaches an SVG that reaches a data URI in an
+// attribute, which is three nested contexts.
+func TestFaviconLink(t *testing.T) {
+	generated := faviconLink(&Config{BrandName: "Kazuha Hub", BrandColor: "#2563eb"})
+	if !strings.HasPrefix(generated, `<link rel="icon" href="data:image/svg+xml,`) {
+		t.Fatalf("generated mark: %s", generated)
+	}
+	// Percent-encoded, so no raw angle bracket or quote can escape the attribute.
+	uri := strings.TrimSuffix(strings.TrimPrefix(generated, `<link rel="icon" href="`), `">`)
+	if strings.ContainsAny(uri, `<>"`) {
+		t.Fatalf("unescaped characters in the data URI: %s", uri)
+	}
+	if !strings.Contains(generated, "%232563eb") {
+		t.Fatalf("brand colour missing from the mark: %s", generated)
+	}
+
+	// A configured logo wins: an operator who uploaded one expects to see it.
+	withLogo := faviconLink(&Config{BrandLogoURL: "/static/logo.png", BrandName: "Kazuha Hub"})
+	if withLogo != `<link rel="icon" href="/static/logo.png">` {
+		t.Fatalf("logo link: %s", withLogo)
+	}
+
+	// A hostile brand name cannot break out of the attribute.
+	hostile := faviconLink(&Config{BrandName: `"><script>alert(1)</script>`, BrandColor: "#000"})
+	if strings.Contains(hostile, "<script") || strings.Contains(hostile, `"><`) {
+		t.Fatalf("escaping failed: %s", hostile)
+	}
+}
+
+func TestRenderSPAIncludesFavicon(t *testing.T) {
+	app := mkSPAApp(t, map[string]*spaAsset{"portal.html": testDoc(minimalDoc)})
+	rec := httptest.NewRecorder()
+	app.renderSPA(rec, httptest.NewRequest(http.MethodGet, "/login", nil),
+		"portal.html", app.baseSPAData("login", LangEN), http.StatusOK)
+	if !strings.Contains(rec.Body.String(), `rel="icon"`) {
+		t.Fatalf("no favicon link in the served document:\n%s", rec.Body.String())
+	}
+}

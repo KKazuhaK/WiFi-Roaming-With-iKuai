@@ -55,6 +55,17 @@ const SECTION_ORDER = [
   'eventlog',
 ]
 
+/**
+ * Sections with a page of their own.
+ *
+ * TLS has one because its settings are not values that take effect on save —
+ * they rebind sockets, and getting them wrong takes the console away. That page
+ * pairs them with the certificate, the connectivity check and the confirm
+ * button, none of which a generic key/value form can offer. Listing them twice
+ * would let an operator change the listen address from a form with none of that.
+ */
+const OWN_PAGE = new Set(['tls'])
+
 function sectionLabel(section: string): string {
   const key = `settings.section.${section}`
   const label = t(key)
@@ -194,7 +205,9 @@ export function SettingsSection({ refresh }: { refresh: () => void }) {
   const ordered = useMemo(() => {
     if (!sections) return []
     const known = SECTION_ORDER.filter((s) => sections.includes(s))
-    const extra = sections.filter((s) => !SECTION_ORDER.includes(s)).sort()
+    const extra = sections
+      .filter((s) => !SECTION_ORDER.includes(s) && !OWN_PAGE.has(s))
+      .sort()
     return [...known, ...extra]
   }, [sections])
 

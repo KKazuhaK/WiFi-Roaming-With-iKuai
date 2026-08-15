@@ -109,7 +109,11 @@ func (a *App) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	section := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/api/settings/"), "/")
+	// Trimmed without the trailing slash, then the separators: the index route is
+	// registered as the exact path "/admin/api/settings", which a prefix of
+	// ".../settings/" does not match, and the section name would then be the whole
+	// path.
+	section := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/api/settings"), "/")
 	if section == "" {
 		a.writeSettingsIndex(w)
 		return
@@ -216,6 +220,10 @@ func (a *App) saveSettingsSection(w http.ResponseWriter, r *http.Request, sectio
 	}
 	merged := a.settings.ApplySecretUpdates(section, stored, filtered)
 
+	// Captured before the write, so a TLS change that strands the operator has
+	// something to roll back to. See applyListenerChange.
+	prevCfg := a.conf()
+
 	if err := a.settings.Save(section, merged, updatedBy); err != nil {
 		log.Printf("admin settings: saving %s failed: %v", section, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "save_failed"})
@@ -247,6 +255,21 @@ func (a *App) saveSettingsSection(w http.ResponseWriter, r *http.Request, sectio
 		// Not an HTTP error: the values were saved, and reporting a 500 would
 		// have the operator believe their edit was lost and retype it.
 		resp["warning"] = reloadErr.Error()
+	}
+
+	// The TLS section is the one whose values decide where the portal listens, so
+	// saving it does more than swap a config struct — it rebinds sockets, and a
+	// change that could take the console away arms a rollback the operator has to
+	// confirm.
+	if section == secTLS {
+		armed, deadline, err := a.applyListenerChange(prevCfg, stored, updatedBy)
+		if err != nil {
+			resp["warning"] = err.Error()
+		}
+		if armed {
+			resp["pendingCommit"] = true
+			resp["commitDeadline"] = deadline
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

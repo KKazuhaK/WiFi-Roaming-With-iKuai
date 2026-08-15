@@ -21,6 +21,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -45,6 +46,7 @@ const (
 	secRateLimit   = "ratelimit"
 	secEventLog    = "eventlog"
 	secLocalAdmin  = "local_admin"
+	secTLS         = "tls"
 )
 
 // settingDef describes one database-backed setting.
@@ -145,6 +147,18 @@ var settingRegistry = []settingDef{
 	// password login the operator never asked for.
 	{Section: secLocalAdmin, Key: "enabled", Default: "false"},
 	{Section: secLocalAdmin, Key: "allowed_from"},
+
+	// --- TLS and the public listener ---
+	// No Env entries: TLS termination has always been the reverse proxy's job in
+	// this project, so there is nothing to import. "proxy" keeps every existing
+	// deployment behaving exactly as before after an upgrade.
+	{Section: secTLS, Key: "mode", Default: TLSModeProxy},
+	{Section: secTLS, Key: "domain"},
+	{Section: secTLS, Key: "listen_addr", Default: "0.0.0.0:443"},
+	{Section: secTLS, Key: "redirect_http", Default: "false"},
+	{Section: secTLS, Key: "acme_enabled", Default: "false"},
+	{Section: secTLS, Key: "acme_email"},
+	{Section: secTLS, Key: "acme_staging", Default: "false"},
 }
 
 // settingIndex is the registry keyed "section.key", built once at init.
@@ -266,6 +280,30 @@ func applyRuntimeSettings(cfg *Config, v settings.Values) {
 
 	cfg.LocalAdminEnabled = v.Bool(secLocalAdmin, "enabled", false)
 	cfg.LocalAdminAllowedFrom = v.String(secLocalAdmin, "allowed_from", "")
+
+	cfg.TLSMode = v.String(secTLS, "mode", def(secTLS, "mode"))
+	cfg.TLSListenAddr = v.String(secTLS, "listen_addr", def(secTLS, "listen_addr"))
+	cfg.TLSRedirectHTTP = v.Bool(secTLS, "redirect_http", false)
+	cfg.ACMEEnabled = v.Bool(secTLS, "acme_enabled", false)
+	cfg.ACMEEmail = v.String(secTLS, "acme_email", "")
+	cfg.ACMEStaging = v.Bool(secTLS, "acme_staging", false)
+	// Default the certificate hostname to the public URL's host. They are almost
+	// always the same, and two fields that must agree are two fields that will
+	// eventually disagree.
+	cfg.TLSDomain = v.String(secTLS, "domain", "")
+	if cfg.TLSDomain == "" {
+		cfg.TLSDomain = hostFromURL(cfg.PublicURL)
+	}
+}
+
+// hostFromURL extracts the hostname, tolerating a malformed value rather than
+// failing: PublicURL is validated elsewhere and this is a convenience default.
+func hostFromURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // ConfigProblem is a validation finding against a runtime configuration.
@@ -353,6 +391,30 @@ func validateRuntimeConfig(cfg *Config) []ConfigProblem {
 		problems = append(problems, ConfigProblem{
 			Section: secAuth, Key: "allowed_email_domains",
 			Message: "Duo is enabled but no email domains are allowed; every address would be sent to Duo for preauth",
+		})
+	}
+
+	// The TLS domain and the public URL have to name the same host. They are set
+	// in different places and it is easy to move the console onto HTTPS and leave
+	// the public URL behind, which breaks sign-in in a way that looks like an
+	// Entra problem: the redirect URI the portal sends still points at the old
+	// address, so the identity provider returns the user to a page that no longer
+	// answers. Not fatal — the console has to stay reachable to fix it.
+	if cfg.TLSMode == TLSModeStandalone && cfg.TLSDomain != "" && cfg.PublicURL != "" {
+		if host := hostFromURL(cfg.PublicURL); host != "" && !strings.EqualFold(host, cfg.TLSDomain) {
+			problems = append(problems, ConfigProblem{
+				Section: secTLS, Key: "domain",
+				Message: fmt.Sprintf(
+					"the portal serves TLS for %s but portal.public_url points at %s; "+
+						"sign-in redirects will return users to the wrong address",
+					cfg.TLSDomain, host),
+			})
+		}
+	}
+	if cfg.TLSMode == TLSModeStandalone && cfg.TLSDomain == "" {
+		problems = append(problems, ConfigProblem{
+			Section: secTLS, Key: "domain",
+			Message: "standalone TLS is on but no domain is set; no certificate can be issued or looked up",
 		})
 	}
 	return problems

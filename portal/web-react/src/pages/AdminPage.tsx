@@ -10,6 +10,7 @@ import { MacsSection } from './admin/MacsSection'
 import { RateLimitSection } from './admin/RateLimitSection'
 import { EventsSection } from './admin/EventsSection'
 import { SettingsSection } from './admin/SettingsSection'
+import { TLSSection } from './admin/TLSSection'
 import type { AdminState } from './admin/types'
 
 /**
@@ -65,6 +66,7 @@ export function AdminPage({ lang, onLang }: { lang: Lang; onLang: (l: Lang) => v
   // fetch and does not.
   function body() {
     if (view === 'settings') return <SettingsSection refresh={reload} />
+    if (view === 'tls') return <TLSSection />
     if (view === 'ratelimit') return <RateLimitSection active refresh={reload} />
     if (view === 'events') return <EventsSection active />
     if (!state) return <Skeleton active paragraph={{ rows: 8 }} />

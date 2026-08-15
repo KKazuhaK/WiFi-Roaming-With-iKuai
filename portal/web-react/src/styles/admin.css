@@ -126,6 +126,32 @@
   padding: 24px;
 }
 
+/* A radio label carrying an explanation under it. antd's own label is a single
+   inline run, so the hint needs its own line and a colour that does not compete
+   with the choice itself. */
+.tls-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  max-width: 620px;
+  margin: 2px 0 8px;
+  white-space: normal;
+}
+
+/* Proxy snippets are configuration files: they are read line by line, they must
+   not rewrap, and an operator copying one by hand needs the indentation intact. */
+.tls-snippet {
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+}
+
 @media (max-width: 640px) {
   .admin-header,
   .admin-content {

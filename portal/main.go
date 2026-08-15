@@ -86,14 +86,46 @@ func makeDataPaths(dataDir string) dataPaths {
 	}
 }
 
-// isSameOriginRequest verifies that a request comes from the same origin as cfg.PublicURL.
-// Prefer Origin, then fall back to Referer. Reject when both are missing; modern form POSTs normally
-// include Referer, so missing headers are usually curl or forged clients.
+// requestOrigin reconstructs the origin the client believes it is talking to.
+//
+// r.Host is what the browser put in the request line, so comparing Origin
+// against it is a true same-origin test — an attacker's page can set neither.
+// X-Forwarded-Proto is consulted only behind a trusted proxy, for the same
+// reason the client-IP code does: unauthenticated devices reach this portal
+// directly, and a header they can set must not decide anything.
+func (a *App) requestOrigin(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if a.conf().TrustProxy {
+		if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
+			scheme = strings.ToLower(strings.TrimSpace(strings.Split(p, ",")[0]))
+		}
+	}
+	return scheme + "://" + r.Host
+}
+
+// isSameOriginRequest verifies that a state-changing request came from a page
+// this portal served. Prefer Origin, then fall back to Referer. Reject when both
+// are missing; modern form POSTs normally include Referer, so missing headers
+// are usually curl or forged clients.
+//
+// Two origins are accepted: cfg.PublicURL, and the origin of the request itself.
+// The second is not a loosening — Origin matching Host is the canonical CSRF
+// test, and a cross-site page can forge neither. It is a correction. The portal
+// can now be reached at an address the operator changed from the console: switch
+// to standalone TLS and the console moves to https://domain, at which point a
+// PublicURL still naming the old plain-HTTP address would block every POST from
+// the new one — including the confirm button that keeps the change from rolling
+// back.
 func (a *App) isSameOriginRequest(r *http.Request) bool {
 	expected := strings.TrimRight(a.conf().PublicURL, "/")
+	self := a.requestOrigin(r)
 	if origin := r.Header.Get("Origin"); origin != "" {
 		// Origin is scheme+host[:port] without path, so compare directly.
-		return strings.TrimRight(origin, "/") == expected
+		got := strings.TrimRight(origin, "/")
+		return got == expected || got == self
 	}
 	if referer := r.Header.Get("Referer"); referer != "" {
 		ref, err := url.Parse(referer)
@@ -102,7 +134,7 @@ func (a *App) isSameOriginRequest(r *http.Request) bool {
 		}
 		// Reconstruct scheme://host[:port] before comparing.
 		got := ref.Scheme + "://" + ref.Host
-		return got == expected
+		return got == expected || got == self
 	}
 	return false
 }
@@ -168,6 +200,17 @@ type App struct {
 
 	db       *dbstore.DB
 	settings *settings.Store
+
+	// --- TLS ---
+	certs        *certStore
+	certProvider *certProvider
+	acme         *acmeManager
+	// listenerCommit guards a listen-address or TLS change against locking the
+	// operator out of the console they made it from.
+	listenerCommit *listenerCommit
+	// listeners owns the HTTPS listener and the plain listener's redirect, both
+	// of which change while the process runs.
+	listeners *listenerManager
 
 	guestCodes    *GuestCodeStore
 	denylist      *DenylistStore
@@ -399,6 +442,8 @@ func main() {
 
 	banHist := newBanHistory(db)
 
+	certs := newCertStore(db, keyring)
+
 	app := &App{
 		boot:       boot,
 		db:         db,
@@ -408,6 +453,14 @@ func main() {
 		ipBans:     newIPBanList(),
 		banHistory: banHist,
 		usedStates: newUsedStateSet(sessionTTL),
+
+		// TLS, built unconditionally even in proxy mode: the console has to be
+		// able to show the certificate page and switch modes without a restart,
+		// which it cannot do if these are nil until standalone is selected.
+		certs:          certs,
+		certProvider:   &certProvider{},
+		acme:           newACMEManager(db, certs, keyring),
+		listenerCommit: &listenerCommit{},
 	}
 
 	// Build the first runtime state. A failure here is NOT fatal, and that is
@@ -486,6 +539,8 @@ func main() {
 	// section name reaches the handler as a path segment.
 	mux.HandleFunc("/admin/api/settings/", app.handleAdminSettings)
 	mux.HandleFunc("/admin/api/settings", app.handleAdminSettings)
+	mux.HandleFunc("/admin/api/tls", app.handleAdminTLS)
+	mux.HandleFunc("/admin/api/tls/", app.handleAdminTLS)
 	mux.HandleFunc("/admin/login", app.handleAdminLogin)
 	// Break-glass password login. 404s unless an operator turned it on from the
 	// CLI, so a deployment that does not use it does not advertise it.
@@ -515,15 +570,40 @@ func main() {
 	// holds hand-managed files (the brand logos) served without a hash and so
 	// without the year-long immutable caching /assets/ gets.
 	mux.HandleFunc("/assets/", app.handleAssets)
+	// ACME HTTP-01 answers on the same port iKuai redirects captive clients to,
+	// so it shares the mux rather than running its own listener. Unauthenticated
+	// by necessity — Let's Encrypt arrives anonymous — and safe: it returns only
+	// a token this process just generated, and anything else 404s.
+	mux.HandleFunc("/.well-known/acme-challenge/", app.acme.handleChallenge)
 
+	// The plain listener's handler is installed once and never reassigned —
+	// http.Server reads that field without synchronisation on every request, and
+	// the HTTPS redirect is now something an operator can toggle from the console.
+	// The manager underneath it swaps an atomic pointer instead.
+	app.listeners = newListenerManager(app, mux)
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           securityHeaders(app.logRequests(mux)),
+		Handler:           securityHeaders(app.logRequests(app.listeners)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+
+	// In standalone mode the portal terminates TLS itself on a second listener.
+	// The plain-HTTP one above stays up regardless: iKuai redirects captive
+	// clients to it, and ACME answers its challenge there.
+	//
+	// A failure here is logged rather than fatal. The whole point of moving TLS
+	// into the console is that it can be fixed from the console, and exiting
+	// because 443 is busy would take away the page that says so.
+	if err := app.listeners.apply(cfg); err != nil {
+		log.Printf("tls: %v — the portal is serving plain HTTP only; fix this in Admin -> TLS", err)
+	}
+	// Started unconditionally: it no-ops unless standalone mode and ACME are both
+	// on, and starting it here means a portal switched into standalone mode at
+	// runtime renews without a restart.
+	go app.renewalLoop(context.Background())
 	log.Printf("Portal started, listening on %s, public URL: %s", cfg.ListenAddr, cfg.PublicURL)
 
 	// Graceful shutdown: catch SIGINT/SIGTERM, stop the server, flush banHistory, and close EventLog.
@@ -550,6 +630,7 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server shutdown: %v", err)
 	}
+	app.listeners.shutdown(shutdownCtx)
 	if err := banHist.shutdown(); err != nil {
 		log.Printf("ban history shutdown: %v", err)
 	}
@@ -2367,4 +2448,33 @@ func formatDurationMin(totalMin int, lang Lang) string {
 	hours := totalMin / 60
 	mins := totalMin % 60
 	return formatDuration(hours, mins)
+}
+
+// redirectToHTTPS sends plain-HTTP requests to the HTTPS listener, with two
+// exceptions that must never be redirected.
+//
+// The ACME challenge is one: Let's Encrypt fetches it over plain HTTP by
+// definition, and redirecting it to a port serving the certificate it is trying
+// to issue is a deadlock. /healthz is the other — a monitoring probe on the
+// loopback interface should not be forced through a hostname it may not resolve.
+func redirectToHTTPS(domain string, mux http.Handler, acme *acmeManager) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
+			acme.handleChallenge(w, r)
+			return
+		}
+		if r.URL.Path == "/healthz" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		host := domain
+		if host == "" {
+			host = r.Host
+		}
+		target := "https://" + host + r.URL.RequestURI()
+		// 302 rather than 301: a permanent redirect is cached by browsers
+		// indefinitely, and an operator who turns this on by mistake would have
+		// no way to reach the plain-HTTP console again on the devices that saw it.
+		http.Redirect(w, r, target, http.StatusFound)
+	})
 }

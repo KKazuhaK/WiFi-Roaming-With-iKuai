@@ -97,6 +97,29 @@ type Config struct {
 	// LocalAdminAllowedFrom optionally restricts the login endpoint to a list of
 	// CIDRs. Empty means no restriction.
 	LocalAdminAllowedFrom string
+
+	// --- TLS and the public listener ---
+	// TLSMode is "proxy" (something in front terminates TLS, the historical and
+	// still-default arrangement) or "standalone" (the portal binds 443 itself).
+	TLSMode string
+	// TLSDomain is the hostname the certificate is issued for. Derived from
+	// PublicURL when unset, because they are almost always the same and asking
+	// twice invites them to disagree.
+	TLSDomain string
+	// TLSListenAddr is where the HTTPS listener binds in standalone mode.
+	TLSListenAddr string
+	// TLSRedirectHTTP sends plain HTTP to HTTPS. Off by default in standalone
+	// mode because port 80 is also where iKuai sends captive clients and where
+	// ACME answers its challenge; an operator turns it on once they know the
+	// rest works.
+	TLSRedirectHTTP bool
+
+	ACMEEnabled bool
+	ACMEEmail   string
+	// ACMEStaging points at Let's Encrypt's staging directory: untrusted
+	// certificates, generous rate limits. The place to debug a failing challenge
+	// without burning five real orders a week.
+	ACMEStaging bool
 }
 
 // BootstrapConfig is the part of the configuration that has to exist before the

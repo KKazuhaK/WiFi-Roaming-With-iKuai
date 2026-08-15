@@ -33,6 +33,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -319,6 +320,7 @@ func (a *App) renderSPA(w http.ResponseWriter, r *http.Request, doc string, data
 	head.WriteString(`<style>:root{--brand-color:`)
 	head.WriteString(html.EscapeString(a.conf().BrandColor))
 	head.WriteString(`}</style>`)
+	head.WriteString(faviconLink(a.conf()))
 	head.WriteString(`<script type="application/json" id="` + cfgElementID + `">`)
 	head.Write(cfg)
 	head.WriteString(`</script>`)
@@ -340,6 +342,29 @@ func (a *App) renderSPA(w http.ResponseWriter, r *http.Request, doc string, data
 	if _, err := w.Write(body); err != nil {
 		log.Printf("spa: write %s failed: %v", r.URL.Path, err)
 	}
+}
+
+// faviconLink returns the <link rel="icon"> for the branded pages.
+//
+// The operator's logo when they have configured one; otherwise a generated mark
+// carrying the brand initial on the brand colour. Both beat the alternative,
+// which is a request for /favicon.ico that this portal answers with a 404 on
+// every page load — and in a captive-portal mini browser the tab icon is often
+// the only chrome the user sees, so a branded one is worth the two hundred bytes.
+func faviconLink(cfg *Config) string {
+	if cfg.BrandLogoURL != "" {
+		return `<link rel="icon" href="` + html.EscapeString(cfg.BrandLogoURL) + `">`
+	}
+	// Inline SVG rather than a file: it follows the brand settings without an
+	// asset to regenerate, and it is small enough that a data URI costs less than
+	// the request it replaces.
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
+		`<rect width="64" height="64" rx="14" fill="` + cfg.BrandColor + `"/>` +
+		`<text x="32" y="44" font-size="38" font-family="system-ui,sans-serif" ` +
+		`font-weight="600" fill="#fff" text-anchor="middle">` +
+		html.EscapeString(brandInitial(cfg.BrandName)) + `</text></svg>`
+	return `<link rel="icon" href="data:image/svg+xml,` +
+		html.EscapeString(url.PathEscape(svg)) + `">`
 }
 
 // spaTitle picks the <title> for a page. Kept server-side so the tab is labelled

@@ -12,6 +12,7 @@ package main
 // These tests do not hit OIDC or Duo; clients are nil to use fallback branches.
 
 import (
+	"crypto/tls"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -346,6 +347,8 @@ func TestIsSameOriginRequest(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r, _ := http.NewRequest("POST", "/admin/codes/create", nil)
+			// Host stays empty here so these cases test the PublicURL comparison
+			// alone; the request-origin path has its own test below.
 			if c.origin != "" {
 				r.Header.Set("Origin", c.origin)
 			}
@@ -356,6 +359,59 @@ func TestIsSameOriginRequest(t *testing.T) {
 				t.Errorf("origin=%q referer=%q → %v, want %v", c.origin, c.referer, got, c.want)
 			}
 		})
+	}
+}
+
+// The console can be reached at an address the operator changed from the console
+// itself — switching to standalone TLS moves it to https://domain — so a request
+// whose Origin matches its own Host has to be accepted even when PublicURL still
+// names the old address. Origin matching Host is the canonical same-origin test:
+// a cross-site page can forge neither header.
+func TestIsSameOriginRequestAcceptsItsOwnOrigin(t *testing.T) {
+	app := newTestApp(Config{PublicURL: "http://127.0.0.1:28080"})
+
+	cases := []struct {
+		name   string
+		host   string
+		tls    bool
+		origin string
+		want   bool
+	}{
+		{"the console's new HTTPS address", "portal.example.com", true, "https://portal.example.com", true},
+		{"a non-default HTTPS port", "portal.example.com:8443", true, "https://portal.example.com:8443", true},
+		{"the old plain address still works", "127.0.0.1:28080", false, "http://127.0.0.1:28080", true},
+		{"a foreign origin on the new address", "portal.example.com", true, "https://evil.example", false},
+		{"the right host but the wrong scheme", "portal.example.com", true, "http://portal.example.com", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/admin/api/tls/confirm", nil)
+			r.Host = c.host
+			if c.tls {
+				r.TLS = &tls.ConnectionState{}
+			}
+			r.Header.Set("Origin", c.origin)
+			if got := app.isSameOriginRequest(r); got != c.want {
+				t.Errorf("host=%q tls=%v origin=%q → %v, want %v", c.host, c.tls, c.origin, got, c.want)
+			}
+		})
+	}
+}
+
+// X-Forwarded-Proto decides the scheme only behind a trusted proxy. Devices on
+// the guest network reach this portal directly and can set any header they like.
+func TestRequestOriginForwardedProto(t *testing.T) {
+	r := httptest.NewRequest("POST", "/admin/api/tls/confirm", nil)
+	r.Host = "portal.example.com"
+	r.Header.Set("X-Forwarded-Proto", "https")
+
+	untrusted := newTestApp(Config{TrustProxy: false})
+	if got := untrusted.requestOrigin(r); got != "http://portal.example.com" {
+		t.Errorf("untrusted: %q", got)
+	}
+	trusted := newTestApp(Config{TrustProxy: true})
+	if got := trusted.requestOrigin(r); got != "https://portal.example.com" {
+		t.Errorf("trusted: %q", got)
 	}
 }
 

@@ -8,6 +8,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   SafetyOutlined,
+  LockOutlined,
   SettingOutlined,
   StopOutlined,
   ThunderboltOutlined,
@@ -25,6 +26,7 @@ export type AdminView =
   | 'macs'
   | 'ratelimit'
   | 'events'
+  | 'tls'
   | 'settings'
 
 export const ADMIN_VIEWS: AdminView[] = [
@@ -34,6 +36,7 @@ export const ADMIN_VIEWS: AdminView[] = [
   'macs',
   'ratelimit',
   'events',
+  'tls',
   'settings',
 ]
 
@@ -51,7 +54,7 @@ const GROUPS: { labelKey: string; items: AdminView[] }[] = [
   { labelKey: 'nav.section.overview', items: ['dashboard'] },
   { labelKey: 'nav.section.access', items: ['codes', 'policy'] },
   { labelKey: 'nav.section.security', items: ['macs', 'ratelimit', 'events'] },
-  { labelKey: 'nav.section.system', items: ['settings'] },
+  { labelKey: 'nav.section.system', items: ['tls', 'settings'] },
 ]
 
 const ICONS: Record<AdminView, ReactNode> = {
@@ -61,6 +64,7 @@ const ICONS: Record<AdminView, ReactNode> = {
   macs: <StopOutlined />,
   ratelimit: <SafetyOutlined />,
   events: <AuditOutlined />,
+  tls: <LockOutlined />,
   settings: <SettingOutlined />,
 }
 
