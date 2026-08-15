@@ -12,8 +12,6 @@ package main
 import (
 	"bytes"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +33,7 @@ func (w *testCSVResponseWriter) Write(b []byte) (int, error) { return w.body.Wri
 func (w *testCSVResponseWriter) WriteHeader(code int)        { w.status = code }
 
 func TestEventLog_AppendAndQuery(t *testing.T) {
-	e, _ := newEventLog("", time.Hour)
+	e := newEventLog(testDB(t), time.Hour)
 	now := time.Now()
 	e.Append(Event{Time: now, Kind: KindLogin, Subject: "a", Result: ResultSuccess, Method: MethodSSO})
 	e.Append(Event{Time: now.Add(time.Second), Kind: KindLogin, Subject: "b", Result: ResultDenied, Method: MethodSSO})
@@ -51,7 +49,7 @@ func TestEventLog_AppendAndQuery(t *testing.T) {
 }
 
 func TestEventLog_QueryFilters(t *testing.T) {
-	e, _ := newEventLog("", time.Hour)
+	e := newEventLog(testDB(t), time.Hour)
 	now := time.Now()
 	e.Append(Event{Time: now, Kind: KindLogin, Subject: "alice@x", Result: ResultSuccess, Method: MethodSSO})
 	e.Append(Event{Time: now, Kind: KindLogin, Subject: "bob@x", Result: ResultDenied, Method: MethodDuo})
@@ -79,7 +77,7 @@ func TestEventLog_QueryFilters(t *testing.T) {
 }
 
 func TestEventLog_QueryTimeRange(t *testing.T) {
-	e, _ := newEventLog("", time.Hour)
+	e := newEventLog(testDB(t), time.Hour)
 	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 5; i++ {
 		e.Append(Event{Time: t0.Add(time.Duration(i) * time.Hour), Kind: KindLogin, Subject: "u"})
@@ -94,7 +92,7 @@ func TestEventLog_QueryTimeRange(t *testing.T) {
 }
 
 func TestEventLog_Count(t *testing.T) {
-	e, _ := newEventLog("", time.Hour)
+	e := newEventLog(testDB(t), time.Hour)
 	for i := 0; i < 10; i++ {
 		e.Append(Event{Kind: KindLogin, Result: ResultSuccess})
 	}
@@ -110,7 +108,7 @@ func TestEventLog_Count(t *testing.T) {
 }
 
 func TestEventLog_PruneByRetention(t *testing.T) {
-	e, _ := newEventLog("", time.Hour)
+	e := newEventLog(testDB(t), time.Hour)
 	now := time.Now()
 	e.Append(Event{Time: now.Add(-2 * time.Hour), Kind: KindLogin, Subject: "old"})
 	e.Append(Event{Time: now.Add(-30 * time.Minute), Kind: KindLogin, Subject: "fresh"})
@@ -129,7 +127,7 @@ func TestEventLog_PruneByRetention(t *testing.T) {
 }
 
 func TestEventLog_PruneNoOpWithoutRetention(t *testing.T) {
-	e, _ := newEventLog("", 0) // retention=0 means no pruning.
+	e := newEventLog(testDB(t), 0) // retention=0 means no pruning.
 	e.Append(Event{Time: time.Now().Add(-1000 * time.Hour), Kind: KindLogin})
 	if removed := e.Prune(); removed != 0 {
 		t.Errorf("Prune with retention=0 removed %d, want 0", removed)
@@ -138,91 +136,79 @@ func TestEventLog_PruneNoOpWithoutRetention(t *testing.T) {
 
 // TestEventLog_PersistRoundTrip ensures JSONL write and restart load are consistent.
 // Audit logs must not lose recorded events across restart.
+//
+// "Restart" now means a second EventLog over the same database rather than a
+// reopened JSONL file. The file-permission test that sat here checked
+// events.jsonl was 0600 because it holds UPNs, IPs and MACs; that file is gone,
+// and the equivalent control is the database's own access policy — for the
+// default SQLite file, the data directory's mode, which ensureDataDirWritable
+// already asserts.
 func TestEventLog_PersistRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "events.jsonl")
+	db := testDB(t)
 
-	{
-		e, err := newEventLog(path, time.Hour)
-		if err != nil {
-			t.Fatal(err)
-		}
-		e.Append(Event{Kind: KindLogin, Subject: "alice", Result: ResultSuccess, Method: MethodSSO,
-			MAC: "aa:bb", IP: "1.1.1.1", Detail: "ok"})
-		e.Append(Event{Kind: KindAdminAction, Subject: "admin@x", Result: ResultSuccess, Method: MethodAdmin,
-			Detail: "ban mac=xx"})
+	first := newEventLog(db, time.Hour)
+	first.Append(Event{Kind: KindLogin, Subject: "alice", Result: ResultSuccess, Method: MethodSSO,
+		MAC: "aa:bb", IP: "1.1.1.1", Detail: "ok"})
+	first.Append(Event{Kind: KindAdminAction, Subject: "admin@x", Result: ResultSuccess, Method: MethodAdmin,
+		Detail: "ban mac=xx"})
+
+	second := newEventLog(db, time.Hour)
+	got := second.Query(EventQueryFilter{})
+	if len(got) != 2 {
+		t.Fatalf("reload count = %d, want 2", len(got))
 	}
-	{
-		e2, err := newEventLog(path, time.Hour)
-		if err != nil {
-			t.Fatalf("reload: %v", err)
+	// Every field has to survive; the audit trail is the point.
+	var login *Event
+	for i := range got {
+		if got[i].Kind == KindLogin {
+			login = &got[i]
 		}
-		got := e2.Query(EventQueryFilter{})
-		if len(got) != 2 {
-			t.Fatalf("reload count = %d, want 2", len(got))
-		}
+	}
+	if login == nil {
+		t.Fatal("the login event did not come back")
+	}
+	if login.Subject != "alice" || login.MAC != "aa:bb" || login.IP != "1.1.1.1" || login.Detail != "ok" {
+		t.Errorf("round trip lost fields: %+v", *login)
 	}
 }
 
-func TestEventLog_PersistFileMode(t *testing.T) {
-	// events.jsonl contains UPN/IP/MAC, so file mode is 0600.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "events.jsonl")
-	e, err := newEventLog(path, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.Append(Event{Kind: KindLogin, Subject: "u"})
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		t.Errorf("events.jsonl mode = %o, want no group/other", info.Mode().Perm())
-	}
-}
+// The in-memory cap this used to assert is gone with the in-memory slice: the
+// original store kept every event in RAM and needed maxEventsInMemory to stop
+// attack traffic from OOMing the process. Retention is now the only bound, and
+// it is enforced by Prune against the table.
+func TestEventLog_RetentionPrunesOldRows(t *testing.T) {
+	db := testDB(t)
+	e := newEventLog(db, time.Hour)
 
-// TestEventLog_MaxInMemoryCap is the H3 regression: memory events must not grow without bound.
-// Attack traffic plus a 7-day retention could otherwise accumulate millions of events and OOM.
-func TestEventLog_MaxInMemoryCap(t *testing.T) {
-	e, _ := newEventLog("", 0)
-	for i := 0; i < maxEventsInMemory+5000; i++ {
-		e.Append(Event{Kind: KindLogin, Subject: "u"})
-	}
-	got := e.Query(EventQueryFilter{Limit: 0})
-	if len(got) > maxEventsInMemory {
-		t.Errorf("in-memory events overflowed cap: %d > %d", len(got), maxEventsInMemory)
-	}
-}
+	e.Append(Event{Time: time.Now().Add(-3 * time.Hour), Kind: KindLogin, Subject: "old"})
+	e.Append(Event{Time: time.Now().Add(-10 * time.Minute), Kind: KindLogin, Subject: "recent"})
 
-func TestEventLog_LoadSkipsBrokenLines(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "events.jsonl")
-	// Write mixed JSONL: valid + empty + broken + valid.
-	content := `{"time":"2026-05-08T00:00:00Z","kind":"login","subject":"a","result":"success"}
-this-is-not-json
-{"time":"2026-05-08T00:00:01Z","kind":"login","subject":"b","result":"success"}
-
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	e, err := newEventLog(path, 365*24*time.Hour)
-	if err != nil {
-		t.Fatalf("load: %v", err)
+	if n := e.Prune(); n != 1 {
+		t.Errorf("Prune removed %d, want 1", n)
 	}
 	got := e.Query(EventQueryFilter{})
-	if len(got) != 2 {
-		t.Errorf("loaded %d events, want 2 (broken line should be skipped, not fatal)", len(got))
+	if len(got) != 1 || got[0].Subject != "recent" {
+		t.Errorf("after prune: %+v, want only the recent event", got)
+	}
+
+	// Retention of zero means keep everything, which is what an operator who
+	// wants an unbounded audit trail configures.
+	noPrune := newEventLog(db, 0)
+	noPrune.Append(Event{Time: time.Now().Add(-9000 * time.Hour), Kind: KindLogin, Subject: "ancient"})
+	if n := noPrune.Prune(); n != 0 {
+		t.Errorf("Prune with retention=0 removed %d rows, want 0", n)
 	}
 }
+
+// Skipping malformed JSONL lines is now the legacy importer's job, and
+// TestImportAdoptsExistingInstallation covers it there.
 
 // --- logLogin / logAdminAction forwarding ---
 
 func TestLogLogin_PreservesFields(t *testing.T) {
 	app := &App{
 		eventLog: func() *EventLog {
-			e, _ := newEventLog("", time.Hour)
+			e := newEventLog(testDB(t), time.Hour)
 			return e
 		}(),
 	}
@@ -313,7 +299,7 @@ func TestWriteEventsCSV_SanitizesFormulaInjection(t *testing.T) {
 func TestLogLogin_NoFullCodeInDetail(t *testing.T) {
 	app := &App{
 		eventLog: func() *EventLog {
-			e, _ := newEventLog("", time.Hour)
+			e := newEventLog(testDB(t), time.Hour)
 			return e
 		}(),
 	}

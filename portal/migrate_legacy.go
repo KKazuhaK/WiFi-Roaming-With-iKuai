@@ -65,20 +65,11 @@ func importLegacyState(db *dbstore.DB, store *settings.Store, boot BootstrapConf
 			"Configure Entra SSO and the iKuai app key in Admin -> Settings.")
 	}
 
-	// The five JSON state files are NOT imported here yet, and that omission is
-	// deliberate rather than unfinished business.
-	//
-	// importLegacyStateFiles renames each file to *.migrated once its contents
-	// are in the database. The guest-code, denylist, policy, ban-history and
-	// event stores still read those files, so running it now would move the data
-	// somewhere nothing reads it from and leave the portal showing an empty
-	// guest-code table after an upgrade — verified in an upgrade rehearsal,
-	// which is exactly what it was for.
-	//
-	// The two halves have to land together: the state import runs from the same
-	// change that switches those stores to the database. The code and its tests
-	// are kept here so that change is a wiring change, not a rewrite.
-	_ = boot
+	// The state files come next, now that the stores read from these tables.
+	// Order matters: settings first, because a failure there aborts the import
+	// and leaves the files untouched for a retry, whereas a state file is
+	// renamed only after its own rows are committed.
+	importLegacyStateFiles(db, makeDataPaths(boot.DataDir))
 	return nil
 }
 
@@ -151,9 +142,9 @@ type legacyEvent struct {
 
 // importLegacyStateFiles moves the five state files into their tables.
 //
-// Not yet called from importLegacyState — see the note there. It is complete and
-// tested; what is missing is the store layer reading from these tables instead
-// of from the files this function renames away.
+// Each file is renamed to *.migrated only after its rows are committed, so a
+// failure part-way leaves the remaining files in place and the next start
+// retries them.
 func importLegacyStateFiles(db *dbstore.DB, paths dataPaths) {
 	importGuestCodes(db, paths.GuestCodes)
 	importDenylist(db, paths.Denylist)

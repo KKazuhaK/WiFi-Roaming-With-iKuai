@@ -11,10 +11,8 @@ package main
 //   - usedStateSet TTL expiry
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -126,10 +124,7 @@ func TestIPBanList_UnbanReturnsWhetherWasBanned(t *testing.T) {
 // --- banHistory ---
 
 func TestBanHistory_IncrementCounts(t *testing.T) {
-	bh, err := newBanHistory("") // Memory mode, no disk writes.
-	if err != nil {
-		t.Fatal(err)
-	}
+	bh := newBanHistory(testDB(t))
 	if bh.increment("ip-a") != 1 {
 		t.Error("first increment must return 1")
 	}
@@ -145,7 +140,7 @@ func TestBanHistory_IncrementCounts(t *testing.T) {
 }
 
 func TestBanHistory_ResetClearsOnlyTarget(t *testing.T) {
-	bh, _ := newBanHistory("")
+	bh := newBanHistory(testDB(t))
 	bh.increment("a")
 	bh.increment("a")
 	bh.increment("b")
@@ -611,33 +606,38 @@ func TestClientIP_TrustProxyFalseIgnoresHeaders(t *testing.T) {
 	}
 }
 
-// TestBanHistory_ShutdownIsSafeConcurrentlyAndIdempotent: multiple goroutines calling shutdown()
-// must not panic with close-of-closed-channel. sync.Once fixes the old select+close TOCTOU race.
-func TestBanHistory_ShutdownIsSafeConcurrentlyAndIdempotent(t *testing.T) {
-	dir := t.TempDir()
-	bh, err := newBanHistory(filepath.Join(dir, "ratelimit-state.json"))
-	if err != nil {
-		t.Fatalf("newBanHistory: %v", err)
-	}
-	bh.increment("1.1.1.1") // Produce dirty state so shutdown takes the flush branch.
+// The concurrent-shutdown test that lived here guarded a close-of-closed-channel
+// panic in the background flusher. That flusher is gone: every increment is now
+// a single atomic UPSERT, because a counter batched in per-process memory
+// reaches the permanent-escalation threshold at the wrong attempt count once a
+// second instance exists — or never reaches it at all.
+//
+// What replaces it is the property the flusher was there to provide: a count
+// survives, and two instances sharing a database agree on it.
+func TestBanHistory_IncrementsAreSharedAndDurable(t *testing.T) {
+	db := testDB(t)
 
-	// Trigger N concurrent shutdowns. Any panic would crash the process before t.Fatal runs.
-	const N = 20
-	done := make(chan error, N)
-	for i := 0; i < N; i++ {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					done <- fmt.Errorf("panic: %v", r)
-				}
-			}()
-			done <- bh.shutdown()
-		}()
+	first := newBanHistory(db)
+	if got := first.increment("1.1.1.1"); got != 1 {
+		t.Fatalf("first increment = %d, want 1", got)
 	}
-	for i := 0; i < N; i++ {
-		if err := <-done; err != nil {
-			t.Errorf("shutdown #%d: %v", i, err)
-		}
+
+	// A second instance over the same database continues the same count rather
+	// than starting its own.
+	second := newBanHistory(db)
+	if got := second.increment("1.1.1.1"); got != 2 {
+		t.Errorf("a second instance restarted the counter: got %d, want 2", got)
+	}
+	if got := first.get("1.1.1.1"); got != 2 {
+		t.Errorf("the first instance did not observe the second's increment: %d", got)
+	}
+
+	// shutdown is retained for the caller's lifecycle and must stay a safe no-op.
+	if err := first.shutdown(); err != nil {
+		t.Errorf("shutdown: %v", err)
+	}
+	if err := first.shutdown(); err != nil {
+		t.Errorf("second shutdown: %v", err)
 	}
 }
 
@@ -716,14 +716,8 @@ func mkTestApp(t *testing.T) *App {
 		AuthProceedTTL:       5 * time.Minute,
 		TrustProxy:           true,
 	}
-	bh, err := newBanHistory("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dl, err := newDenylistStore("")
-	if err != nil {
-		t.Fatal(err)
-	}
+	bh := newBanHistory(testDB(t))
+	dl := newDenylistStore(testDB(t))
 	app := &App{
 		denylist:       dl,
 		authEmailFails: newFailCounter(cfg.AuthEmailWindowLong),

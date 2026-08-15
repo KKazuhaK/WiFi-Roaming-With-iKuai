@@ -9,8 +9,6 @@ package main
 //   - L1 regression: createdBy is not overwritten by external input.
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -53,7 +51,7 @@ func TestIsNormalizedMAC(t *testing.T) {
 }
 
 func TestDenylistStore_AddRejectsInvalidMAC(t *testing.T) {
-	s, _ := newDenylistStore("")
+	s := newTestDenylistStore(t)
 	if _, _, err := s.AddMAC("not-a-mac", "reason", "admin@x"); err == nil {
 		t.Error("invalid MAC must error")
 	}
@@ -63,7 +61,7 @@ func TestDenylistStore_AddRejectsInvalidMAC(t *testing.T) {
 }
 
 func TestDenylistStore_AddNormalizes(t *testing.T) {
-	s, _ := newDenylistStore("")
+	s := newTestDenylistStore(t)
 	item, created, err := s.AddMAC("AA-BB-CC-DD-EE-FF", "spam", "admin")
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +79,7 @@ func TestDenylistStore_AddNormalizes(t *testing.T) {
 }
 
 func TestDenylistStore_AddDuplicateNoOp(t *testing.T) {
-	s, _ := newDenylistStore("")
+	s := newTestDenylistStore(t)
 	s.AddMAC("aa:bb:cc:dd:ee:ff", "first", "alice")
 	item, created, err := s.AddMAC("AA:BB:CC:DD:EE:FF", "second", "bob")
 	if err != nil {
@@ -97,7 +95,7 @@ func TestDenylistStore_AddDuplicateNoOp(t *testing.T) {
 }
 
 func TestDenylistStore_Delete(t *testing.T) {
-	s, _ := newDenylistStore("")
+	s := newTestDenylistStore(t)
 	s.AddMAC("aa:bb:cc:dd:ee:ff", "r", "a")
 	if !s.DeleteMAC("AA:BB:CC:DD:EE:FF") {
 		t.Error("DeleteMAC must work case-insensitively")
@@ -111,7 +109,7 @@ func TestDenylistStore_Delete(t *testing.T) {
 }
 
 func TestDenylistStore_DeleteAll(t *testing.T) {
-	s, _ := newDenylistStore("")
+	s := newTestDenylistStore(t)
 	s.AddMAC("aa:bb:cc:dd:ee:ff", "r", "a")
 	s.AddMAC("11:22:33:44:55:66", "r", "a")
 	if n := s.DeleteAllMACs(); n != 2 {
@@ -122,58 +120,39 @@ func TestDenylistStore_DeleteAll(t *testing.T) {
 	}
 }
 
+// The file-permission test that used to live here checked that denylist.json
+// was 0600, because it holds operational notes about specific devices. That file
+// is gone; the equivalent protection is now the database's own access control,
+// which is the operator's to configure — for the default SQLite file it is the
+// data directory's mode, already asserted by ensureDataDirWritable.
+//
+// What is still worth pinning is that a second store sees the first one's writes
+// and that MAC normalisation survives the trip.
 func TestDenylistStore_PersistRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "denylist.json")
+	db := testDB(t)
 
-	{
-		s, err := newDenylistStore(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		s.AddMAC("AA:BB:CC:DD:EE:FF", "spam", "admin@x")
-		s.AddMAC("11:22:33:44:55:66", "abuse", "admin@y")
-	}
-	{
-		s2, err := newDenylistStore(path)
-		if err != nil {
-			t.Fatalf("reload: %v", err)
-		}
-		items := s2.ListMACs()
-		if len(items) != 2 {
-			t.Fatalf("reload count = %d, want 2", len(items))
-		}
-		// Order is CreatedAt descending and content is stable. Also verifies normalization.
-		seen := map[string]string{}
-		for _, item := range items {
-			seen[item.MAC] = item.Reason
-		}
-		if seen["aa:bb:cc:dd:ee:ff"] != "spam" {
-			t.Errorf("missing or wrong record: %+v", seen)
-		}
-		if seen["11:22:33:44:55:66"] != "abuse" {
-			t.Errorf("missing or wrong record: %+v", seen)
-		}
-	}
-}
-
-func TestDenylistStore_PersistFileMode(t *testing.T) {
-	// Persistence files must not be readable by other users because they contain sensitive ops notes.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "denylist.json")
-	s, err := newDenylistStore(path)
-	if err != nil {
+	first := newDenylistStore(db)
+	if _, _, err := first.AddMAC("AA:BB:CC:DD:EE:FF", "spam", "admin@x"); err != nil {
 		t.Fatal(err)
 	}
-	s.AddMAC("aa:bb:cc:dd:ee:ff", "r", "a")
-
-	// File mode should be 0600.
-	info, err := os.Stat(path)
-	if err != nil {
+	if _, _, err := first.AddMAC("11:22:33:44:55:66", "abuse", "admin@y"); err != nil {
 		t.Fatal(err)
 	}
-	mode := info.Mode().Perm()
-	if mode&0o077 != 0 {
-		t.Errorf("denylist.json mode = %o, want no group/other access", mode)
+
+	second := newDenylistStore(db)
+	items := second.ListMACs()
+	if len(items) != 2 {
+		t.Fatalf("reload count = %d, want 2", len(items))
+	}
+	seen := map[string]string{}
+	for _, item := range items {
+		seen[item.MAC] = item.Reason
+	}
+	// Stored lower-cased and colon-separated whatever the operator typed.
+	if seen["aa:bb:cc:dd:ee:ff"] != "spam" {
+		t.Errorf("missing or wrong record: %+v", seen)
+	}
+	if seen["11:22:33:44:55:66"] != "abuse" {
+		t.Errorf("missing or wrong record: %+v", seen)
 	}
 }

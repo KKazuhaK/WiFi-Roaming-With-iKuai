@@ -1,6 +1,11 @@
 package dbstore
 
-import "time"
+import (
+	"strings"
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // The schema mirrors the JSON files it replaces, so the one-time import is a
 // straight field copy and an operator reading the tables recognises what they
@@ -45,7 +50,16 @@ type Setting struct {
 
 // GuestCode replaces guest-codes.json.
 type GuestCode struct {
-	Code      string    `gorm:"primaryKey;size:64"`
+	Code string `gorm:"primaryKey;size:64"`
+	// CodeLower is the lookup key, carrying a unique index.
+	//
+	// Redemption has always been case-insensitive (the file-backed store keyed
+	// its map on strings.ToLower), and that cannot be delegated to the database:
+	// MySQL's default collation compares case-insensitively, PostgreSQL's does
+	// not, and SQLite's depends on the column. Relying on collation would mean a
+	// code that works on one backend is rejected on another. An explicit column
+	// makes the behaviour identical everywhere.
+	CodeLower string    `gorm:"size:64;uniqueIndex"`
 	CreatedAt time.Time `gorm:"index"`
 	// ExpiresAt zero means the code never expires. Stored as a nullable column
 	// so "never" is representable without a sentinel date that sorting and
@@ -56,6 +70,25 @@ type GuestCode struct {
 	Note        string `gorm:"size:256"`
 
 	Uses []GuestCodeUse `gorm:"foreignKey:Code;references:Code;constraint:OnDelete:CASCADE"`
+}
+
+// NormalizeCode is the single definition of the redemption lookup key. Guests
+// type these off a printed slip, so matching is case-insensitive and tolerates
+// surrounding whitespace.
+func NormalizeCode(code string) string {
+	return strings.ToLower(strings.TrimSpace(code))
+}
+
+// BeforeSave derives CodeLower so no writer can forget it.
+//
+// This is a hook rather than a rule for callers because forgetting is silent in
+// the worst way: the row inserts with an empty lookup key, the code cannot be
+// redeemed, and the admin table still shows it as available. The legacy importer
+// did exactly that, and the unique index turned it into a loud failure — which
+// is the second half of the same defence.
+func (g *GuestCode) BeforeSave(*gorm.DB) error {
+	g.CodeLower = NormalizeCode(g.Code)
+	return nil
 }
 
 // GuestCodeUse is one redemption of a code.

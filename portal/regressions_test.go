@@ -10,10 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -25,7 +24,7 @@ import (
 // ============================================================================
 
 func TestC1_ListReturnsCopiesNotInternalPointers(t *testing.T) {
-	s, _ := newGuestCodeStore("")
+	s := newGuestCodeStore(testDB(t))
 	s.Add(&GuestCode{Code: "abc", CreatedAt: time.Now(), MaxUses: 100})
 
 	// Mutating objects returned by List must not affect store internals.
@@ -51,7 +50,7 @@ func TestC1_ListReturnsCopiesNotInternalPointers(t *testing.T) {
 // TestC1_ConcurrentValidateAndList is the test that actually triggers the race detector.
 // Before the fix, `go test -race -run TestC1_ConcurrentValidateAndList` should fail.
 func TestC1_ConcurrentValidateAndList(t *testing.T) {
-	s, _ := newGuestCodeStore("")
+	s := newGuestCodeStore(testDB(t))
 	s.Add(&GuestCode{Code: "code1", CreatedAt: time.Now(), MaxUses: 0}) // Unlimited uses.
 
 	var wg sync.WaitGroup
@@ -106,37 +105,36 @@ func TestC1_ConcurrentValidateAndList(t *testing.T) {
 // C2: EventLog Append vs Prune duplicate disk writes.
 // ============================================================================
 
-func TestC2_AppendDuringPruneDoesNotDuplicateOnDisk(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "events.jsonl")
-	e, err := newEventLog(path, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
+// The original bug was a JSONL file that ended up with more lines than the
+// in-memory slice, because Append wrote outside the lock Prune's file rewrite
+// held. Both the slice and the file are gone; what survives is the property they
+// were there to protect — a Prune running concurrently with Appends must remove
+// exactly the events past retention and no others.
+func TestC2_AppendDuringPruneKeepsExactlyTheFreshEvents(t *testing.T) {
+	db := testDB(t)
+	e := newEventLog(db, time.Hour)
 
-	// Prepare an old event that Prune will cross.
+	// One event Prune must remove, and a stream it must not touch.
 	e.Append(Event{Time: time.Now().Add(-2 * time.Hour), Subject: "OLD", Kind: KindLogin})
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
+	var appended int64
 
-	// Frequent Append.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		i := 0
-		for {
+		for i := 0; ; i++ {
 			select {
 			case <-stop:
 				return
 			default:
 				e.Append(Event{Subject: "fresh", Kind: KindLogin, Detail: "n=" + intToStr(i)})
-				i++
+				atomic.AddInt64(&appended, 1)
 			}
 		}
 	}()
 
-	// Frequent Prune, simulating gcLoop cadence.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -155,21 +153,17 @@ func TestC2_AppendDuringPruneDoesNotDuplicateOnDisk(t *testing.T) {
 	close(stop)
 	wg.Wait()
 
-	// Event counts in memory and file should be consistent. Some in-flight gap is allowed, but the
-	// file must never have more events than memory because that signals duplicates.
-	memEvents := e.Query(EventQueryFilter{})
-
-	// Count event lines in the file.
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	got := e.Query(EventQueryFilter{})
+	want := int(atomic.LoadInt64(&appended))
+	if len(got) != want {
+		t.Errorf("%d events stored, want %d fresh ones — Prune crossed an Append, or an insert was lost",
+			len(got), want)
 	}
-	fileLines := bytes.Count(data, []byte{'\n'})
-
-	if fileLines > len(memEvents)+5 {
-		// +5 tolerates in-flight Appends that unlocked before writing.
-		t.Errorf("file has %d lines but memory has %d events — likely duplicate writes from Append/Prune race",
-			fileLines, len(memEvents))
+	for _, ev := range got {
+		if ev.Subject == "OLD" {
+			t.Error("the pre-retention event survived every Prune")
+			break
+		}
 	}
 }
 
@@ -178,7 +172,7 @@ func TestC2_AppendDuringPruneDoesNotDuplicateOnDisk(t *testing.T) {
 // ============================================================================
 
 func TestC3_DeleteInactivePreservesPartiallyUsedMultiUseCode(t *testing.T) {
-	s, _ := newGuestCodeStore("")
+	s := newGuestCodeStore(testDB(t))
 	// MaxUses=3, used once, so two uses remain.
 	s.Add(&GuestCode{
 		Code:      "multi-use",
@@ -206,59 +200,33 @@ func TestC3_DeleteInactivePreservesPartiallyUsedMultiUseCode(t *testing.T) {
 }
 
 // ============================================================================
-// C4: banHistory async flush; high-frequency increment should not block hot paths.
-// Async behavior cannot be tested directly, but increment should no longer update file mtime each time.
-// After the fix, 100 increments in <100ms should show only 1-2 file writes.
-// ============================================================================
+// C4 asserted that increment did NOT write on every call, because the file-backed
+// version rewrote the whole JSON document each time and that sat on the hot path
+// during an attack. The batching it verified has been removed on purpose: a
+// counter buffered in one process's memory reaches the permanent-escalation
+// threshold at the wrong attempt count the moment a second instance exists.
+//
+// Durability and cross-instance agreement are covered by
+// TestBanHistory_IncrementsAreSharedAndDurable. What is still worth asserting is
+// the performance property C4 cared about — the write must not be so slow that
+// it becomes the bottleneck on a path an attacker controls the rate of.
+func TestC4_BanHistoryIncrementStaysCheap(t *testing.T) {
+	bh := newBanHistory(testDB(t))
 
-func TestC4_BanHistoryDoesNotWriteOnEveryIncrement(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "ratelimit-state.json")
-	bh, err := newBanHistory(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer bh.shutdown() // After the fix, banHistory has shutdown to stop the flusher.
-
-	// 100 increments.
 	start := time.Now()
 	for i := 0; i < 100; i++ {
 		bh.increment("1.1.1.1")
 	}
 	elapsed := time.Since(start)
 
-	// Before fix: every increment synchronously wrote the whole file.
-	// After fix: only marks dirty, so 100 increments should finish quickly.
-	if elapsed > 50*time.Millisecond {
-		t.Errorf("100 increments took %v, want < 50ms (sign of sync writes per increment)", elapsed)
+	// Generous by design: this is a smoke test against a pathological
+	// regression (a full table scan per increment, say), not a benchmark. Each
+	// increment is one indexed upsert plus one read-back.
+	if elapsed > 2*time.Second {
+		t.Errorf("100 increments took %v; something turned a point write into a scan", elapsed)
 	}
-
-	// Confirm increment itself still returns the correct count.
 	if got := bh.get("1.1.1.1"); got != 100 {
 		t.Errorf("get = %d, want 100", got)
-	}
-}
-
-func TestC4_BanHistoryFlushesOnShutdown(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "ratelimit-state.json")
-	bh, err := newBanHistory(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bh.increment("2.2.2.2")
-	bh.increment("2.2.2.2")
-	if err := bh.shutdown(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Reopen should read back 2.
-	bh2, err := newBanHistory(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := bh2.get("2.2.2.2"); got != 2 {
-		t.Errorf("after shutdown+reload, get = %d, want 2", got)
 	}
 }
 
@@ -266,61 +234,67 @@ func TestC4_BanHistoryFlushesOnShutdown(t *testing.T) {
 // H1/H2/H3: batch operations should call saveLocked once, verified indirectly via file mtime.
 // ============================================================================
 
-func TestH1_DeleteBulkDoesNotRewriteFilePerCode(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "guest-codes.json")
-	s, _ := newGuestCodeStore(path)
+// H1 and H3 asserted that batch operations wrote the JSON file once rather than
+// once per code, which was an O(N^2) trap. The database equivalent is that each
+// batch is a single transaction, and what a test can actually observe is the
+// outcome: every requested row lands, nothing else changes, and a large batch
+// completes in a time that rules out a per-row round trip outside a transaction.
+func TestH1_DeleteManyRemovesExactlyTheRequestedCodes(t *testing.T) {
+	s := newTestGuestCodeStore(t)
 	for i := 0; i < 50; i++ {
 		s.Add(&GuestCode{Code: "code" + intToStr(i), CreatedAt: time.Now()})
 	}
 
-	// Record mtime before modification.
-	stat1, _ := os.Stat(path)
-
-	// Batch-delete 30 entries.
-	codes := []string{}
+	codes := make([]string, 0, 30)
 	for i := 0; i < 30; i++ {
 		codes = append(codes, "code"+intToStr(i))
 	}
-	n := s.DeleteMany(codes)
-	if n != 30 {
+	if n := s.DeleteMany(codes); n != 30 {
 		t.Errorf("DeleteMany = %d, want 30", n)
 	}
-
-	// There should be one file mtime change. We cannot directly count writes, so verify final state.
-	stat2, _ := os.Stat(path)
-	if !stat2.ModTime().After(stat1.ModTime()) {
-		t.Error("file should have been touched")
+	remaining := s.List()
+	if len(remaining) != 20 {
+		t.Fatalf("%d codes remain, want 20", len(remaining))
 	}
-
-	// Reload and verify consistency.
-	s2, err := newGuestCodeStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(s2.List()) != 20 {
-		t.Errorf("after DeleteMany, %d codes, want 20", len(s2.List()))
+	for _, c := range remaining {
+		for _, deleted := range codes {
+			if c.Code == deleted {
+				t.Errorf("%s was requested for deletion but survived", c.Code)
+			}
+		}
 	}
 }
 
-func TestH3_AddManyDoesNotRewriteFilePerCode(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "guest-codes.json")
-	s, _ := newGuestCodeStore(path)
+func TestH3_AddManyInsertsTheWholeBatch(t *testing.T) {
+	s := newTestGuestCodeStore(t)
 
-	// Put 100 codes into the store with one AddMany call.
 	codes := make([]*GuestCode, 100)
 	for i := 0; i < 100; i++ {
 		codes[i] = &GuestCode{Code: "bulk-" + intToStr(i), CreatedAt: time.Now()}
 	}
+	start := time.Now()
 	added := s.AddMany(codes)
+	elapsed := time.Since(start)
+
 	if len(added) != 100 {
-		t.Errorf("AddMany inserted %d, want 100", len(added))
+		t.Errorf("AddMany reported %d inserted, want 100", len(added))
+	}
+	if len(s.List()) != 100 {
+		t.Errorf("%d codes stored, want 100", len(s.List()))
+	}
+	// The order the caller offered them in has to be preserved: the admin UI
+	// prints this list and an operator reads it against what they asked for.
+	if len(added) == 100 && (added[0] != "bulk-0" || added[99] != "bulk-99") {
+		t.Errorf("AddMany reordered the batch: first=%s last=%s", added[0], added[99])
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("a 100-code batch took %v; it is not running in one transaction", elapsed)
 	}
 
-	s2, _ := newGuestCodeStore(path)
-	if len(s2.List()) != 100 {
-		t.Errorf("after AddMany, %d codes loaded, want 100", len(s2.List()))
+	// Re-offering the same batch must report nothing added rather than claiming
+	// codes that already belong to someone else.
+	if again := s.AddMany(codes); len(again) != 0 {
+		t.Errorf("re-inserting the same batch reported %d added, want 0", len(again))
 	}
 }
 
@@ -366,7 +340,7 @@ func TestH7_EditAcceptsPastExpiry(t *testing.T) {
 // ============================================================================
 
 func TestM1_StatsAlignsWithDashboardActive(t *testing.T) {
-	s, _ := newGuestCodeStore("")
+	s := newGuestCodeStore(testDB(t))
 	s.Add(&GuestCode{Code: "fresh", CreatedAt: time.Now()})                                          // unused, IsActive
 	s.Add(&GuestCode{Code: "partial", MaxUses: 5, Uses: []CodeUse{{}}, CreatedAt: time.Now()})       // Partially used, IsActive.
 	s.Add(&GuestCode{Code: "exhausted", MaxUses: 1, Uses: []CodeUse{{}}, CreatedAt: time.Now()})     // Exhausted.
@@ -409,7 +383,7 @@ func TestM1_StatsAlignsWithDashboardActive(t *testing.T) {
 // ============================================================================
 
 func TestM5_QuerySubjectFilterCaseInsensitive(t *testing.T) {
-	e, _ := newEventLog("", time.Hour)
+	e := newEventLog(testDB(t), time.Hour)
 	e.Append(Event{Subject: "Alice@Example.COM", Kind: KindLogin})
 	e.Append(Event{Subject: "bob@example.com", Kind: KindLogin})
 	e.Append(Event{Subject: "carol@example.com", Kind: KindLogin})
@@ -478,7 +452,7 @@ func TestM8_AuthStartRecordsAfterProceedStorePut(t *testing.T) {
 // ============================================================================
 
 func TestH6_MultiCountMatchesIndividualCounts(t *testing.T) {
-	e, _ := newEventLog("", time.Hour)
+	e := newEventLog(testDB(t), time.Hour)
 	for i := 0; i < 100; i++ {
 		e.Append(Event{Kind: KindLogin, Result: ResultSuccess})
 	}
@@ -513,7 +487,7 @@ func TestH6_MultiCountMatchesIndividualCounts(t *testing.T) {
 // ============================================================================
 
 func TestM6_QueryHandlesOutOfOrderTimes(t *testing.T) {
-	e, _ := newEventLog("", time.Hour)
+	e := newEventLog(testDB(t), time.Hour)
 	now := time.Now()
 	// Simulate NTP moving backward: write t1, then t0 (t0 < t1).
 	e.Append(Event{Time: now, Subject: "later", Kind: KindLogin})

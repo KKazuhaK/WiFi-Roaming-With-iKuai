@@ -384,22 +384,14 @@ func main() {
 	}
 	warnIgnoredRuntimeEnv()
 
-	paths := makeDataPaths(boot.DataDir)
-
-	guestStore, err := newGuestCodeStore(paths.GuestCodes)
-	if err != nil {
-		log.Fatalf("guest codes store init failed: %v", err)
+	if err := ensureGuestCodeSchema(db); err != nil {
+		log.Fatalf("%v", err)
 	}
+	guestStore := newGuestCodeStore(db)
 
-	denylistStore, err := newDenylistStore(paths.Denylist)
-	if err != nil {
-		log.Fatalf("MAC denylist init failed: %v", err)
-	}
+	denylistStore := newDenylistStore(db)
 
-	banHist, err := newBanHistory(paths.BanHistory)
-	if err != nil {
-		log.Fatalf("ban history init failed: %v", err)
-	}
+	banHist := newBanHistory(db)
 
 	app := &App{
 		boot:       boot,
@@ -426,17 +418,16 @@ func main() {
 	}
 	cfg := app.conf()
 
-	ikuaiPolicyStore, err := newIKuaiPolicyStore(cfg.IKuaiPolicyDefaults, paths.IKuaiPolicy)
+	ikuaiPolicyStore, err := newIKuaiPolicyStore(db, cfg.IKuaiPolicyDefaults)
 	if err != nil {
 		log.Fatalf("iKuai policy init failed: %v", err)
 	}
 	app.ikuaiPolicies = ikuaiPolicyStore
 
-	eventLog, err := newEventLog(paths.EventLog, cfg.EventLogRetention)
-	if err != nil {
-		log.Fatalf("event log init failed: %v", err)
+	if err := ensureEventSchema(db); err != nil {
+		log.Fatalf("%v", err)
 	}
-	app.eventLog = eventLog
+	app.eventLog = newEventLog(db, cfg.EventLogRetention)
 	log.Printf("data dir: %s (guest codes, MAC denylist, iKuai policy, ban history, event log; event retention %s)",
 		boot.DataDir, cfg.EventLogRetention)
 
@@ -549,7 +540,7 @@ func main() {
 	if err := banHist.shutdown(); err != nil {
 		log.Printf("ban history shutdown: %v", err)
 	}
-	if err := eventLog.Close(); err != nil {
+	if err := app.eventLog.Close(); err != nil {
 		log.Printf("event log close: %v", err)
 	}
 	log.Printf("clean exit")

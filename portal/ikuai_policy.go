@@ -6,13 +6,8 @@ package main
 // Env provides startup defaults; admin changes can be persisted as JSON.
 
 import (
-	"encoding/json"
 	"fmt"
-	"log"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 )
 
 type IKuaiAuthProfile string
@@ -23,132 +18,16 @@ const (
 	IKuaiProfileGuest IKuaiAuthProfile = "guest"
 )
 
+// allIKuaiProfiles is the canonical order the admin table and the seeding logic
+// both use. Fixed rather than database-defined so the three rows do not
+// reshuffle between page loads.
+var allIKuaiProfiles = []IKuaiAuthProfile{IKuaiProfileSSO, IKuaiProfileDuo, IKuaiProfileGuest}
+
 type IKuaiPolicy struct {
 	Upload   int    `json:"upload"`   // KB/s, 0 means unlimited.
 	Download int    `json:"download"` // KB/s, 0 means unlimited.
 	Timeout  int    `json:"timeout"`  // Minutes, 0 means never expires.
 	Comment  string `json:"comment,omitempty"`
-}
-
-type IKuaiPolicyStore struct {
-	mu          sync.RWMutex
-	policies    map[IKuaiAuthProfile]IKuaiPolicy
-	defaults    map[IKuaiAuthProfile]IKuaiPolicy
-	persistPath string
-}
-
-func newIKuaiPolicyStore(defaults map[IKuaiAuthProfile]IKuaiPolicy, persistPath string) (*IKuaiPolicyStore, error) {
-	s := &IKuaiPolicyStore{
-		policies:    clonePolicyMap(defaults),
-		defaults:    clonePolicyMap(defaults),
-		persistPath: persistPath,
-	}
-	if persistPath == "" {
-		return s, nil
-	}
-	if err := s.loadFromDisk(); err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func (s *IKuaiPolicyStore) loadFromDisk() error {
-	data, err := os.ReadFile(s.persistPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read %s: %w", s.persistPath, err)
-	}
-	if len(data) == 0 {
-		return nil
-	}
-	var raw map[string]IKuaiPolicy
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("parse %s: %w", s.persistPath, err)
-	}
-	for k, p := range raw {
-		profile, ok := parseIKuaiProfile(k)
-		if !ok {
-			continue
-		}
-		if err := validateIKuaiPolicy(p); err != nil {
-			return fmt.Errorf("parse %s: profile %s: %w", s.persistPath, profile, err)
-		}
-		s.policies[profile] = normalizeIKuaiPolicyForProfile(profile, p)
-	}
-	log.Printf("iKuai policy: loaded from %s", s.persistPath)
-	return nil
-}
-
-func (s *IKuaiPolicyStore) Get(profile IKuaiAuthProfile) IKuaiPolicy {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if p, ok := s.policies[profile]; ok {
-		return p
-	}
-	return s.defaults[profile]
-}
-
-func (s *IKuaiPolicyStore) Set(profile IKuaiAuthProfile, p IKuaiPolicy) error {
-	if _, ok := parseIKuaiProfile(string(profile)); !ok {
-		return fmt.Errorf("invalid_profile")
-	}
-	if err := validateIKuaiPolicy(p); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.policies[profile] = normalizeIKuaiPolicyForProfile(profile, p)
-	s.saveLocked()
-	return nil
-}
-
-func (s *IKuaiPolicyStore) List() []IKuaiPolicyRow {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	profiles := []IKuaiAuthProfile{IKuaiProfileSSO, IKuaiProfileDuo, IKuaiProfileGuest}
-	out := make([]IKuaiPolicyRow, 0, len(profiles))
-	for _, profile := range profiles {
-		p := s.policies[profile]
-		out = append(out, IKuaiPolicyRow{
-			Profile:  string(profile),
-			Label:    ikuaiProfileLabel(profile),
-			Upload:   p.Upload,
-			Download: p.Download,
-			Timeout:  p.Timeout,
-			Comment:  p.Comment,
-		})
-	}
-	return out
-}
-
-func (s *IKuaiPolicyStore) saveLocked() {
-	if s.persistPath == "" {
-		return
-	}
-	raw := make(map[string]IKuaiPolicy, len(s.policies))
-	for profile, policy := range s.policies {
-		raw[string(profile)] = policy
-	}
-	data, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		log.Printf("iKuai policy: marshal failed: %v", err)
-		return
-	}
-	dir := filepath.Dir(s.persistPath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("iKuai policy: mkdir %s failed: %v", dir, err)
-		return
-	}
-	tmp := s.persistPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		log.Printf("iKuai policy: write %s failed: %v", tmp, err)
-		return
-	}
-	if err := os.Rename(tmp, s.persistPath); err != nil {
-		log.Printf("iKuai policy: rename %s -> %s failed: %v", tmp, s.persistPath, err)
-	}
 }
 
 type IKuaiPolicyRow struct {

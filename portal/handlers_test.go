@@ -42,19 +42,23 @@ func mkAdminTestApp(t *testing.T) *App {
 	t.Helper()
 	app := mkTestApp(t)
 	app.conf().AdminEmails = []string{"admin@example.com"}
-	gc, err := newGuestCodeStore("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	app.guestCodes = gc
-	policies, err := newIKuaiPolicyStore(map[IKuaiAuthProfile]IKuaiPolicy{
+	// One database for the whole App, as production has: the admin handlers
+	// touch codes, policies and the event log in the same request, and giving
+	// each store its own would let a test pass against state no single instance
+	// could ever see.
+	db := testDB(t)
+	app.db = db
+	app.guestCodes = newGuestCodeStore(db)
+	policies, err := newIKuaiPolicyStore(db, map[IKuaiAuthProfile]IKuaiPolicy{
 		IKuaiProfileSSO: {}, IKuaiProfileDuo: {}, IKuaiProfileGuest: {},
-	}, "")
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	app.ikuaiPolicies = policies
-	app.eventLog, _ = newEventLog("", time.Hour)
+	app.denylist = newDenylistStore(db)
+	app.banHistory = newBanHistory(db)
+	app.eventLog = newEventLog(db, time.Hour)
 	return app
 }
 

@@ -87,10 +87,6 @@ func TestImportAdoptsExistingInstallation(t *testing.T) {
 	if err := importLegacyState(db, store, boot); err != nil {
 		t.Fatalf("import: %v", err)
 	}
-	// Called directly: importLegacyState does not run it yet, because the stores
-	// still read the files it renames. See the note there.
-	importLegacyStateFiles(db, makeDataPaths(boot.DataDir))
-
 	// --- settings ---
 	values, err := store.LoadAll()
 	if err != nil {
@@ -252,7 +248,6 @@ func TestImportLeavesCorruptGuestCodeFileIntact(t *testing.T) {
 	if err := importLegacyState(db, store, boot); err != nil {
 		t.Fatalf("a corrupt file must not fail the import: %v", err)
 	}
-	importLegacyStateFiles(db, paths)
 
 	if _, err := os.Stat(paths.GuestCodes); err != nil {
 		t.Error("the corrupt file was renamed or deleted; the operator needs it to recover")

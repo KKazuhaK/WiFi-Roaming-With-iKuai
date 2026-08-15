@@ -9,7 +9,6 @@ package main
 //   - Stats counts are correct.
 
 import (
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -45,7 +44,7 @@ func TestGuestCode_Exhausted(t *testing.T) {
 }
 
 func TestGuestCodeStore_AddRejectsDuplicate(t *testing.T) {
-	s, err := newGuestCodeStore("")
+	s, err := newTestGuestCodeStore(t), error(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +62,7 @@ func TestGuestCodeStore_AddRejectsDuplicate(t *testing.T) {
 }
 
 func TestGuestCodeStore_AddTrimsAndCaseInsensitive(t *testing.T) {
-	s, _ := newGuestCodeStore("")
+	s := newTestGuestCodeStore(t)
 	s.Add(&GuestCode{Code: "  ABC  ", CreatedAt: time.Now()})
 	// Validate should also be case-insensitive and trim whitespace.
 	got := s.Validate("abc", "mac", "ip", "guest-1")
@@ -75,7 +74,7 @@ func TestGuestCodeStore_AddTrimsAndCaseInsensitive(t *testing.T) {
 // TestGuestCodeStore_ValidateAtomic is the TOCTOU regression: multiple goroutines validating the
 // same MaxUses=1 code must produce exactly one success.
 func TestGuestCodeStore_ValidateAtomic(t *testing.T) {
-	s, _ := newGuestCodeStore("")
+	s := newTestGuestCodeStore(t)
 	s.Add(&GuestCode{
 		Code:      "single-use",
 		CreatedAt: time.Now(),
@@ -104,7 +103,7 @@ func TestGuestCodeStore_ValidateAtomic(t *testing.T) {
 }
 
 func TestGuestCodeStore_ValidateRejectsExpiredAndExhausted(t *testing.T) {
-	s, _ := newGuestCodeStore("")
+	s := newTestGuestCodeStore(t)
 	s.Add(&GuestCode{
 		Code:      "expired",
 		CreatedAt: time.Now(),
@@ -129,7 +128,7 @@ func TestGuestCodeStore_ValidateRejectsExpiredAndExhausted(t *testing.T) {
 func TestGuestCodeStore_DeleteInactiveKeepsActive(t *testing.T) {
 	// C3 semantics: DeleteInactive removes codes that can no longer be used (expired or exhausted).
 	// Partially used multi-use codes must be retained because they are still admin assets.
-	s, _ := newGuestCodeStore("")
+	s := newTestGuestCodeStore(t)
 	s.Add(&GuestCode{Code: "fresh", CreatedAt: time.Now()})
 	s.Add(&GuestCode{Code: "expired", ExpiresAt: time.Now().Add(-time.Hour), CreatedAt: time.Now()})
 	s.Add(&GuestCode{Code: "exhausted", MaxUses: 1, Uses: []CodeUse{{}}, CreatedAt: time.Now()})
@@ -149,7 +148,7 @@ func TestGuestCodeStore_DeleteInactiveKeepsActive(t *testing.T) {
 }
 
 func TestGuestCodeStore_Edit(t *testing.T) {
-	s, _ := newGuestCodeStore("")
+	s := newTestGuestCodeStore(t)
 	s.Add(&GuestCode{Code: "edit-me", CreatedAt: time.Now(), DurationMin: 60})
 	exp := time.Now().Add(24 * time.Hour)
 	if !s.Edit("edit-me", exp, 30, 5, "new note") {
@@ -167,7 +166,7 @@ func TestGuestCodeStore_Edit(t *testing.T) {
 func TestGuestCodeStore_Stats(t *testing.T) {
 	// M1 semantics: unused = IsActive, used = IsExhausted, expired = expired.
 	// MaxUses=0 is unlimited, so Uses=1 is still unused; MaxUses=1 Uses=1 is used.
-	s, _ := newGuestCodeStore("")
+	s := newTestGuestCodeStore(t)
 	s.Add(&GuestCode{Code: "u1", CreatedAt: time.Now()})                                         // unused
 	s.Add(&GuestCode{Code: "u2", CreatedAt: time.Now()})                                         // unused
 	s.Add(&GuestCode{Code: "x1", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(-time.Hour)})  // expired
@@ -182,41 +181,39 @@ func TestGuestCodeStore_Stats(t *testing.T) {
 }
 
 // TestGuestCodeStore_PersistRoundTrip: storage should match after load. loadFromDisk failure is
-// fatal at startup, so the on-disk format and reader must agree.
+// / Persistence used to mean a JSON file whose format the reader had to agree
+// with. It now means the database, so what this pins is that a second store over
+// the same connection sees everything the first wrote — including the redemption
+// history, which moved from an embedded array into its own table and is the part
+// most likely to be dropped by a future refactor.
 func TestGuestCodeStore_PersistRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "guest-codes.json")
+	db := testDB(t)
 
-	// Write one copy.
-	{
-		s, err := newGuestCodeStore(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		s.Add(&GuestCode{
-			Code:        "abc",
-			CreatedAt:   time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
-			DurationMin: 120,
-			MaxUses:     3,
-			Note:        "test",
-			Uses:        []CodeUse{{At: time.Date(2026, 1, 1, 13, 0, 0, 0, time.UTC), MAC: "aa", IP: "1.1.1.1", GuestUPN: "g"}},
-		})
+	first := newGuestCodeStore(db)
+	if !first.Add(&GuestCode{
+		Code:        "abc123",
+		CreatedAt:   time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+		DurationMin: 120,
+		MaxUses:     3,
+		Note:        "test",
+	}) {
+		t.Fatal("Add returned false")
 	}
-	// Read it back.
-	{
-		s2, err := newGuestCodeStore(path)
-		if err != nil {
-			t.Fatalf("reload failed: %v", err)
-		}
-		got := s2.List()
-		if len(got) != 1 {
-			t.Fatalf("reload count = %d, want 1", len(got))
-		}
-		c := got[0]
-		if c.Code != "abc" || c.DurationMin != 120 || c.MaxUses != 3 ||
-			c.Note != "test" || len(c.Uses) != 1 || c.Uses[0].MAC != "aa" {
-			t.Errorf("round-trip lost data: %+v", c)
-		}
+	if got := first.Validate("abc123", "aa", "1.1.1.1", "g"); got == nil {
+		t.Fatal("Validate returned nil for a fresh code")
+	}
+
+	second := newGuestCodeStore(db)
+	list := second.List()
+	if len(list) != 1 {
+		t.Fatalf("reload count = %d, want 1", len(list))
+	}
+	c := list[0]
+	if c.Code != "abc123" || c.DurationMin != 120 || c.MaxUses != 3 || c.Note != "test" {
+		t.Errorf("round trip lost metadata: %+v", c)
+	}
+	if len(c.Uses) != 1 || c.Uses[0].MAC != "aa" || c.Uses[0].GuestUPN != "g" {
+		t.Errorf("round trip lost redemption history: %+v", c.Uses)
 	}
 }
 

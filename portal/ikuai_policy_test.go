@@ -9,7 +9,6 @@ package main
 //   - stable List order for UI rendering
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -39,9 +38,9 @@ func TestIKuaiPolicy_ValidateRejectsLongComment(t *testing.T) {
 }
 
 func TestIKuaiPolicyStore_GuestTimeoutForcedZero(t *testing.T) {
-	s, err := newIKuaiPolicyStore(map[IKuaiAuthProfile]IKuaiPolicy{
+	s, err := newIKuaiPolicyStore(testDB(t), map[IKuaiAuthProfile]IKuaiPolicy{
 		IKuaiProfileGuest: {Timeout: 60},
-	}, "")
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,9 +60,9 @@ func TestIKuaiPolicyStore_GuestTimeoutForcedZero(t *testing.T) {
 }
 
 func TestIKuaiPolicyStore_SetGetRoundTrip(t *testing.T) {
-	s, _ := newIKuaiPolicyStore(map[IKuaiAuthProfile]IKuaiPolicy{
+	s, _ := newIKuaiPolicyStore(testDB(t), map[IKuaiAuthProfile]IKuaiPolicy{
 		IKuaiProfileSSO: {},
-	}, "")
+	})
 	want := IKuaiPolicy{Upload: 100, Download: 200, Timeout: 60, Comment: "test"}
 	if err := s.Set(IKuaiProfileSSO, want); err != nil {
 		t.Fatal(err)
@@ -75,51 +74,53 @@ func TestIKuaiPolicyStore_SetGetRoundTrip(t *testing.T) {
 }
 
 func TestIKuaiPolicyStore_RejectsInvalidProfile(t *testing.T) {
-	s, _ := newIKuaiPolicyStore(map[IKuaiAuthProfile]IKuaiPolicy{}, "")
+	s, _ := newIKuaiPolicyStore(testDB(t), map[IKuaiAuthProfile]IKuaiPolicy{})
 	if err := s.Set("not-a-real-profile", IKuaiPolicy{}); err == nil {
 		t.Error("Set with invalid profile must error")
 	}
 }
 
 func TestIKuaiPolicyStore_PersistRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "ikuai-policy.json")
-
+	db := testDB(t)
 	defaults := map[IKuaiAuthProfile]IKuaiPolicy{
 		IKuaiProfileSSO:   {Comment: "default-sso"},
 		IKuaiProfileDuo:   {},
 		IKuaiProfileGuest: {},
 	}
-	{
-		s, err := newIKuaiPolicyStore(defaults, path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		s.Set(IKuaiProfileSSO, IKuaiPolicy{Upload: 500, Comment: "edited"})
+
+	first, err := newIKuaiPolicyStore(db, defaults)
+	if err != nil {
+		t.Fatal(err)
 	}
-	{
-		s2, err := newIKuaiPolicyStore(defaults, path)
-		if err != nil {
-			t.Fatalf("reload: %v", err)
-		}
-		got := s2.Get(IKuaiProfileSSO)
-		if got.Upload != 500 || got.Comment != "edited" {
-			t.Errorf("reload lost data: %+v", got)
-		}
-		// Unchanged profiles should keep defaults.
-		if d := s2.Get(IKuaiProfileDuo); d.Upload != 0 || d.Comment != "" {
-			t.Errorf("Duo profile got polluted on reload: %+v", d)
-		}
+	if err := first.Set(IKuaiProfileSSO, IKuaiPolicy{Upload: 500, Comment: "edited"}); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := newIKuaiPolicyStore(db, defaults)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got := second.Get(IKuaiProfileSSO)
+	if got.Upload != 500 || got.Comment != "edited" {
+		t.Errorf("reload lost the edit: %+v", got)
+	}
+	// Seeding must never overwrite an existing row, or every restart would
+	// silently revert an operator's edits to the configured defaults.
+	if d := second.Get(IKuaiProfileDuo); d.Upload != 0 || d.Comment != "" {
+		t.Errorf("Duo profile polluted on reload: %+v", d)
+	}
+	if sso := second.Get(IKuaiProfileSSO); sso.Comment == "default-sso" {
+		t.Error("the second construction re-applied the default over the edit")
 	}
 }
 
 func TestIKuaiPolicyStore_ListStableOrder(t *testing.T) {
 	// Admin UI depends on stable List order (sso, duo, guest) and must not flicker from map iteration.
-	s, _ := newIKuaiPolicyStore(map[IKuaiAuthProfile]IKuaiPolicy{
+	s, _ := newIKuaiPolicyStore(testDB(t), map[IKuaiAuthProfile]IKuaiPolicy{
 		IKuaiProfileSSO:   {},
 		IKuaiProfileDuo:   {},
 		IKuaiProfileGuest: {},
-	}, "")
+	})
 	for i := 0; i < 5; i++ {
 		list := s.List()
 		if len(list) != 3 {
