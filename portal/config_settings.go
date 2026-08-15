@@ -44,6 +44,7 @@ const (
 	secAdmin       = "admin"
 	secRateLimit   = "ratelimit"
 	secEventLog    = "eventlog"
+	secLocalAdmin  = "local_admin"
 )
 
 // settingDef describes one database-backed setting.
@@ -137,6 +138,13 @@ var settingRegistry = []settingDef{
 
 	// --- Event log ---
 	{Section: secEventLog, Key: "retention_days", Env: "EVENT_LOG_RETENTION_DAYS", Default: "7"},
+
+	// --- Break-glass local administrator ---
+	// No Env entry on purpose: this has never had an environment form, and
+	// giving it one would let a stray variable in a compose file switch on a
+	// password login the operator never asked for.
+	{Section: secLocalAdmin, Key: "enabled", Default: "false"},
+	{Section: secLocalAdmin, Key: "allowed_from"},
 }
 
 // settingIndex is the registry keyed "section.key", built once at init.
@@ -255,6 +263,9 @@ func applyRuntimeSettings(cfg *Config, v settings.Values) {
 	cfg.AuthProceedTTL = v.Duration(secRateLimit, "auth_proceed_ttl", defDur(secRateLimit, "auth_proceed_ttl"))
 
 	cfg.EventLogRetention = time.Duration(v.Int(secEventLog, "retention_days", defInt(secEventLog, "retention_days"))) * 24 * time.Hour
+
+	cfg.LocalAdminEnabled = v.Bool(secLocalAdmin, "enabled", false)
+	cfg.LocalAdminAllowedFrom = v.String(secLocalAdmin, "allowed_from", "")
 }
 
 // ConfigProblem is a validation finding against a runtime configuration.

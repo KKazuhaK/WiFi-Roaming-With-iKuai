@@ -61,6 +61,11 @@ func probeValueFor(d settingDef) string {
 			return "7"
 		}
 		return "11m"
+	case d.Default == "false":
+		// A boolean's only non-zero value. Without this branch the probe would
+		// be an unparseable string, v.Bool would fall back to false, and the
+		// coverage check would report a false positive on every boolean setting.
+		return "true"
 	case d.Default != "":
 		if _, err := strconv.Atoi(d.Default); err == nil {
 			return "13"

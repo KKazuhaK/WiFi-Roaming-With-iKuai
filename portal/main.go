@@ -326,6 +326,12 @@ func looksUninitialized() bool {
 }
 
 func main() {
+	// Recovery and administration subcommands run against the database and never
+	// start the server; see cli.go for why that separation matters.
+	if handled, code := runCLI(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+
 	// Explicit init subcommand with selectable directory, useful for ops init into /etc/wifi-portal.
 	if len(os.Args) > 1 && os.Args[1] == "init" {
 		if err := runInit(os.Args[2:]); err != nil {
@@ -477,6 +483,9 @@ func main() {
 	mux.HandleFunc("/admin", app.handleAdmin)
 	mux.HandleFunc("/admin/api/state", app.handleAdminState)
 	mux.HandleFunc("/admin/login", app.handleAdminLogin)
+	// Break-glass password login. 404s unless an operator turned it on from the
+	// CLI, so a deployment that does not use it does not advertise it.
+	mux.HandleFunc("/admin/login/local", app.handleLocalAdminLogin)
 	mux.HandleFunc("/admin/login/start", app.handleAdminLoginStart)
 	mux.HandleFunc("/admin/logout", app.handleAdminLogout)
 	mux.HandleFunc("/admin/codes/create", app.handleCodeCreate)

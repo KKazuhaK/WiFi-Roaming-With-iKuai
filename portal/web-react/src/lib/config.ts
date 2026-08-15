@@ -23,7 +23,7 @@ export interface BrandConfig {
   initial: string
 }
 
-export type PageKind = 'login' | 'error' | 'adminLogin' | 'admin'
+export type PageKind = 'login' | 'error' | 'adminLogin' | 'localLogin' | 'admin'
 
 export interface AppConfig {
   page: PageKind

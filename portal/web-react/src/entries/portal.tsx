@@ -14,6 +14,7 @@ import { type Lang } from '@/lib/i18n'
 import { LoginPage } from '@/pages/LoginPage'
 import { ErrorPage } from '@/pages/ErrorPage'
 import { AdminLoginPage } from '@/pages/AdminLoginPage'
+import { LocalAdminLoginPage } from '@/pages/LocalAdminLoginPage'
 import '@/styles/card.css'
 
 function Root() {
@@ -28,6 +29,8 @@ function Root() {
         <ErrorPage lang={lang} onLang={setLang} />
       ) : config.page === 'adminLogin' ? (
         <AdminLoginPage lang={lang} onLang={setLang} />
+      ) : config.page === 'localLogin' ? (
+        <LocalAdminLoginPage lang={lang} onLang={setLang} />
       ) : (
         <LoginPage lang={lang} onLang={setLang} />
       )}

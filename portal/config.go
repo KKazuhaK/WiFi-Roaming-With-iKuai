@@ -88,6 +88,15 @@ type Config struct {
 
 	// --- Event log (admin observability) ---
 	EventLogRetention time.Duration // Events older than this are garbage-collected, default 7 days.
+
+	// --- Break-glass local administrator ---
+	// Off unless an operator turns it on from the CLI, so a deployment that does
+	// not want a password on its admin surface never grows one. See localadmin.go
+	// for why the mechanism exists at all.
+	LocalAdminEnabled bool
+	// LocalAdminAllowedFrom optionally restricts the login endpoint to a list of
+	// CIDRs. Empty means no restriction.
+	LocalAdminAllowedFrom string
 }
 
 // BootstrapConfig is the part of the configuration that has to exist before the
