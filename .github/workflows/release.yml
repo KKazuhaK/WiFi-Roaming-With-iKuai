@@ -249,3 +249,16 @@ jobs:
             ```bash
             sha256sum -c checksums.txt
             ```
+
+            ### Upgrading from an older release
+            Nothing to do. On first start the portal imports the values from
+            `.env` and the JSON state files under `DATA_DIR`, then reads only its
+            database. After that, configuration is edited in **/admin → Settings**
+            (or with `wifi-portal config set`) — editing `.env` no longer has an
+            effect, apart from the bootstrap variables `SESSION_SECRET`,
+            `ENCRYPTION_KEY`, `DATA_DIR`, `DB_DSN`, `DB_MAX_OPEN_CONNS`,
+            `LISTEN_ADDR` and `TRUST_PROXY`.
+
+            Set `ENCRYPTION_KEY` (`openssl rand -hex 32`) before the first start
+            of the new version, or the credentials imported into the database are
+            stored in plaintext. See the README for the full picture.
